@@ -33,6 +33,12 @@ model User {
   purchaseOrdersApproved PurchaseOrder[] @relation("POApprovedBy")
   schedules         WorkerSchedule[]
 
+  // Worker productivity relations
+  workerTasks       WorkerTask[]        @relation("WorkerTasks")
+  assignedTasks     WorkerTask[]        @relation("AssignedTasks")
+  timeEntries       WorkerTimeEntry[]
+  approvedEntries   WorkerTimeEntry[]   @relation("ApprovedEntries")
+
   @@map("users")
 }
 
@@ -53,6 +59,10 @@ model ClockEvent {
   type      ClockEventType
   timestamp DateTime       @default(now())
   notes     String?
+
+  // Worker productivity relations
+  clockInEntry  WorkerTimeEntry? @relation("ClockIn")
+  clockOutEntry WorkerTimeEntry? @relation("ClockOut")
 
   @@index([userId, timestamp])
   @@map("clock_events")
@@ -104,6 +114,10 @@ model Sku {
 
   // Process times
   processTimes ProcessTime[]
+
+  // Worker productivity relations
+  workerTasks     WorkerTask[]    @relation("TaskSku")
+  timeEntryLines  TimeEntryLine[] @relation("TimeEntryLineSku")
 
   @@map("skus")
 }
@@ -357,6 +371,101 @@ model ProcessTime {
   @@unique([skuId, processType])
   @@index([skuId])
   @@map("process_times")
+}
+
+// ============================================
+// WORKER PRODUCTIVITY
+// ============================================
+
+enum TaskAssignmentType {
+  DAILY    // Assigned for a specific day
+  BACKLOG  // Queued work, no specific due date
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum TimeEntryStatus {
+  DRAFT      // Worker still editing
+  PENDING    // Submitted for approval
+  APPROVED   // Admin approved
+  REJECTED   // Admin rejected
+}
+
+model WorkerTask {
+  id              String             @id @default(cuid())
+  userId          String
+  user            User               @relation("WorkerTasks", fields: [userId], references: [id])
+  processName     String             // TIPPING, BLADING, STUD_TESTING, COMPLETE_PACKS
+  skuId           String?
+  sku             Sku?               @relation("TaskSku", fields: [skuId], references: [id])
+  targetQuantity  Int?
+  priority        Int                @default(0)
+  assignmentType  TaskAssignmentType @default(DAILY)
+  status          TaskStatus         @default(PENDING)
+  assignedById    String
+  assignedBy      User               @relation("AssignedTasks", fields: [assignedById], references: [id])
+  dueDate         DateTime?
+  notes           String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  completedAt     DateTime?
+  timeEntryLines  TimeEntryLine[]
+
+  @@index([userId, status])
+  @@index([dueDate])
+  @@map("worker_tasks")
+}
+
+model WorkerTimeEntry {
+  id              String           @id @default(cuid())
+  userId          String
+  user            User             @relation(fields: [userId], references: [id])
+  clockInEventId  String           @unique
+  clockInEvent    ClockEvent       @relation("ClockIn", fields: [clockInEventId], references: [id])
+  clockOutEventId String?          @unique
+  clockOutEvent   ClockEvent?      @relation("ClockOut", fields: [clockOutEventId], references: [id])
+  clockInTime     DateTime
+  clockOutTime    DateTime?
+  breakMinutes    Int              @default(0)
+  actualMinutes   Int?             // Total work minutes (excluding breaks)
+  expectedMinutes Float?           // Sum of expected times from lines
+  efficiency      Float?           // (expectedMinutes / actualMinutes) * 100
+  status          TimeEntryStatus  @default(DRAFT)
+  approvedById    String?
+  approvedBy      User?            @relation("ApprovedEntries", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  rejectionReason String?
+  lines           TimeEntryLine[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([userId, status])
+  @@index([clockInTime])
+  @@map("worker_time_entries")
+}
+
+model TimeEntryLine {
+  id                String          @id @default(cuid())
+  timeEntryId       String
+  timeEntry         WorkerTimeEntry @relation(fields: [timeEntryId], references: [id], onDelete: Cascade)
+  processName       String
+  skuId             String?
+  sku               Sku?            @relation("TimeEntryLineSku", fields: [skuId], references: [id])
+  quantityCompleted Int
+  secondsPerUnit    Int             // Copied from ProcessConfig at entry time
+  expectedSeconds   Int             // quantityCompleted * secondsPerUnit
+  workerTaskId      String?
+  workerTask        WorkerTask?     @relation(fields: [workerTaskId], references: [id])
+  notes             String?
+  createdAt         DateTime        @default(now())
+
+  @@index([timeEntryId])
+  @@map("time_entry_lines")
 }
 
 // ============================================
