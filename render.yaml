@@ -9,7 +9,7 @@ services:
     name: beast-inventory-system
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build && npm run db:migrate:deploy
+    buildCommand: npm ci && npm run build && npm run db:migrate:deploy
     startCommand: npm run start
     envVars:
       - key: NODE_ENV
@@ -20,3 +20,5 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
+      - key: SKIP_PRISMA_VERSION_CHECK
+        value: "true"
