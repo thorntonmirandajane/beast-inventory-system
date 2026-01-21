@@ -62,27 +62,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Create new PO
   if (intent === "create") {
-    const vendorName = (formData.get("vendorName") as string)?.trim();
     const estimatedArrival = formData.get("estimatedArrival") as string;
     const notes = formData.get("notes") as string;
 
-    // Parse items
-    const items: { skuId: string; quantity: number }[] = [];
-    let i = 0;
-    while (formData.get(`items[${i}][skuId]`)) {
-      const skuId = formData.get(`items[${i}][skuId]`) as string;
-      const quantity = parseInt(formData.get(`items[${i}][quantity]`) as string, 10);
-      if (skuId && quantity > 0) {
-        items.push({ skuId, quantity });
-      }
-      i++;
-    }
+    // Parse items from JSON
+    const itemsJson = formData.get("itemsJson") as string;
+    const items: { skuId: string; quantity: number }[] = itemsJson
+      ? JSON.parse(itemsJson)
+      : [];
 
-    if (!vendorName) {
-      return { error: "VENDOR NAME IS REQUIRED" };
-    }
     if (items.length === 0) {
-      return { error: "AT LEAST ONE ITEM IS REQUIRED" };
+      return { error: "At least one item is required" };
     }
 
     // Generate PO number
@@ -92,9 +82,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const po = await prisma.purchaseOrder.create({
       data: {
         poNumber,
-        vendorName: vendorName.toUpperCase(),
+        vendorName: "SUPPLIER",
         estimatedArrival: estimatedArrival ? new Date(estimatedArrival) : null,
-        notes: notes?.toUpperCase() || null,
+        notes: notes || null,
         createdById: user.id,
         items: {
           create: items.map((item) => ({
@@ -107,13 +97,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     await createAuditLog(user.id, "CREATE_PO", "PurchaseOrder", po.id, {
       poNumber,
-      vendorName,
       itemCount: items.length,
     });
 
     return {
       success: true,
-      message: `PO ${poNumber} CREATED WITH ${items.length} ITEM(S)`,
+      message: `${poNumber} created with ${items.length} item(s)`,
     };
   }
 
@@ -127,7 +116,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!po) {
-      return { error: "PO NOT FOUND" };
+      return { error: "PO not found" };
     }
 
     // Parse received quantities
@@ -180,8 +169,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return {
       success: true,
       message: allReceived
-        ? "ALL ITEMS RECEIVED - READY FOR APPROVAL"
-        : "QUANTITIES UPDATED",
+        ? "All items received - ready for approval"
+        : "Quantities updated",
     };
   }
 
@@ -195,11 +184,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     if (!po) {
-      return { error: "PO NOT FOUND" };
+      return { error: "PO not found" };
     }
 
     if (po.status === "APPROVED") {
-      return { error: "PO ALREADY APPROVED" };
+      return { error: "PO already approved" };
     }
 
     // Add received items to inventory
@@ -225,11 +214,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const totalReceived = po.items.reduce((sum, i) => sum + i.quantityReceived, 0);
     return {
       success: true,
-      message: `PO ${po.poNumber} APPROVED - ${totalReceived} UNITS ADDED TO INVENTORY`,
+      message: `${po.poNumber} approved - ${totalReceived} units added to inventory`,
     };
   }
 
-  return { error: "INVALID ACTION" };
+  return { error: "Invalid action" };
 };
 
 export default function PurchaseOrders() {
@@ -241,14 +230,44 @@ export default function PurchaseOrders() {
 
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [expandedPO, setExpandedPO] = useState<string | null>(null);
+  const [selectedItems, setSelectedItems] = useState<{ skuId: string; sku: string; name: string; quantity: number }[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const tabs = [
-    { id: "all", label: "ALL", count: counts.all },
-    { id: "submitted", label: "SUBMITTED", count: counts.submitted },
-    { id: "partial", label: "PARTIAL", count: counts.partial },
-    { id: "received", label: "RECEIVED", count: counts.received },
-    { id: "approved", label: "APPROVED", count: counts.approved },
+    { id: "all", label: "All", count: counts.all },
+    { id: "submitted", label: "Submitted", count: counts.submitted },
+    { id: "partial", label: "Partial", count: counts.partial },
+    { id: "received", label: "Received", count: counts.received },
+    { id: "approved", label: "Approved", count: counts.approved },
   ];
+
+  // Filter available SKUs based on search
+  const availableSkus = rawSkus.filter((s) => {
+    if (selectedItems.some((si) => si.skuId === s.id)) return false;
+    if (searchTerm) {
+      const search = searchTerm.toLowerCase();
+      return s.sku.toLowerCase().includes(search) || s.name.toLowerCase().includes(search);
+    }
+    return true;
+  });
+
+  const addItem = (sku: typeof rawSkus[0]) => {
+    setSelectedItems([...selectedItems, { skuId: sku.id, sku: sku.sku, name: sku.name, quantity: 1 }]);
+    setSearchTerm("");
+  };
+
+  const updateQuantity = (skuId: string, quantity: number) => {
+    setSelectedItems(selectedItems.map((item) => item.skuId === skuId ? { ...item, quantity: Math.max(1, quantity) } : item));
+  };
+
+  const removeItem = (skuId: string) => {
+    setSelectedItems(selectedItems.filter((item) => item.skuId !== skuId));
+  };
+
+  const resetForm = () => {
+    setSelectedItems([]);
+    setSearchTerm("");
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -271,14 +290,17 @@ export default function PurchaseOrders() {
     <Layout user={user}>
       <div className="page-header flex justify-between items-start">
         <div>
-          <h1 className="page-title">PURCHASE ORDERS</h1>
-          <p className="page-subtitle">MANAGE INCOMING RAW MATERIALS</p>
+          <h1 className="page-title">Purchase Orders</h1>
+          <p className="page-subtitle">Manage incoming raw materials</p>
         </div>
         <button
-          onClick={() => setShowCreateForm(!showCreateForm)}
+          onClick={() => {
+            setShowCreateForm(!showCreateForm);
+            if (showCreateForm) resetForm();
+          }}
           className="btn btn-primary"
         >
-          {showCreateForm ? "CLOSE" : "+ NEW PO"}
+          {showCreateForm ? "Close" : "+ New PO"}
         </button>
       </div>
 
@@ -293,83 +315,100 @@ export default function PurchaseOrders() {
       {showCreateForm && (
         <div className="card mb-6">
           <div className="card-header">
-            <h2 className="card-title">CREATE PURCHASE ORDER</h2>
+            <h2 className="card-title">Create Purchase Order</h2>
           </div>
           <div className="card-body">
-            <Form method="post">
+            <Form method="post" onSubmit={() => resetForm()}>
               <input type="hidden" name="intent" value="create" />
+              <input
+                type="hidden"
+                name="itemsJson"
+                value={JSON.stringify(selectedItems.map((i) => ({ skuId: i.skuId, quantity: i.quantity })))}
+              />
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                 <div className="form-group mb-0">
-                  <label className="form-label">VENDOR NAME *</label>
-                  <input
-                    type="text"
-                    name="vendorName"
-                    className="form-input uppercase"
-                    required
-                    placeholder="VENDOR NAME"
-                  />
+                  <label className="form-label">Estimated Arrival</label>
+                  <input type="date" name="estimatedArrival" className="form-input" />
                 </div>
                 <div className="form-group mb-0">
-                  <label className="form-label">ESTIMATED ARRIVAL</label>
-                  <input
-                    type="date"
-                    name="estimatedArrival"
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group mb-0">
-                  <label className="form-label">NOTES</label>
-                  <input
-                    type="text"
-                    name="notes"
-                    className="form-input uppercase"
-                    placeholder="OPTIONAL"
-                  />
+                  <label className="form-label">Notes</label>
+                  <input type="text" name="notes" className="form-input" placeholder="Optional notes" />
                 </div>
               </div>
 
-              {/* Items Selection */}
-              <div className="mb-4">
-                <label className="form-label">SELECT RAW MATERIALS</label>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-64 overflow-y-auto p-2 border rounded">
-                  {rawSkus.map((sku, index) => (
-                    <div
-                      key={sku.id}
-                      className="flex items-center gap-2 p-2 bg-gray-50 rounded"
-                    >
-                      <input
-                        type="hidden"
-                        name={`items[${index}][skuId]`}
-                        value={sku.id}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-mono text-sm truncate">
-                          {sku.sku.toUpperCase()}
+              {/* Selected Items */}
+              {selectedItems.length > 0 && (
+                <div className="mb-6">
+                  <label className="form-label">Selected Items ({selectedItems.length})</label>
+                  <div className="space-y-2">
+                    {selectedItems.map((item) => (
+                      <div key={item.skuId} className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded">
+                        <div className="flex-1">
+                          <span className="font-mono font-semibold">{item.sku.toUpperCase()}</span>
+                          <span className="mx-2 text-gray-400">—</span>
+                          <span className="text-gray-600">{item.name}</span>
                         </div>
-                        <div className="text-xs text-gray-500 truncate">
-                          {sku.name.toUpperCase()}
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-gray-500">Qty:</span>
+                            <input
+                              type="number"
+                              value={item.quantity}
+                              onChange={(e) => updateQuantity(item.skuId, parseInt(e.target.value, 10))}
+                              className="form-input w-20 text-center"
+                              min="1"
+                            />
+                          </div>
+                          <button type="button" onClick={() => removeItem(item.skuId)} className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded">
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
                         </div>
                       </div>
-                      <input
-                        type="number"
-                        name={`items[${index}][quantity]`}
-                        className="form-input w-20 text-sm"
-                        min="0"
-                        defaultValue="0"
-                        placeholder="QTY"
-                      />
-                    </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Add Items */}
+              <div className="mb-6">
+                <label className="form-label">Add Raw Materials</label>
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="form-input mb-3"
+                  placeholder="Search by SKU or name..."
+                />
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
+                  {availableSkus.map((sku) => (
+                    <button
+                      key={sku.id}
+                      type="button"
+                      onClick={() => addItem(sku)}
+                      className="flex items-center gap-2 p-2 text-left rounded border bg-gray-50 border-gray-200 hover:border-blue-400 transition-colors"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="font-mono text-sm truncate">{sku.sku.toUpperCase()}</div>
+                        <div className="text-xs text-gray-500 truncate">{sku.name}</div>
+                      </div>
+                      <svg className="w-5 h-5 text-green-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                      </svg>
+                    </button>
                   ))}
+                  {availableSkus.length === 0 && (
+                    <div className="col-span-full text-center text-gray-500 py-4">
+                      {searchTerm ? "No materials match your search" : "All materials already added"}
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? "CREATING..." : "CREATE PO"}
+              <button type="submit" className="btn btn-primary" disabled={isSubmitting || selectedItems.length === 0}>
+                {isSubmitting ? "Creating..." : "Create PO"}
               </button>
             </Form>
           </div>
@@ -410,9 +449,9 @@ export default function PurchaseOrders() {
                   d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"
                 />
               </svg>
-              <h3 className="empty-state-title">NO PURCHASE ORDERS</h3>
+              <h3 className="empty-state-title">No purchase orders</h3>
               <p className="empty-state-description">
-                CREATE YOUR FIRST PO USING THE BUTTON ABOVE.
+                Create your first PO using the button above.
               </p>
             </div>
           </div>
@@ -442,7 +481,7 @@ export default function PurchaseOrders() {
                           {po.poNumber}
                         </div>
                         <div className="text-sm text-gray-500">
-                          {po.vendorName.toUpperCase()}
+                          {po.items.length} item{po.items.length !== 1 ? "s" : ""}
                         </div>
                       </div>
                       <span className={`badge ${getStatusColor(po.status)}`}>
@@ -451,7 +490,7 @@ export default function PurchaseOrders() {
                     </div>
                     <div className="flex items-center gap-6 text-sm">
                       <div className="text-right">
-                        <div className="text-gray-500">SUBMITTED</div>
+                        <div className="text-gray-500">Submitted</div>
                         <div>{new Date(po.submittedAt).toLocaleDateString()}</div>
                       </div>
                       {po.estimatedArrival && (
@@ -464,14 +503,14 @@ export default function PurchaseOrders() {
                       )}
                       {po.receivedAt && (
                         <div className="text-right">
-                          <div className="text-gray-500">RECEIVED</div>
+                          <div className="text-gray-500">Received</div>
                           <div>
                             {new Date(po.receivedAt).toLocaleDateString()}
                           </div>
                         </div>
                       )}
                       <div className="text-right">
-                        <div className="text-gray-500">ITEMS</div>
+                        <div className="text-gray-500">Progress</div>
                         <div>
                           {totalReceived}/{totalOrdered}
                         </div>
@@ -501,11 +540,11 @@ export default function PurchaseOrders() {
                         <thead>
                           <tr>
                             <th>SKU</th>
-                            <th>NAME</th>
-                            <th className="text-right">ORDERED</th>
-                            <th className="text-right">RECEIVED</th>
+                            <th>Name</th>
+                            <th className="text-right">Ordered</th>
+                            <th className="text-right">Received</th>
                             {po.status !== "APPROVED" && (
-                              <th className="text-right">RECEIVE QTY</th>
+                              <th className="text-right">Receive Qty</th>
                             )}
                           </tr>
                         </thead>
@@ -515,7 +554,7 @@ export default function PurchaseOrders() {
                               <td className="font-mono text-sm">
                                 {item.sku.sku.toUpperCase()}
                               </td>
-                              <td>{item.sku.name.toUpperCase()}</td>
+                              <td>{item.sku.name}</td>
                               <td className="text-right">{item.quantityOrdered}</td>
                               <td className="text-right">
                                 <span
@@ -573,7 +612,7 @@ export default function PurchaseOrders() {
                               d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
                             />
                           </svg>
-                          VIEW PDF
+                          View PDF
                         </Link>
 
                         {po.status !== "APPROVED" && (
@@ -586,7 +625,7 @@ export default function PurchaseOrders() {
                                 className="btn btn-secondary"
                                 disabled={isSubmitting}
                               >
-                                UPDATE RECEIVED
+                                Update Received
                               </button>
                             </Form>
 
@@ -599,7 +638,7 @@ export default function PurchaseOrders() {
                                   className="btn btn-primary"
                                   disabled={isSubmitting}
                                 >
-                                  APPROVE & ADD TO INVENTORY
+                                  Approve & Add to Inventory
                                 </button>
                               </Form>
                             )}

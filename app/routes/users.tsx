@@ -247,14 +247,14 @@ export default function Users() {
                 <td>{new Date(u.createdAt).toLocaleDateString()}</td>
                 <td>
                   {u.id !== user.id && (
-                    <div className="flex gap-2 flex-wrap">
+                    <div className="space-y-2">
                       {/* Update Role/Status */}
-                      <Form method="post" className="inline">
+                      <Form method="post" className="flex items-center gap-2">
                         <input type="hidden" name="intent" value="update" />
                         <input type="hidden" name="userId" value={u.id} />
                         <select
                           name="role"
-                          className="form-select form-select-sm w-auto"
+                          className="form-select text-sm py-1.5 px-2 w-28"
                           defaultValue={u.role}
                         >
                           {roles.map((role) => (
@@ -265,7 +265,7 @@ export default function Users() {
                         </select>
                         <select
                           name="isActive"
-                          className="form-select form-select-sm w-auto ml-1"
+                          className="form-select text-sm py-1.5 px-2 w-24"
                           defaultValue={u.isActive.toString()}
                         >
                           <option value="true">Active</option>
@@ -273,36 +273,36 @@ export default function Users() {
                         </select>
                         <button
                           type="submit"
-                          className="btn btn-sm btn-secondary ml-1"
+                          className="btn btn-sm btn-secondary"
                           disabled={isSubmitting}
                         >
-                          Update
+                          Save
                         </button>
                       </Form>
 
                       {/* Reset Password */}
-                      <Form method="post" className="inline">
+                      <Form method="post" className="flex items-center gap-2">
                         <input type="hidden" name="intent" value="resetPassword" />
                         <input type="hidden" name="userId" value={u.id} />
                         <input
                           type="password"
                           name="newPassword"
-                          className="form-input form-input-sm w-24"
-                          placeholder="New pwd"
+                          className="form-input text-sm py-1.5 px-2 w-32"
+                          placeholder="New password"
                           minLength={6}
                         />
                         <button
                           type="submit"
-                          className="btn btn-sm btn-ghost ml-1"
+                          className="btn btn-sm btn-ghost text-blue-600"
                           disabled={isSubmitting}
                         >
-                          Reset
+                          Reset Password
                         </button>
                       </Form>
                     </div>
                   )}
                   {u.id === user.id && (
-                    <span className="text-sm text-gray-400">(You)</span>
+                    <span className="text-sm text-gray-400 italic">(Current user)</span>
                   )}
                 </td>
               </tr>

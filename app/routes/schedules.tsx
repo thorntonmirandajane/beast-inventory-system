@@ -129,8 +129,8 @@ export default function Schedules() {
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">WORKER SCHEDULES</h1>
-        <p className="page-subtitle">MANAGE WORKER WEEKLY SCHEDULES</p>
+        <h1 className="page-title">Worker Schedules</h1>
+        <p className="page-subtitle">Manage worker weekly schedules</p>
       </div>
 
       {actionData?.error && (

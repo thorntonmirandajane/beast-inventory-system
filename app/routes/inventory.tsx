@@ -130,10 +130,10 @@ export default function Inventory() {
   };
 
   const tabs = [
-    { id: "all", label: "ALL", count: counts.all },
-    { id: "raw", label: "RAW MATERIALS", count: counts.raw },
-    { id: "assembly", label: "ASSEMBLIES", count: counts.assembly },
-    { id: "completed", label: "COMPLETED", count: counts.completed },
+    { id: "all", label: "All", count: counts.all },
+    { id: "raw", label: "Raw Materials", count: counts.raw },
+    { id: "assembly", label: "Assemblies", count: counts.assembly },
+    { id: "completed", label: "Completed", count: counts.completed },
   ];
 
   const getTypeClass = (type: string) => {
@@ -152,8 +152,8 @@ export default function Inventory() {
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">INVENTORY</h1>
-        <p className="page-subtitle">VIEW CURRENT INVENTORY LEVELS BY SKU</p>
+        <h1 className="page-title">Inventory</h1>
+        <p className="page-subtitle">View current inventory levels by SKU</p>
       </div>
 
       {/* Search */}
@@ -163,15 +163,15 @@ export default function Inventory() {
             type="text"
             name="search"
             defaultValue={search}
-            placeholder="SEARCH BY SKU OR NAME..."
+            placeholder="Search by SKU or name..."
             className="form-input max-w-md uppercase"
           />
           <button type="submit" className="btn btn-secondary">
-            SEARCH
+            Search
           </button>
           {search && (
             <Link to="/inventory" className="btn btn-ghost">
-              CLEAR
+              Clear
             </Link>
           )}
         </div>
@@ -211,11 +211,11 @@ export default function Inventory() {
                   d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"
                 />
               </svg>
-              <h3 className="empty-state-title">NO INVENTORY FOUND</h3>
+              <h3 className="empty-state-title">No inventory found</h3>
               <p className="empty-state-description">
                 {search
-                  ? "TRY A DIFFERENT SEARCH TERM"
-                  : "RECEIVE INVENTORY TO SEE IT HERE"}
+                  ? "Try a different search term"
+                  : "Receive inventory to see it here"}
               </p>
             </div>
           </div>
@@ -242,7 +242,7 @@ export default function Inventory() {
                       {item.sku.toUpperCase()}
                     </Link>
                   </td>
-                  <td className="max-w-xs truncate">{item.name.toUpperCase()}</td>
+                  <td className="max-w-xs truncate">{item.name}</td>
                   <td>
                     <span className={`badge ${getTypeClass(item.type)}`}>
                       {item.type}

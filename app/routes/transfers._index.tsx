@@ -36,11 +36,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 100,
   });
 
-  // Get transferable SKUs (ASSEMBLED or COMPLETED with available inventory)
+  // Get transferable SKUs (ASSEMBLY or COMPLETED with available inventory)
   const transferableSkus = await prisma.sku.findMany({
     where: {
       isActive: true,
-      type: { in: ["ASSEMBLED", "COMPLETED"] },
+      type: { in: ["ASSEMBLY", "COMPLETED"] },
       inventoryItems: {
         some: {
           quantity: { gt: 0 },
