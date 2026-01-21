@@ -1,0 +1,277 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String   // bcrypt hashed
+  firstName String
+  lastName  String
+  role      UserRole @default(WORKER)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  receivingSignOffs ReceivingRecord[] @relation("SignedOffBy")
+  receivingCreated  ReceivingRecord[] @relation("CreatedBy")
+  workOrders        WorkOrder[]
+  transfers         Transfer[]
+  auditLogs         AuditLog[]
+  clockEvents       ClockEvent[]
+
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  WORKER
+}
+
+// ============================================
+// TIME CLOCK
+// ============================================
+
+model ClockEvent {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id])
+  type      ClockEventType
+  timestamp DateTime       @default(now())
+  notes     String?
+
+  @@index([userId, timestamp])
+  @@map("clock_events")
+}
+
+enum ClockEventType {
+  CLOCK_IN
+  CLOCK_OUT
+  BREAK_START
+  BREAK_END
+}
+
+// ============================================
+// SKU & BILL OF MATERIALS
+// ============================================
+
+model Sku {
+  id          String  @id @default(cuid())
+  sku         String  @unique // e.g., "2IN-100G-BEAST"
+  name        String  // e.g., "BROADHEAD- 2.0 IN CUT - 100 GR"
+  type        SkuType
+  description String?
+  isActive    Boolean @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // BOM Relations - what this SKU is made FROM
+  bomComponents BomComponent[] @relation("ParentSku")
+
+  // BOM Relations - what this SKU is used IN
+  usedInBoms BomComponent[] @relation("ComponentSku")
+
+  // Inventory
+  inventoryItems InventoryItem[]
+
+  // Work Orders
+  workOrdersProducing WorkOrder[] @relation("OutputSku")
+
+  // Receiving records
+  receivingRecords ReceivingRecord[]
+
+  // Transfer line items
+  transferItems TransferItem[]
+
+  @@map("skus")
+}
+
+enum SkuType {
+  RAW        // Purchased raw materials
+  ASSEMBLY   // Intermediate assemblies (tipped ferrules, bladed ferrules, broadheads)
+  COMPLETED  // Finished packages ready to ship
+}
+
+// Bill of Materials - defines what components make up a parent SKU
+model BomComponent {
+  id           String @id @default(cuid())
+  parentSkuId  String
+  parentSku    Sku    @relation("ParentSku", fields: [parentSkuId], references: [id])
+  componentSkuId String
+  componentSku Sku    @relation("ComponentSku", fields: [componentSkuId], references: [id])
+  quantity     Int    // How many of this component needed to build 1 parent
+
+  @@unique([parentSkuId, componentSkuId])
+  @@index([parentSkuId])
+  @@index([componentSkuId])
+  @@map("bom_components")
+}
+
+// ============================================
+// INVENTORY
+// ============================================
+
+model InventoryItem {
+  id        String          @id @default(cuid())
+  skuId     String
+  sku       Sku             @relation(fields: [skuId], references: [id])
+  quantity  Int
+  state     InventoryState
+  location  String?         // Optional bin/shelf location
+  notes     String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([skuId, state])
+  @@map("inventory_items")
+}
+
+enum InventoryState {
+  RECEIVED      // Just received, pending sign-off
+  RAW           // Signed off and available for use
+  ASSEMBLED     // Intermediate assembly complete
+  COMPLETED     // Final package complete, ready to ship
+  TRANSFERRED   // Shipped out (historical record)
+}
+
+// ============================================
+// RECEIVING
+// ============================================
+
+model ReceivingRecord {
+  id            String    @id @default(cuid())
+  skuId         String
+  sku           Sku       @relation(fields: [skuId], references: [id])
+  quantity      Int
+  receivedAt    DateTime  @default(now())
+  createdById   String
+  createdBy     User      @relation("CreatedBy", fields: [createdById], references: [id])
+  signedOffById String?
+  signedOffBy   User?     @relation("SignedOffBy", fields: [signedOffById], references: [id])
+  signedOffAt   DateTime?
+  status        ReceivingStatus @default(PENDING)
+  poNumber      String?   // Purchase order reference
+  vendorName    String?
+  notes         String?
+
+  @@index([status])
+  @@index([skuId])
+  @@map("receiving_records")
+}
+
+enum ReceivingStatus {
+  PENDING   // Waiting for sign-off
+  APPROVED  // Signed off, added to inventory
+  REJECTED  // Rejected, not added to inventory
+}
+
+// ============================================
+// WORK ORDERS (BUILDS)
+// ============================================
+
+model WorkOrder {
+  id            String          @id @default(cuid())
+  orderNumber   String          @unique @default(cuid())
+  outputSkuId   String
+  outputSku     Sku             @relation("OutputSku", fields: [outputSkuId], references: [id])
+  quantityToBuild Int
+  quantityBuilt Int             @default(0)
+  status        WorkOrderStatus @default(PENDING)
+  createdById   String
+  createdBy     User            @relation(fields: [createdById], references: [id])
+  createdAt     DateTime        @default(now())
+  startedAt     DateTime?
+  completedAt   DateTime?
+  notes         String?
+
+  // Component consumption records
+  consumptions  WorkOrderConsumption[]
+
+  @@index([status])
+  @@index([outputSkuId])
+  @@map("work_orders")
+}
+
+enum WorkOrderStatus {
+  PENDING      // Created but not started
+  IN_PROGRESS  // Being worked on
+  COMPLETED    // All units built
+  CANCELLED    // Cancelled before completion
+}
+
+// Tracks which components were consumed for a work order
+model WorkOrderConsumption {
+  id          String    @id @default(cuid())
+  workOrderId String
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id])
+  skuId       String    // The component SKU consumed
+  quantity    Int       // How many consumed
+  consumedAt  DateTime  @default(now())
+
+  @@index([workOrderId])
+  @@map("work_order_consumptions")
+}
+
+// ============================================
+// TRANSFERS / SHIPMENTS
+// ============================================
+
+model Transfer {
+  id            String         @id @default(cuid())
+  transferNumber String        @unique @default(cuid())
+  destination   String         // Where it's being shipped
+  shippedAt     DateTime       @default(now())
+  createdById   String
+  createdBy     User           @relation(fields: [createdById], references: [id])
+  trackingNumber String?
+  carrier       String?
+  notes         String?
+
+  items TransferItem[]
+
+  @@index([destination])
+  @@map("transfers")
+}
+
+model TransferItem {
+  id         String   @id @default(cuid())
+  transferId String
+  transfer   Transfer @relation(fields: [transferId], references: [id])
+  skuId      String
+  sku        Sku      @relation(fields: [skuId], references: [id])
+  quantity   Int
+
+  @@index([transferId])
+  @@map("transfer_items")
+}
+
+// ============================================
+// AUDIT LOG
+// ============================================
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
+  action       String   // e.g., "RECEIVE", "BUILD", "TRANSFER", "SIGN_OFF"
+  resourceType String   // e.g., "ReceivingRecord", "WorkOrder", "Transfer"
+  resourceId   String
+  details      Json?    // Additional context
+  createdAt    DateTime @default(now())
+
+  @@index([action])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

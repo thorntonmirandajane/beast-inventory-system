@@ -1,0 +1,27 @@
+.DS_Store
+.env
+.env.local
+.env.production
+/node_modules/
+
+# React Router
+/.react-router/
+/build/
+
+# Prisma
+/generated/prisma
+/prisma/*.db
+/prisma/*.db-journal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+Thumbs.db
