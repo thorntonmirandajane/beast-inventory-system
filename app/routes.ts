@@ -18,5 +18,6 @@ export default [
   route("time-clock", "routes/time-clock.tsx"),
   route("users", "routes/users.tsx"),
   route("schedules", "routes/schedules.tsx"),
+  route("capacity", "routes/capacity.tsx"),
   route("audit-log", "routes/audit-log.tsx"),
 ] satisfies RouteConfig;

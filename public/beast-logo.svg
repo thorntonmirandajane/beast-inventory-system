@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" fill="currentColor">
+  <!-- BEAST text with italic/slanted style -->
+  <g font-family="Arial Black, Helvetica, sans-serif" font-weight="900" font-style="italic">
+    <!-- B -->
+    <path d="M10 10 L10 75 L45 75 C60 75 70 65 70 55 C70 48 65 42 58 40 C63 38 67 32 67 25 C67 15 58 10 45 10 L10 10 Z M25 22 L40 22 C48 22 52 25 52 30 C52 35 48 38 40 38 L25 38 Z M25 50 L42 50 C52 50 55 54 55 58 C55 63 51 65 42 65 L25 65 Z" transform="skewX(-8)"/>
+    <!-- E -->
+    <path d="M80 10 L80 75 L135 75 L135 63 L95 63 L95 48 L130 48 L130 36 L95 36 L95 22 L135 22 L135 10 Z" transform="skewX(-8)"/>
+    <!-- A -->
+    <path d="M140 75 L175 10 L195 10 L230 75 L212 75 L205 60 L165 60 L158 75 Z M170 48 L200 48 L185 20 Z" transform="skewX(-8)"/>
+    <!-- S -->
+    <path d="M235 60 C235 70 248 77 270 77 C295 77 310 68 310 55 C310 43 300 38 275 35 C258 33 255 30 255 26 C255 21 262 18 273 18 C285 18 292 22 293 30 L308 30 C307 16 294 8 273 8 C252 8 240 17 240 28 C240 40 250 45 275 48 C293 50 296 54 296 58 C296 64 288 67 273 67 C258 67 250 63 250 55 L235 55 Z" transform="skewX(-8)"/>
+    <!-- T -->
+    <path d="M315 10 L315 22 L345 22 L345 75 L360 75 L360 22 L390 22 L390 10 Z" transform="skewX(-8)"/>
+  </g>
+  <!-- BROADHEADS subtitle -->
+  <text x="95" y="105" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="500" letter-spacing="8" fill="currentColor">BROADHEADS</text>
+</svg>

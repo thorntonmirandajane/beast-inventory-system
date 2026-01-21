@@ -26,6 +26,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const name = (formData.get("name") as string)?.trim().toUpperCase();
   const type = formData.get("type") as "RAW" | "ASSEMBLY" | "COMPLETED";
   const description = formData.get("description") as string;
+  const category = formData.get("category") as string | null;
+  const material = formData.get("material") as string | null;
 
   if (!sku || !name || !type) {
     return { error: "SKU, NAME, AND TYPE ARE REQUIRED" };
@@ -50,6 +52,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       name,
       type,
       description: description?.toUpperCase() || null,
+      category: category || null,
+      material: material || null,
       bomComponents: {
         create: components.map((c) => ({
           componentSkuId: c.skuId,
@@ -203,6 +207,34 @@ export default function NewSku() {
                   required
                   placeholder="E.G., TITANIUM FERRULE - 100 GRAIN"
                 />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Process Category</label>
+                <select name="category" className="form-select">
+                  <option value="">No category</option>
+                  <option value="TIPPING">Tipping</option>
+                  <option value="BLADING">Blading</option>
+                  <option value="STUD_TESTING">Stud Testing</option>
+                  <option value="COMPLETE_PACKS">Complete Packs</option>
+                </select>
+                <p className="text-sm text-gray-500 mt-1">
+                  Which process step this SKU belongs to
+                </p>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Material Type</label>
+                <select name="material" className="form-select">
+                  <option value="">No material type</option>
+                  <option value="TITANIUM">Titanium</option>
+                  <option value="ALUMINUM">Aluminum</option>
+                  <option value="STEEL">Steel</option>
+                  <option value="STAINLESS">Stainless Steel</option>
+                  <option value="CARBON">Carbon</option>
+                  <option value="OTHER">Other</option>
+                </select>
+                <p className="text-sm text-gray-500 mt-1">
+                  Primary material for this SKU
+                </p>
               </div>
               <div className="form-group md:col-span-2">
                 <label className="form-label">DESCRIPTION</label>

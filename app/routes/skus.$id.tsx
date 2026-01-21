@@ -129,6 +129,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const name = (formData.get("name") as string)?.trim();
     const description = formData.get("description") as string;
     const isActive = formData.get("isActive") === "true";
+    const category = formData.get("category") as string | null;
+    const material = formData.get("material") as string | null;
 
     if (!name) {
       return { error: "Name is required" };
@@ -153,6 +155,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         name,
         description: description || null,
         isActive,
+        category: category || null,
+        material: material || null,
       },
     });
 
@@ -253,6 +257,12 @@ export default function SkuDetail() {
           <div className="flex items-center gap-3 mb-2">
             <h1 className="page-title font-mono">{sku.sku}</h1>
             <span className={`badge ${getTypeColor(sku.type)}`}>{sku.type}</span>
+            {sku.category && (
+              <span className="badge bg-purple-100 text-purple-800">{sku.category.replace("_", " ")}</span>
+            )}
+            {sku.material && (
+              <span className="badge bg-yellow-100 text-yellow-800">{sku.material}</span>
+            )}
             {!sku.isActive && (
               <span className="badge bg-red-100 text-red-800">Inactive</span>
             )}
@@ -555,6 +565,28 @@ export default function SkuDetail() {
                     required
                     defaultValue={sku.name}
                   />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Process Category</label>
+                  <select name="category" className="form-select" defaultValue={sku.category || ""}>
+                    <option value="">No category</option>
+                    <option value="TIPPING">Tipping</option>
+                    <option value="BLADING">Blading</option>
+                    <option value="STUD_TESTING">Stud Testing</option>
+                    <option value="COMPLETE_PACKS">Complete Packs</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Material Type</label>
+                  <select name="material" className="form-select" defaultValue={sku.material || ""}>
+                    <option value="">No material type</option>
+                    <option value="TITANIUM">Titanium</option>
+                    <option value="ALUMINUM">Aluminum</option>
+                    <option value="STEEL">Steel</option>
+                    <option value="STAINLESS">Stainless Steel</option>
+                    <option value="CARBON">Carbon</option>
+                    <option value="OTHER">Other</option>
+                  </select>
                 </div>
                 <div className="form-group md:col-span-2">
                   <label className="form-label">Description</label>

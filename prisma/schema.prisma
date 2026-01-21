@@ -75,6 +75,8 @@ model Sku {
   name        String  // e.g., "BROADHEAD- 2.0 IN CUT - 100 GR"
   type        SkuType
   description String?
+  category    String?  // Process category: TIPPING, BLADING, TESTING, PACKING
+  material    String?  // Material type: TITANIUM, ALUMINUM, STEEL, etc.
   isActive    Boolean @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -329,9 +331,22 @@ model WorkerSchedule {
 }
 
 // ============================================
-// PROCESS TIME TRACKING
+// PROCESS TIME CONFIGURATION
 // ============================================
 
+model ProcessConfig {
+  id            String  @id @default(cuid())
+  processName   String  @unique // "TIPPING", "BLADING", "STUD_TESTING", "COMPLETE_PACKS"
+  displayName   String  // "Tipping", "Blading", "Stud Testing", "Complete Packs"
+  secondsPerUnit Int    // Time in seconds to complete one unit
+  isActive      Boolean @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("process_configs")
+}
+
+// Legacy process times per SKU (can be removed later)
 model ProcessTime {
   id            String  @id @default(cuid())
   skuId         String
