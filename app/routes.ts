@@ -4,6 +4,7 @@ export default [
   index("routes/_index.tsx"),
   route("login", "routes/login.tsx"),
   route("logout", "routes/logout.tsx"),
+  route("po", "routes/po._index.tsx"),
   route("receiving", "routes/receiving._index.tsx"),
   route("inventory", "routes/inventory.tsx"),
   route("skus", "routes/skus._index.tsx"),
@@ -14,5 +15,6 @@ export default [
   route("transfers", "routes/transfers._index.tsx"),
   route("time-clock", "routes/time-clock.tsx"),
   route("users", "routes/users.tsx"),
+  route("schedules", "routes/schedules.tsx"),
   route("audit-log", "routes/audit-log.tsx"),
 ] satisfies RouteConfig;

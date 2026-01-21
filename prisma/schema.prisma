@@ -29,6 +29,9 @@ model User {
   transfers         Transfer[]
   auditLogs         AuditLog[]
   clockEvents       ClockEvent[]
+  purchaseOrdersCreated  PurchaseOrder[] @relation("POCreatedBy")
+  purchaseOrdersApproved PurchaseOrder[] @relation("POApprovedBy")
+  schedules         WorkerSchedule[]
 
   @@map("users")
 }
@@ -94,6 +97,12 @@ model Sku {
   // Transfer line items
   transferItems TransferItem[]
 
+  // Purchase order items
+  poItems POItem[]
+
+  // Process times
+  processTimes ProcessTime[]
+
   @@map("skus")
 }
 
@@ -146,9 +155,54 @@ enum InventoryState {
 }
 
 // ============================================
-// RECEIVING
+// PURCHASE ORDERS
 // ============================================
 
+model PurchaseOrder {
+  id              String    @id @default(cuid())
+  poNumber        String    @unique
+  vendorName      String
+  status          POStatus  @default(SUBMITTED)
+  submittedAt     DateTime  @default(now())
+  estimatedArrival DateTime?
+  receivedAt      DateTime?
+  createdById     String
+  createdBy       User      @relation("POCreatedBy", fields: [createdById], references: [id])
+  approvedById    String?
+  approvedBy      User?     @relation("POApprovedBy", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  notes           String?
+
+  items POItem[]
+
+  @@index([status])
+  @@index([poNumber])
+  @@map("purchase_orders")
+}
+
+model POItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  skuId           String
+  sku             Sku           @relation(fields: [skuId], references: [id])
+  quantityOrdered Int
+  quantityReceived Int          @default(0)
+  notes           String?
+
+  @@index([purchaseOrderId])
+  @@map("po_items")
+}
+
+enum POStatus {
+  SUBMITTED   // PO created, waiting for delivery
+  PARTIAL     // Some items received
+  RECEIVED    // All items received, pending approval
+  APPROVED    // Approved, added to inventory
+  CANCELLED   // PO cancelled
+}
+
+// Legacy receiving records (kept for historical data)
 model ReceivingRecord {
   id            String    @id @default(cuid())
   skuId         String
@@ -254,6 +308,40 @@ model TransferItem {
 
   @@index([transferId])
   @@map("transfer_items")
+}
+
+// ============================================
+// WORKER SCHEDULES
+// ============================================
+
+model WorkerSchedule {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  dayOfWeek Int      // 0=Sunday, 1=Monday, etc.
+  startTime String   // "08:00" format
+  endTime   String   // "17:00" format
+  isActive  Boolean  @default(true)
+
+  @@unique([userId, dayOfWeek])
+  @@index([userId])
+  @@map("worker_schedules")
+}
+
+// ============================================
+// PROCESS TIME TRACKING
+// ============================================
+
+model ProcessTime {
+  id            String  @id @default(cuid())
+  skuId         String
+  sku           Sku     @relation(fields: [skuId], references: [id])
+  processType   String  // "TIPPING", "BLADING", "TESTING", "PACKING"
+  minutesPerUnit Float   // Time in minutes to complete one unit
+
+  @@unique([skuId, processType])
+  @@index([skuId])
+  @@map("process_times")
 }
 
 // ============================================

@@ -68,7 +68,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     totalTransfers: await prisma.transfer.count(),
     todayTransfers: await prisma.transfer.count({
       where: {
-        transferDate: {
+        shippedAt: {
           gte: new Date(new Date().setHours(0, 0, 0, 0)),
         },
       },

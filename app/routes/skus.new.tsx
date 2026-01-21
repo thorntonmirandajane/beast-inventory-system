@@ -1,6 +1,7 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "react-router";
 import { redirect } from "react-router";
+import { useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -22,31 +23,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
 
   const sku = (formData.get("sku") as string)?.trim().toUpperCase();
-  const name = (formData.get("name") as string)?.trim();
+  const name = (formData.get("name") as string)?.trim().toUpperCase();
   const type = formData.get("type") as "RAW" | "ASSEMBLY" | "COMPLETED";
   const description = formData.get("description") as string;
 
   if (!sku || !name || !type) {
-    return { error: "SKU, name, and type are required" };
+    return { error: "SKU, NAME, AND TYPE ARE REQUIRED" };
   }
 
   // Check if SKU already exists
   const existing = await prisma.sku.findUnique({ where: { sku } });
   if (existing) {
-    return { error: `SKU "${sku}" already exists` };
+    return { error: `SKU "${sku}" ALREADY EXISTS` };
   }
 
-  // Parse BOM components
-  const components: { skuId: string; quantity: number }[] = [];
-  let i = 0;
-  while (formData.get(`components[${i}][skuId]`)) {
-    const componentSkuId = formData.get(`components[${i}][skuId]`) as string;
-    const quantity = parseInt(formData.get(`components[${i}][quantity]`) as string, 10);
-    if (componentSkuId && quantity > 0) {
-      components.push({ skuId: componentSkuId, quantity });
-    }
-    i++;
-  }
+  // Parse BOM components from JSON
+  const componentsJson = formData.get("componentsJson") as string;
+  const components: { skuId: string; quantity: number }[] = componentsJson
+    ? JSON.parse(componentsJson)
+    : [];
 
   // Create SKU with BOM
   const newSku = await prisma.sku.create({
@@ -54,7 +49,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       sku,
       name,
       type,
-      description: description || null,
+      description: description?.toUpperCase() || null,
       bomComponents: {
         create: components.map((c) => ({
           componentSkuId: c.skuId,
@@ -74,26 +69,78 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return redirect(`/skus/${newSku.id}`);
 };
 
+interface SelectedComponent {
+  skuId: string;
+  sku: string;
+  name: string;
+  type: string;
+  quantity: number;
+}
+
 export default function NewSku() {
   const { user, allSkus } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
+  const [selectedType, setSelectedType] = useState<string>("");
+  const [selectedComponents, setSelectedComponents] = useState<SelectedComponent[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+
   const rawSkus = allSkus.filter((s) => s.type === "RAW");
   const assemblySkus = allSkus.filter((s) => s.type === "ASSEMBLY");
+
+  // Filter available components based on search
+  const availableComponents = allSkus.filter((s) => {
+    // Don't show completed products as components
+    if (s.type === "COMPLETED") return false;
+    // Don't show already selected
+    if (selectedComponents.some((sc) => sc.skuId === s.id)) return false;
+    // Apply search filter
+    if (searchTerm) {
+      const search = searchTerm.toUpperCase();
+      return s.sku.toUpperCase().includes(search) || s.name.toUpperCase().includes(search);
+    }
+    return true;
+  });
+
+  const addComponent = (sku: typeof allSkus[0]) => {
+    setSelectedComponents([
+      ...selectedComponents,
+      {
+        skuId: sku.id,
+        sku: sku.sku,
+        name: sku.name,
+        type: sku.type,
+        quantity: 1,
+      },
+    ]);
+    setSearchTerm("");
+  };
+
+  const updateQuantity = (skuId: string, quantity: number) => {
+    setSelectedComponents(
+      selectedComponents.map((c) =>
+        c.skuId === skuId ? { ...c, quantity: Math.max(1, quantity) } : c
+      )
+    );
+  };
+
+  const removeComponent = (skuId: string) => {
+    setSelectedComponents(selectedComponents.filter((c) => c.skuId !== skuId));
+  };
 
   return (
     <Layout user={user}>
       <div className="mb-6">
         <Link to="/skus" className="text-sm text-gray-500 hover:text-gray-700">
-          ← Back to SKU Catalog
+          ← BACK TO SKU CATALOG
         </Link>
       </div>
 
       <div className="page-header">
-        <h1 className="page-title">Create New SKU</h1>
-        <p className="page-subtitle">Add a new product or component to the catalog</p>
+        <h1 className="page-title">CREATE NEW SKU</h1>
+        <p className="page-subtitle">ADD A NEW PRODUCT OR COMPONENT TO THE CATALOG</p>
       </div>
 
       {actionData?.error && (
@@ -101,128 +148,245 @@ export default function NewSku() {
       )}
 
       <Form method="post">
+        {/* Hidden field for components */}
+        <input
+          type="hidden"
+          name="componentsJson"
+          value={JSON.stringify(
+            selectedComponents.map((c) => ({ skuId: c.skuId, quantity: c.quantity }))
+          )}
+        />
+
         <div className="card mb-6">
           <div className="card-header">
-            <h2 className="card-title">Basic Information</h2>
+            <h2 className="card-title">BASIC INFORMATION</h2>
           </div>
           <div className="card-body">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="form-group">
-                <label className="form-label">SKU Code *</label>
+                <label className="form-label">SKU CODE *</label>
                 <input
                   type="text"
                   name="sku"
-                  className="form-input font-mono"
+                  className="form-input font-mono uppercase"
                   required
-                  placeholder="e.g., FERRULE-100G"
-                  style={{ textTransform: "uppercase" }}
+                  placeholder="E.G., FERRULE-100G"
                 />
                 <p className="text-sm text-gray-500 mt-1">
-                  Unique identifier for this product
+                  UNIQUE IDENTIFIER FOR THIS PRODUCT
                 </p>
               </div>
               <div className="form-group">
-                <label className="form-label">Type *</label>
-                <select name="type" className="form-select" required>
-                  <option value="">Select type...</option>
-                  <option value="RAW">Raw Material</option>
-                  <option value="ASSEMBLY">Assembly (Intermediate)</option>
-                  <option value="COMPLETED">Completed Product</option>
+                <label className="form-label">TYPE *</label>
+                <select
+                  name="type"
+                  className="form-select"
+                  required
+                  value={selectedType}
+                  onChange={(e) => setSelectedType(e.target.value)}
+                >
+                  <option value="">SELECT TYPE...</option>
+                  <option value="RAW">RAW MATERIAL</option>
+                  <option value="ASSEMBLY">ASSEMBLY (INTERMEDIATE)</option>
+                  <option value="COMPLETED">COMPLETED PRODUCT</option>
                 </select>
                 <p className="text-sm text-gray-500 mt-1">
-                  Raw = purchased, Assembly = built intermediate, Completed = final product
+                  RAW = PURCHASED, ASSEMBLY = BUILT INTERMEDIATE, COMPLETED = FINAL PRODUCT
                 </p>
               </div>
               <div className="form-group md:col-span-2">
-                <label className="form-label">Name *</label>
+                <label className="form-label">NAME *</label>
                 <input
                   type="text"
                   name="name"
-                  className="form-input"
+                  className="form-input uppercase"
                   required
-                  placeholder="e.g., Titanium Ferrule - 100 Grain"
+                  placeholder="E.G., TITANIUM FERRULE - 100 GRAIN"
                 />
               </div>
               <div className="form-group md:col-span-2">
-                <label className="form-label">Description</label>
+                <label className="form-label">DESCRIPTION</label>
                 <textarea
                   name="description"
-                  className="form-textarea"
+                  className="form-textarea uppercase"
                   rows={2}
-                  placeholder="Optional description..."
+                  placeholder="OPTIONAL DESCRIPTION..."
                 />
               </div>
             </div>
           </div>
         </div>
 
-        <div className="card mb-6">
-          <div className="card-header">
-            <h2 className="card-title">Bill of Materials (BOM)</h2>
-            <p className="text-sm text-gray-500">
-              For assemblies and completed products, specify what components are needed to build one unit
-            </p>
-          </div>
-          <div className="card-body">
-            <p className="text-sm text-gray-600 mb-4">
-              Leave empty for raw materials. For assemblies/completed products, add the components required.
-            </p>
-
-            {rawSkus.length > 0 && (
-              <div className="mb-6">
-                <h3 className="font-medium text-gray-700 mb-2">Raw Materials</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {rawSkus.map((s, index) => (
-                    <div key={s.id} className="flex items-center gap-2 p-2 bg-gray-50 rounded">
-                      <input type="hidden" name={`components[${index}][skuId]`} value={s.id} />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-mono text-sm truncate">{s.sku}</div>
-                        <div className="text-xs text-gray-500 truncate">{s.name}</div>
+        {/* BOM Section - only show for non-RAW types */}
+        {selectedType && selectedType !== "RAW" && (
+          <div className="card mb-6">
+            <div className="card-header">
+              <h2 className="card-title">BILL OF MATERIALS (BOM)</h2>
+              <p className="text-sm text-gray-500">
+                SPECIFY WHAT COMPONENTS ARE NEEDED TO BUILD ONE UNIT
+              </p>
+            </div>
+            <div className="card-body">
+              {/* Selected Components */}
+              {selectedComponents.length > 0 && (
+                <div className="mb-6">
+                  <h3 className="font-medium text-gray-700 mb-3">SELECTED COMPONENTS</h3>
+                  <div className="space-y-2">
+                    {selectedComponents.map((comp) => (
+                      <div
+                        key={comp.skuId}
+                        className={`flex items-center justify-between p-3 rounded border ${
+                          comp.type === "RAW"
+                            ? "bg-gray-50 border-gray-200"
+                            : "bg-blue-50 border-blue-200"
+                        }`}
+                      >
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-semibold">
+                              {comp.sku.toUpperCase()}
+                            </span>
+                            <span
+                              className={`badge text-xs ${
+                                comp.type === "RAW"
+                                  ? "bg-gray-200 text-gray-700"
+                                  : "bg-blue-200 text-blue-700"
+                              }`}
+                            >
+                              {comp.type}
+                            </span>
+                          </div>
+                          <div className="text-sm text-gray-500">
+                            {comp.name.toUpperCase()}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-gray-500">QTY:</span>
+                            <input
+                              type="number"
+                              value={comp.quantity}
+                              onChange={(e) =>
+                                updateQuantity(comp.skuId, parseInt(e.target.value, 10))
+                              }
+                              className="form-input w-20 text-center"
+                              min="1"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeComponent(comp.skuId)}
+                            className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                          >
+                            <svg
+                              className="w-5 h-5"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              strokeWidth={1.5}
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M6 18L18 6M6 6l12 12"
+                              />
+                            </svg>
+                          </button>
+                        </div>
                       </div>
-                      <input
-                        type="number"
-                        name={`components[${index}][quantity]`}
-                        className="form-input w-20 text-sm"
-                        min="0"
-                        defaultValue="0"
-                        placeholder="Qty"
-                      />
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {assemblySkus.length > 0 && (
+              {/* Add Components */}
               <div>
-                <h3 className="font-medium text-gray-700 mb-2">Assemblies</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {assemblySkus.map((s, index) => (
-                    <div key={s.id} className="flex items-center gap-2 p-2 bg-blue-50 rounded">
-                      <input
-                        type="hidden"
-                        name={`components[${rawSkus.length + index}][skuId]`}
-                        value={s.id}
-                      />
+                <h3 className="font-medium text-gray-700 mb-3">ADD COMPONENTS</h3>
+
+                {/* Search */}
+                <div className="mb-4">
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="form-input uppercase"
+                    placeholder="SEARCH BY SKU OR NAME..."
+                  />
+                </div>
+
+                {/* Available Components Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-64 overflow-y-auto">
+                  {availableComponents.map((sku) => (
+                    <button
+                      key={sku.id}
+                      type="button"
+                      onClick={() => addComponent(sku)}
+                      className={`flex items-center gap-2 p-2 text-left rounded border hover:border-blue-400 transition-colors ${
+                        sku.type === "RAW"
+                          ? "bg-gray-50 border-gray-200"
+                          : "bg-blue-50 border-blue-200"
+                      }`}
+                    >
                       <div className="flex-1 min-w-0">
-                        <div className="font-mono text-sm truncate">{s.sku}</div>
-                        <div className="text-xs text-gray-500 truncate">{s.name}</div>
+                        <div className="font-mono text-sm truncate">
+                          {sku.sku.toUpperCase()}
+                        </div>
+                        <div className="text-xs text-gray-500 truncate">
+                          {sku.name.toUpperCase()}
+                        </div>
                       </div>
-                      <input
-                        type="number"
-                        name={`components[${rawSkus.length + index}][quantity]`}
-                        className="form-input w-20 text-sm"
-                        min="0"
-                        defaultValue="0"
-                        placeholder="Qty"
-                      />
-                    </div>
+                      <svg
+                        className="w-5 h-5 text-green-500 flex-shrink-0"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        strokeWidth={1.5}
+                        stroke="currentColor"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M12 4.5v15m7.5-7.5h-15"
+                        />
+                      </svg>
+                    </button>
                   ))}
+                  {availableComponents.length === 0 && (
+                    <div className="col-span-full text-center text-gray-500 py-4">
+                      {searchTerm
+                        ? "NO COMPONENTS MATCH YOUR SEARCH"
+                        : "ALL COMPONENTS ALREADY ADDED"}
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
+            </div>
           </div>
-        </div>
+        )}
+
+        {selectedType === "RAW" && (
+          <div className="card mb-6">
+            <div className="card-body">
+              <div className="flex items-center gap-3 text-gray-500">
+                <svg
+                  className="w-6 h-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={1.5}
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z"
+                  />
+                </svg>
+                <span>
+                  RAW MATERIALS DON'T HAVE A BOM - THEY ARE PURCHASED DIRECTLY
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-3">
           <button
@@ -230,10 +394,10 @@ export default function NewSku() {
             className="btn btn-primary"
             disabled={isSubmitting}
           >
-            {isSubmitting ? "Creating..." : "Create SKU"}
+            {isSubmitting ? "CREATING..." : "CREATE SKU"}
           </button>
           <Link to="/skus" className="btn btn-secondary">
-            Cancel
+            CANCEL
           </Link>
         </div>
       </Form>

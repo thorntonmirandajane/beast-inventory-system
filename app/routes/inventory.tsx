@@ -31,6 +31,34 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
+  // Get pending PO items for raw materials
+  const pendingPOItems = await prisma.pOItem.findMany({
+    where: {
+      purchaseOrder: {
+        status: { in: ["SUBMITTED", "PARTIAL"] },
+      },
+    },
+    include: {
+      purchaseOrder: true,
+    },
+  });
+
+  // Build map of pending quantities by SKU
+  const pendingBySkuId: Record<string, { quantity: number; poId: string; poNumber: string }[]> = {};
+  for (const item of pendingPOItems) {
+    const pending = item.quantityOrdered - item.quantityReceived;
+    if (pending > 0) {
+      if (!pendingBySkuId[item.skuId]) {
+        pendingBySkuId[item.skuId] = [];
+      }
+      pendingBySkuId[item.skuId].push({
+        quantity: pending,
+        poId: item.purchaseOrder.id,
+        poNumber: item.purchaseOrder.poNumber,
+      });
+    }
+  }
+
   // Calculate inventory totals for each SKU
   const inventory = skus.map((sku) => {
     const byState: Record<string, number> = {
@@ -56,6 +84,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       available = byState.COMPLETED;
     }
 
+    // Get pending POs for this SKU (only for RAW)
+    const pendingPOs = sku.type === "RAW" ? pendingBySkuId[sku.id] || [] : [];
+    const totalPending = pendingPOs.reduce((sum, p) => sum + p.quantity, 0);
+
     return {
       id: sku.id,
       sku: sku.sku,
@@ -64,6 +96,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       received: byState.RECEIVED,
       available,
       total: Object.values(byState).reduce((a, b) => a + b, 0),
+      pendingPOs,
+      totalPending,
     };
   });
 
@@ -96,10 +130,10 @@ export default function Inventory() {
   };
 
   const tabs = [
-    { id: "all", label: "All", count: counts.all },
-    { id: "raw", label: "Raw Materials", count: counts.raw },
-    { id: "assembly", label: "Assemblies", count: counts.assembly },
-    { id: "completed", label: "Completed", count: counts.completed },
+    { id: "all", label: "ALL", count: counts.all },
+    { id: "raw", label: "RAW MATERIALS", count: counts.raw },
+    { id: "assembly", label: "ASSEMBLIES", count: counts.assembly },
+    { id: "completed", label: "COMPLETED", count: counts.completed },
   ];
 
   const getTypeClass = (type: string) => {
@@ -118,8 +152,8 @@ export default function Inventory() {
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">Inventory</h1>
-        <p className="page-subtitle">View current inventory levels by SKU</p>
+        <h1 className="page-title">INVENTORY</h1>
+        <p className="page-subtitle">VIEW CURRENT INVENTORY LEVELS BY SKU</p>
       </div>
 
       {/* Search */}
@@ -129,15 +163,15 @@ export default function Inventory() {
             type="text"
             name="search"
             defaultValue={search}
-            placeholder="Search by SKU or name..."
-            className="form-input max-w-md"
+            placeholder="SEARCH BY SKU OR NAME..."
+            className="form-input max-w-md uppercase"
           />
           <button type="submit" className="btn btn-secondary">
-            Search
+            SEARCH
           </button>
           {search && (
             <Link to="/inventory" className="btn btn-ghost">
-              Clear
+              CLEAR
             </Link>
           )}
         </div>
@@ -177,11 +211,11 @@ export default function Inventory() {
                   d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"
                 />
               </svg>
-              <h3 className="empty-state-title">No inventory found</h3>
+              <h3 className="empty-state-title">NO INVENTORY FOUND</h3>
               <p className="empty-state-description">
                 {search
-                  ? "Try a different search term"
-                  : "Receive inventory to see it here"}
+                  ? "TRY A DIFFERENT SEARCH TERM"
+                  : "RECEIVE INVENTORY TO SEE IT HERE"}
               </p>
             </div>
           </div>
@@ -190,11 +224,11 @@ export default function Inventory() {
             <thead>
               <tr>
                 <th>SKU</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th className="text-right">Pending</th>
-                <th className="text-right">Available</th>
-                <th className="text-right">Total</th>
+                <th>NAME</th>
+                <th>TYPE</th>
+                <th className="text-right">PENDING POS</th>
+                <th className="text-right">AVAILABLE</th>
+                <th className="text-right">TOTAL</th>
               </tr>
             </thead>
             <tbody>
@@ -205,20 +239,36 @@ export default function Inventory() {
                       to={`/skus/${item.id}`}
                       className="font-mono text-sm text-beast-600 hover:underline"
                     >
-                      {item.sku}
+                      {item.sku.toUpperCase()}
                     </Link>
                   </td>
-                  <td className="max-w-xs truncate">{item.name}</td>
+                  <td className="max-w-xs truncate">{item.name.toUpperCase()}</td>
                   <td>
                     <span className={`badge ${getTypeClass(item.type)}`}>
                       {item.type}
                     </span>
                   </td>
                   <td className="text-right">
-                    {item.received > 0 ? (
-                      <span className="text-yellow-600 font-medium">{item.received}</span>
+                    {item.type === "RAW" ? (
+                      item.totalPending > 0 ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <span className="text-yellow-600 font-medium">
+                            {item.totalPending}
+                          </span>
+                          {item.pendingPOs.length > 0 && (
+                            <Link
+                              to={`/po?status=submitted`}
+                              className="text-xs text-blue-600 hover:underline"
+                            >
+                              ({item.pendingPOs.length} PO{item.pendingPOs.length > 1 ? "S" : ""})
+                            </Link>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">0</span>
+                      )
                     ) : (
-                      <span className="text-gray-400">0</span>
+                      <span className="text-gray-400">N/A</span>
                     )}
                   </td>
                   <td className="text-right font-semibold">
