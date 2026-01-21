@@ -62,10 +62,10 @@ export default function SkusList() {
   const { user, skus, counts, currentType, search } = useLoaderData<typeof loader>();
 
   const tabs = [
-    { id: "all", label: "All", count: counts.all },
-    { id: "raw", label: "Raw Materials", count: counts.raw },
-    { id: "assembly", label: "Assemblies", count: counts.assembly },
-    { id: "completed", label: "Completed", count: counts.completed },
+    { id: "all", label: "ALL", count: counts.all },
+    { id: "raw", label: "RAW MATERIALS", count: counts.raw },
+    { id: "assembly", label: "ASSEMBLIES", count: counts.assembly },
+    { id: "completed", label: "COMPLETED", count: counts.completed },
   ];
 
   const getTypeColor = (type: string) => {
@@ -85,14 +85,19 @@ export default function SkusList() {
     <Layout user={user}>
       <div className="page-header flex justify-between items-start">
         <div>
-          <h1 className="page-title">SKU Catalog</h1>
-          <p className="page-subtitle">Browse all products and components</p>
+          <h1 className="page-title">SKU CATALOG</h1>
+          <p className="page-subtitle">BROWSE ALL PRODUCTS AND COMPONENTS</p>
         </div>
-        {user.role === "ADMIN" && (
-          <Link to="/skus/new" className="btn btn-primary">
-            + Add New SKU
+        <div className="flex gap-3">
+          <Link to="/skus/print" className="btn btn-secondary">
+            PRINT BARCODES
           </Link>
-        )}
+          {user.role === "ADMIN" && (
+            <Link to="/skus/new" className="btn btn-primary">
+              + ADD NEW SKU
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* Search */}
@@ -104,18 +109,18 @@ export default function SkusList() {
               type="text"
               name="search"
               className="form-input flex-1"
-              placeholder="Search by SKU or name..."
+              placeholder="SEARCH BY SKU OR NAME..."
               defaultValue={search}
             />
             <button type="submit" className="btn btn-primary">
-              Search
+              SEARCH
             </button>
             {search && (
               <Link
                 to={`/skus?type=${currentType}`}
                 className="btn btn-secondary"
               >
-                Clear
+                CLEAR
               </Link>
             )}
           </Form>
@@ -156,11 +161,11 @@ export default function SkusList() {
                   d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"
                 />
               </svg>
-              <h3 className="empty-state-title">No SKUs found</h3>
+              <h3 className="empty-state-title">NO SKUS FOUND</h3>
               <p className="empty-state-description">
                 {search
-                  ? "Try a different search term."
-                  : "No SKUs match your filters."}
+                  ? "TRY A DIFFERENT SEARCH TERM."
+                  : "NO SKUS MATCH YOUR FILTERS."}
               </p>
             </div>
           </div>
