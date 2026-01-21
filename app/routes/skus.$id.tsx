@@ -1,6 +1,7 @@
-import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData, Link } from "react-router";
-import { requireUser } from "../utils/auth.server";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
+import { useLoaderData, useActionData, Link, Form, useNavigation } from "react-router";
+import { redirect } from "react-router";
+import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { calculateBuildEligibility } from "../utils/inventory.server";
@@ -76,6 +77,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
   });
 
+  // Get all SKUs for editing BOM
+  const allSkus = await prisma.sku.findMany({
+    where: { isActive: true, id: { not: sku.id } },
+    orderBy: [{ type: "asc" }, { sku: "asc" }],
+  });
+
   return {
     user,
     sku,
@@ -83,7 +90,94 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     inventoryByState,
     recentWorkOrders,
     recentReceiving,
+    allSkus,
   };
+};
+
+export const action = async ({ request, params }: ActionFunctionArgs) => {
+  const user = await requireUser(request);
+  const { id } = params;
+  const formData = await request.formData();
+  const intent = formData.get("intent") as string;
+
+  if (intent === "delete") {
+    // Check if SKU is used anywhere
+    const usedInBom = await prisma.bomComponent.count({ where: { componentSkuId: id } });
+    const hasInventory = await prisma.inventoryItem.count({ where: { skuId: id, quantity: { gt: 0 } } });
+    const hasWorkOrders = await prisma.workOrder.count({ where: { outputSkuId: id } });
+
+    if (usedInBom > 0) {
+      return { error: "Cannot delete: This SKU is used as a component in other products" };
+    }
+    if (hasInventory > 0) {
+      return { error: "Cannot delete: This SKU has inventory" };
+    }
+    if (hasWorkOrders > 0) {
+      return { error: "Cannot delete: This SKU has work orders" };
+    }
+
+    // Delete BOM components first, then the SKU
+    await prisma.bomComponent.deleteMany({ where: { parentSkuId: id } });
+    await prisma.sku.delete({ where: { id } });
+
+    await createAuditLog(user.id, "DELETE_SKU", "Sku", id!, {});
+
+    return redirect("/skus");
+  }
+
+  if (intent === "update") {
+    const name = (formData.get("name") as string)?.trim();
+    const description = formData.get("description") as string;
+    const isActive = formData.get("isActive") === "true";
+
+    if (!name) {
+      return { error: "Name is required" };
+    }
+
+    // Parse BOM components
+    const components: { skuId: string; quantity: number }[] = [];
+    let i = 0;
+    while (formData.get(`components[${i}][skuId]`)) {
+      const componentSkuId = formData.get(`components[${i}][skuId]`) as string;
+      const quantity = parseInt(formData.get(`components[${i}][quantity]`) as string, 10);
+      if (componentSkuId && quantity > 0) {
+        components.push({ skuId: componentSkuId, quantity });
+      }
+      i++;
+    }
+
+    // Update SKU
+    await prisma.sku.update({
+      where: { id },
+      data: {
+        name,
+        description: description || null,
+        isActive,
+      },
+    });
+
+    // Update BOM - delete all and recreate
+    await prisma.bomComponent.deleteMany({ where: { parentSkuId: id } });
+    if (components.length > 0) {
+      await prisma.bomComponent.createMany({
+        data: components.map((c) => ({
+          parentSkuId: id!,
+          componentSkuId: c.skuId,
+          quantity: c.quantity,
+        })),
+      });
+    }
+
+    await createAuditLog(user.id, "UPDATE_SKU", "Sku", id!, {
+      name,
+      isActive,
+      componentCount: components.length,
+    });
+
+    return { success: true, message: "SKU updated successfully" };
+  }
+
+  return { error: "Invalid action" };
 };
 
 export default function SkuDetail() {
@@ -94,7 +188,14 @@ export default function SkuDetail() {
     inventoryByState,
     recentWorkOrders,
     recentReceiving,
+    allSkus,
   } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
+  const navigation = useNavigation();
+  const isSubmitting = navigation.state === "submitting";
+
+  // Build current BOM map for form defaults
+  const currentBom = new Map(sku.bomComponents.map((b) => [b.componentSku.id, b.quantity]));
 
   const getTypeColor = (type: string) => {
     switch (type) {
@@ -135,10 +236,17 @@ export default function SkuDetail() {
     <Layout user={user}>
       {/* Header */}
       <div className="mb-6">
-        <Link to="/inventory" className="text-sm text-gray-500 hover:text-gray-700">
-          ← Back to Inventory
+        <Link to="/skus" className="text-sm text-gray-500 hover:text-gray-700">
+          ← Back to SKU Catalog
         </Link>
       </div>
+
+      {actionData?.error && (
+        <div className="alert alert-error">{actionData.error}</div>
+      )}
+      {actionData?.success && (
+        <div className="alert alert-success">{actionData.message}</div>
+      )}
 
       <div className="page-header flex justify-between items-start">
         <div>
@@ -152,14 +260,16 @@ export default function SkuDetail() {
           <p className="page-subtitle">{sku.name}</p>
         </div>
 
-        {buildEligibility && buildEligibility.maxBuildable > 0 && (
-          <Link
-            to={`/work-orders?sku=${sku.id}`}
-            className="btn btn-primary"
-          >
-            Create Work Order
-          </Link>
-        )}
+        <div className="flex gap-2">
+          {buildEligibility && buildEligibility.maxBuildable > 0 && (
+            <Link
+              to={`/work-orders?sku=${sku.id}`}
+              className="btn btn-primary"
+            >
+              Create Work Order
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* Stats Grid */}
@@ -407,6 +517,135 @@ export default function SkuDetail() {
           </div>
         )}
       </div>
+
+      {/* Edit SKU Form */}
+      {user.role === "ADMIN" && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">Edit SKU</h2>
+          </div>
+          <div className="card-body">
+            <Form method="post">
+              <input type="hidden" name="intent" value="update" />
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div className="form-group">
+                  <label className="form-label">SKU Code</label>
+                  <input
+                    type="text"
+                    className="form-input font-mono bg-gray-100"
+                    value={sku.sku}
+                    disabled
+                  />
+                  <p className="text-sm text-gray-500 mt-1">SKU code cannot be changed</p>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Status</label>
+                  <select name="isActive" className="form-select" defaultValue={sku.isActive.toString()}>
+                    <option value="true">Active</option>
+                    <option value="false">Inactive</option>
+                  </select>
+                </div>
+                <div className="form-group md:col-span-2">
+                  <label className="form-label">Name *</label>
+                  <input
+                    type="text"
+                    name="name"
+                    className="form-input"
+                    required
+                    defaultValue={sku.name}
+                  />
+                </div>
+                <div className="form-group md:col-span-2">
+                  <label className="form-label">Description</label>
+                  <textarea
+                    name="description"
+                    className="form-textarea"
+                    rows={2}
+                    defaultValue={sku.description || ""}
+                  />
+                </div>
+              </div>
+
+              {sku.type !== "RAW" && (
+                <div className="mb-4">
+                  <label className="form-label">Bill of Materials</label>
+                  <p className="text-sm text-gray-500 mb-3">
+                    Set quantity to 0 to remove a component
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-96 overflow-y-auto">
+                    {allSkus.map((s, index) => (
+                      <div
+                        key={s.id}
+                        className={`flex items-center gap-2 p-2 rounded ${
+                          s.type === "RAW" ? "bg-gray-50" : "bg-blue-50"
+                        }`}
+                      >
+                        <input type="hidden" name={`components[${index}][skuId]`} value={s.id} />
+                        <div className="flex-1 min-w-0">
+                          <div className="font-mono text-sm truncate">{s.sku}</div>
+                          <div className="text-xs text-gray-500 truncate">{s.name}</div>
+                        </div>
+                        <input
+                          type="number"
+                          name={`components[${index}][quantity]`}
+                          className="form-input w-20 text-sm"
+                          min="0"
+                          defaultValue={currentBom.get(s.id) || 0}
+                          placeholder="Qty"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </Form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete SKU */}
+      {user.role === "ADMIN" && (
+        <div className="card mt-6 border-red-200">
+          <div className="card-header bg-red-50">
+            <h2 className="card-title text-red-800">Danger Zone</h2>
+          </div>
+          <div className="card-body">
+            <p className="text-sm text-gray-600 mb-4">
+              Deleting a SKU is permanent. You can only delete SKUs that:
+            </p>
+            <ul className="list-disc list-inside text-sm text-gray-600 mb-4">
+              <li>Are not used as a component in other products</li>
+              <li>Have no inventory</li>
+              <li>Have no work orders</li>
+            </ul>
+            <Form method="post" onSubmit={(e) => {
+              if (!confirm(`Are you sure you want to delete ${sku.sku}? This cannot be undone.`)) {
+                e.preventDefault();
+              }
+            }}>
+              <input type="hidden" name="intent" value="delete" />
+              <button
+                type="submit"
+                className="btn bg-red-600 text-white hover:bg-red-700"
+                disabled={isSubmitting}
+              >
+                Delete SKU
+              </button>
+            </Form>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }

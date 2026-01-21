@@ -16,7 +16,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const startDate = new Date(dateFilter);
     const endDate = new Date(dateFilter);
     endDate.setDate(endDate.getDate() + 1);
-    whereClause.transferDate = {
+    whereClause.shippedAt = {
       gte: startDate,
       lt: endDate,
     };
@@ -32,7 +32,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
       createdBy: true,
     },
-    orderBy: { transferDate: "desc" },
+    orderBy: { shippedAt: "desc" },
     take: 100,
   });
 
@@ -131,7 +131,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const transfer = await prisma.transfer.create({
       data: {
         destination,
-        transferDate: transferDate ? new Date(transferDate) : new Date(),
+        shippedAt: transferDate ? new Date(transferDate) : new Date(),
         notes: notes || null,
         createdById: user.id,
         items: {
@@ -409,7 +409,7 @@ export default function Transfers() {
                       </div>
                     </td>
                     <td className="font-semibold">{totalQty}</td>
-                    <td>{new Date(transfer.transferDate).toLocaleDateString()}</td>
+                    <td>{new Date(transfer.shippedAt).toLocaleDateString()}</td>
                     <td>
                       {transfer.createdBy.firstName} {transfer.createdBy.lastName}
                     </td>

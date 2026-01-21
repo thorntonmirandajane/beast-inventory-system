@@ -83,9 +83,16 @@ export default function SkusList() {
 
   return (
     <Layout user={user}>
-      <div className="page-header">
-        <h1 className="page-title">SKU Catalog</h1>
-        <p className="page-subtitle">Browse all products and components</p>
+      <div className="page-header flex justify-between items-start">
+        <div>
+          <h1 className="page-title">SKU Catalog</h1>
+          <p className="page-subtitle">Browse all products and components</p>
+        </div>
+        {user.role === "ADMIN" && (
+          <Link to="/skus/new" className="btn btn-primary">
+            + Add New SKU
+          </Link>
+        )}
       </div>
 
       {/* Search */}
