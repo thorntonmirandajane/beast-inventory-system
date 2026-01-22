@@ -25,4 +25,5 @@ export default [
   route("schedules", "routes/schedules.tsx"),
   route("capacity", "routes/capacity.tsx"),
   route("audit-log", "routes/audit-log.tsx"),
+  route("notifications", "routes/notifications.tsx"),
 ] satisfies RouteConfig;

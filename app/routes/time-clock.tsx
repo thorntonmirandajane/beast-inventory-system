@@ -121,7 +121,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     status: ClockStatus;
   }> = [];
 
-  if (user.role === "ADMIN" || user.role === "SUPERVISOR") {
+  if (user.role === "ADMIN") {
     const allUsers = await prisma.user.findMany({
       where: { isActive: true },
       orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
@@ -181,6 +181,50 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   await createAuditLog(user.id, eventType, "ClockEvent", event.id, {});
+
+  // Check for late clock-in if this is a CLOCK_IN event
+  if (eventType === "CLOCK_IN" && user.role === "WORKER") {
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+
+    // Get worker's schedule for today
+    const schedule = await prisma.workerSchedule.findUnique({
+      where: {
+        userId_dayOfWeek: {
+          userId: user.id,
+          dayOfWeek,
+        },
+      },
+    });
+
+    if (schedule && schedule.isActive) {
+      // Parse scheduled start time
+      const [schedHour, schedMin] = schedule.startTime.split(":").map(Number);
+      const scheduledStart = new Date(now);
+      scheduledStart.setHours(schedHour, schedMin, 0, 0);
+
+      // Calculate minutes late
+      const minutesLate = Math.floor((now.getTime() - scheduledStart.getTime()) / 1000 / 60);
+
+      // If more than 10 minutes late, create notification
+      if (minutesLate > 10) {
+        await prisma.notification.create({
+          data: {
+            type: "LATE_CLOCK_IN",
+            userId: user.id,
+            message: `${user.firstName} ${user.lastName} clocked in ${minutesLate} minutes late (scheduled: ${schedule.startTime}, actual: ${currentTime})`,
+            metadata: JSON.stringify({
+              scheduledTime: schedule.startTime,
+              actualTime: currentTime,
+              minutesLate,
+              clockEventId: event.id,
+            }),
+          },
+        });
+      }
+    }
+  }
 
   const messages: Record<ClockEventType, string> = {
     CLOCK_IN: "Clocked in successfully",

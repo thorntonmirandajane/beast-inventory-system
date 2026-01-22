@@ -44,7 +44,6 @@ model User {
 
 enum UserRole {
   ADMIN
-  MANAGER
   WORKER
 }
 
@@ -73,6 +72,29 @@ enum ClockEventType {
   CLOCK_OUT
   BREAK_START
   BREAK_END
+}
+
+// ============================================
+// NOTIFICATIONS
+// ============================================
+
+model Notification {
+  id        String           @id @default(cuid())
+  type      NotificationType
+  userId    String           // Worker who triggered the notification
+  message   String
+  metadata  String?          // JSON string with additional data
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([isRead, createdAt])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  LATE_CLOCK_IN
+  MISSED_CLOCK_IN
+  MISSED_CLOCK_OUT
 }
 
 // ============================================

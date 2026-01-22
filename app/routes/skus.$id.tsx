@@ -521,7 +521,7 @@ export default function SkuDetail() {
             )}
 
             {/* Set Inventory Form */}
-            {(user.role === "ADMIN" || user.role === "MANAGER") && (
+            {user.role === "ADMIN" && (
               <div className="border-t pt-4">
                 <h3 className="font-semibold mb-3">Set Inventory Level</h3>
                 <p className="text-sm text-gray-500 mb-3">
