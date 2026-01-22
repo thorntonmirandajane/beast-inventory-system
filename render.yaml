@@ -9,7 +9,7 @@ services:
     name: beast-inventory-system
     runtime: node
     plan: free
-    buildCommand: npm ci --include=dev && npm run build && npx prisma migrate deploy
+    buildCommand: npm ci --include=dev && npm run build && npm run db:migrate:deploy
     startCommand: npm run start
     envVars:
       - key: NODE_ENV
