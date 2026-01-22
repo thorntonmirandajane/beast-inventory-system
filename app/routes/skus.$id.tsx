@@ -355,6 +355,79 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { success: true, message: `Inventory for ${state} set to ${quantity}` };
   }
 
+  if (intent === "add-bom-component") {
+    const componentSkuId = formData.get("componentSkuId") as string;
+    const quantity = parseInt(formData.get("quantity") as string, 10);
+
+    if (!componentSkuId || isNaN(quantity) || quantity <= 0) {
+      return { error: "Please select a component and provide a valid quantity" };
+    }
+
+    // Check if already exists
+    const existing = await prisma.bomComponent.findUnique({
+      where: {
+        parentSkuId_componentSkuId: {
+          parentSkuId: id!,
+          componentSkuId,
+        },
+      },
+    });
+
+    if (existing) {
+      return { error: "This component is already in the BOM" };
+    }
+
+    await prisma.bomComponent.create({
+      data: {
+        parentSkuId: id!,
+        componentSkuId,
+        quantity,
+      },
+    });
+
+    await createAuditLog(user.id, "ADD_BOM_COMPONENT", "BomComponent", id!, {
+      componentSkuId,
+      quantity,
+    });
+
+    return { success: true, message: "Component added to BOM" };
+  }
+
+  if (intent === "remove-bom-component") {
+    const bomComponentId = formData.get("bomComponentId") as string;
+
+    await prisma.bomComponent.delete({
+      where: { id: bomComponentId },
+    });
+
+    await createAuditLog(user.id, "REMOVE_BOM_COMPONENT", "BomComponent", id!, {
+      bomComponentId,
+    });
+
+    return { success: true, message: "Component removed from BOM" };
+  }
+
+  if (intent === "update-bom-component") {
+    const bomComponentId = formData.get("bomComponentId") as string;
+    const quantity = parseInt(formData.get("quantity") as string, 10);
+
+    if (isNaN(quantity) || quantity <= 0) {
+      return { error: "Please provide a valid quantity" };
+    }
+
+    await prisma.bomComponent.update({
+      where: { id: bomComponentId },
+      data: { quantity },
+    });
+
+    await createAuditLog(user.id, "UPDATE_BOM_COMPONENT", "BomComponent", id!, {
+      bomComponentId,
+      quantity,
+    });
+
+    return { success: true, message: "Component quantity updated" };
+  }
+
   return { error: "Invalid action" };
 };
 
@@ -556,54 +629,152 @@ export default function SkuDetail() {
         </div>
 
         {/* Bill of Materials */}
-        {sku.bomComponents.length > 0 && (
+        {(sku.type === "ASSEMBLY" || sku.type === "COMPLETED") && (
           <div className="card">
-            <div className="card-header">
-              <h2 className="card-title">Bill of Materials</h2>
+            <div className="card-header flex items-center justify-between">
+              <div>
+                <h2 className="card-title">Bill of Materials</h2>
+                <p className="text-sm text-gray-500">Components needed to build this SKU</p>
+              </div>
             </div>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Component SKU</th>
-                  <th>Name</th>
-                  <th className="text-right">Qty Needed</th>
-                  <th className="text-right">Available</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sku.bomComponents.map((bom) => {
-                  const available = bom.componentSku.inventoryItems.reduce(
-                    (sum, item) => sum + item.quantity,
-                    0
-                  );
-                  return (
-                    <tr key={bom.id}>
-                      <td>
-                        <Link
-                          to={`/skus/${bom.componentSku.id}`}
-                          className="font-mono text-sm text-blue-600 hover:underline"
-                        >
-                          {bom.componentSku.sku}
-                        </Link>
-                      </td>
-                      <td className="max-w-xs truncate text-sm">
-                        {bom.componentSku.name}
-                      </td>
-                      <td className="text-right font-semibold">{bom.quantity}</td>
-                      <td
-                        className={`text-right font-semibold ${
-                          available >= bom.quantity
-                            ? "text-green-600"
-                            : "text-red-600"
-                        }`}
-                      >
-                        {available}
-                      </td>
+            <div className="card-body">
+              {sku.bomComponents.length === 0 ? (
+                <div className="text-center text-gray-500 py-4">
+                  No components added yet
+                </div>
+              ) : (
+                <table className="data-table mb-4">
+                  <thead>
+                    <tr>
+                      <th>Component SKU</th>
+                      <th>Name</th>
+                      <th className="text-right">Qty Needed</th>
+                      <th className="text-right">Available</th>
+                      {user.role === "ADMIN" && <th></th>}
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  </thead>
+                  <tbody>
+                    {sku.bomComponents.map((bom) => {
+                      const available = bom.componentSku.inventoryItems.reduce(
+                        (sum, item) => sum + item.quantity,
+                        0
+                      );
+                      return (
+                        <tr key={bom.id}>
+                          <td>
+                            <Link
+                              to={`/skus/${bom.componentSku.id}`}
+                              className="font-mono text-sm text-blue-600 hover:underline"
+                            >
+                              {bom.componentSku.sku}
+                            </Link>
+                          </td>
+                          <td className="max-w-xs truncate text-sm">
+                            {bom.componentSku.name}
+                          </td>
+                          <td className="text-right font-semibold">{bom.quantity}</td>
+                          <td
+                            className={`text-right font-semibold ${
+                              available >= bom.quantity
+                                ? "text-green-600"
+                                : "text-red-600"
+                            }`}
+                          >
+                            {available}
+                          </td>
+                          {user.role === "ADMIN" && (
+                            <td>
+                              <div className="flex items-center gap-2 justify-end">
+                                <Form method="post" className="inline">
+                                  <input type="hidden" name="intent" value="update-bom-component" />
+                                  <input type="hidden" name="bomComponentId" value={bom.id} />
+                                  <input
+                                    type="number"
+                                    name="quantity"
+                                    className="form-input w-20 text-sm"
+                                    min="1"
+                                    defaultValue={bom.quantity}
+                                    required
+                                  />
+                                  <button
+                                    type="submit"
+                                    className="btn btn-sm btn-secondary ml-2"
+                                    disabled={isSubmitting}
+                                  >
+                                    Update
+                                  </button>
+                                </Form>
+                                <Form method="post" className="inline">
+                                  <input type="hidden" name="intent" value="remove-bom-component" />
+                                  <input type="hidden" name="bomComponentId" value={bom.id} />
+                                  <button
+                                    type="submit"
+                                    className="btn btn-sm btn-danger"
+                                    disabled={isSubmitting}
+                                  >
+                                    Remove
+                                  </button>
+                                </Form>
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+
+              {/* Add component form */}
+              {user.role === "ADMIN" && (
+                <Form method="post" className="border-t pt-4">
+                  <input type="hidden" name="intent" value="add-bom-component" />
+                  <h3 className="font-semibold mb-3">Add Component</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="md:col-span-2">
+                      <label htmlFor="componentSkuId" className="form-label">
+                        Component SKU
+                      </label>
+                      <select
+                        id="componentSkuId"
+                        name="componentSkuId"
+                        className="form-input"
+                        required
+                      >
+                        <option value="">Select component...</option>
+                        {allSkus.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.sku} | {s.name} ({s.type})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="bom-quantity" className="form-label">
+                        Quantity
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          id="bom-quantity"
+                          name="quantity"
+                          className="form-input flex-1"
+                          min="1"
+                          required
+                        />
+                        <button
+                          type="submit"
+                          className="btn btn-primary"
+                          disabled={isSubmitting}
+                        >
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </Form>
+              )}
+            </div>
           </div>
         )}
 
