@@ -310,6 +310,51 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { success: true, message: "Manufacturer updated" };
   }
 
+  if (intent === "set-inventory") {
+    const state = formData.get("state") as string;
+    const quantity = parseInt(formData.get("quantity") as string, 10);
+
+    if (!state || isNaN(quantity) || quantity < 0) {
+      return { error: "Invalid state or quantity" };
+    }
+
+    // Find existing inventory item for this state
+    const existingItem = await prisma.inventoryItem.findFirst({
+      where: { skuId: id, state },
+    });
+
+    if (existingItem) {
+      if (quantity === 0) {
+        // Delete if setting to 0
+        await prisma.inventoryItem.delete({
+          where: { id: existingItem.id },
+        });
+      } else {
+        // Update existing
+        await prisma.inventoryItem.update({
+          where: { id: existingItem.id },
+          data: { quantity },
+        });
+      }
+    } else if (quantity > 0) {
+      // Create new if doesn't exist and quantity > 0
+      await prisma.inventoryItem.create({
+        data: {
+          skuId: id!,
+          state,
+          quantity,
+        },
+      });
+    }
+
+    await createAuditLog(user.id, "SET_INVENTORY", "InventoryItem", id!, {
+      state,
+      quantity,
+    });
+
+    return { success: true, message: `Inventory for ${state} set to ${quantity}` };
+  }
+
   return { error: "Invalid action" };
 };
 
@@ -460,9 +505,9 @@ export default function SkuDetail() {
           </div>
           <div className="card-body">
             {Object.keys(inventoryByState).length === 0 ? (
-              <p className="text-gray-500">No inventory for this SKU</p>
+              <p className="text-gray-500 mb-4">No inventory for this SKU</p>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3 mb-4">
                 {Object.entries(inventoryByState).map(([state, qty]) => (
                   <div
                     key={state}
@@ -472,6 +517,42 @@ export default function SkuDetail() {
                     <span className="font-semibold">{qty}</span>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Set Inventory Form */}
+            {(user.role === "ADMIN" || user.role === "MANAGER") && (
+              <div className="border-t pt-4">
+                <h3 className="font-semibold mb-3">Set Inventory Level</h3>
+                <p className="text-sm text-gray-500 mb-3">
+                  Manually adjust inventory for a specific state. This only affects this SKU.
+                </p>
+                <Form method="post" className="flex gap-3">
+                  <input type="hidden" name="intent" value="set-inventory" />
+                  <div className="form-group mb-0 flex-1">
+                    <select name="state" className="form-select" required>
+                      <option value="">Select State</option>
+                      <option value="RECEIVED">RECEIVED</option>
+                      <option value="RAW">RAW</option>
+                      <option value="ASSEMBLED">ASSEMBLED</option>
+                      <option value="COMPLETED">COMPLETED</option>
+                      <option value="TRANSFERRED">TRANSFERRED</option>
+                    </select>
+                  </div>
+                  <div className="form-group mb-0 flex-1">
+                    <input
+                      type="number"
+                      name="quantity"
+                      className="form-input"
+                      placeholder="Quantity"
+                      min="0"
+                      required
+                    />
+                  </div>
+                  <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+                    Set
+                  </button>
+                </Form>
               </div>
             )}
           </div>
