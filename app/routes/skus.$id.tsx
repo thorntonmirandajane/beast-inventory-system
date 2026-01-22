@@ -569,36 +569,12 @@ export default function SkuDetail() {
               </div>
             )}
 
-            {/* Set Inventory Form */}
+            {/* Note about editing inventory */}
             {user.role === "ADMIN" && (
               <div className="border-t pt-4">
-                <h3 className="font-semibold mb-3">Adjust Inventory</h3>
-                <p className="text-sm text-gray-500 mb-3">
-                  Set the quantity for each inventory state. This only affects this SKU.
+                <p className="text-sm text-gray-500">
+                  To adjust inventory quantities, use the <Link to="/inventory" className="text-blue-600 hover:underline">Inventory page</Link> with inline editing.
                 </p>
-                <div className="space-y-2">
-                  {["RECEIVED", "RAW", "ASSEMBLED", "COMPLETED", "TRANSFERRED"].map((state) => (
-                    <Form key={state} method="post" className="flex items-center gap-3">
-                      <input type="hidden" name="intent" value="set-inventory" />
-                      <input type="hidden" name="state" value={state} />
-                      <div className="flex-1">
-                        <span className={`badge ${getStateColor(state)}`}>{state}</span>
-                      </div>
-                      <input
-                        type="number"
-                        name="quantity"
-                        className="form-input w-32"
-                        placeholder="Qty"
-                        min="0"
-                        defaultValue={inventoryByState[state] || 0}
-                        required
-                      />
-                      <button type="submit" className="btn btn-sm btn-primary" disabled={isSubmitting}>
-                        Update
-                      </button>
-                    </Form>
-                  ))}
-                </div>
               </div>
             )}
           </div>
