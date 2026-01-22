@@ -556,3 +556,83 @@ export async function executeBuild(
 
   return { success: true };
 }
+
+// ============================================
+// AUTO-DEDUCTION (for Spreadsheet UI)
+// ============================================
+
+/**
+ * Automatically deduct raw materials when assembled quantity increases
+ * Called from inventory route when user edits assembled quantity inline
+ */
+export async function autoDeductRawMaterials(
+  assemblySkuId: string,
+  quantityChange: number
+): Promise<{ success: boolean; error?: string; deducted: { sku: string; quantity: number }[] }> {
+  // Only deduct if quantity is increasing
+  if (quantityChange <= 0) {
+    return { success: true, deducted: [] };
+  }
+
+  // Get assembly's BOM components
+  const assembly = await prisma.sku.findUnique({
+    where: { id: assemblySkuId },
+    include: {
+      bomComponents: {
+        include: {
+          componentSku: true,
+        },
+      },
+    },
+  });
+
+  if (!assembly) {
+    return { success: false, error: "Assembly SKU not found" };
+  }
+
+  if (assembly.type !== "ASSEMBLY") {
+    return { success: false, error: "SKU is not an assembly" };
+  }
+
+  if (assembly.bomComponents.length === 0) {
+    return { success: false, error: "Assembly has no BOM components" };
+  }
+
+  const deducted: { sku: string; quantity: number }[] = [];
+  const errors: string[] = [];
+
+  // Deduct each component
+  for (const bomItem of assembly.bomComponents) {
+    const requiredQty = bomItem.quantity * quantityChange;
+
+    // Deduct from RAW state
+    const result = await deductInventory(
+      bomItem.componentSkuId,
+      requiredQty,
+      ["RAW"]
+    );
+
+    if (!result.success) {
+      errors.push(`${bomItem.componentSku.sku}: ${result.error}`);
+    } else {
+      deducted.push({
+        sku: bomItem.componentSku.sku,
+        quantity: requiredQty,
+      });
+    }
+  }
+
+  // If any deduction failed, return error
+  if (errors.length > 0) {
+    return {
+      success: false,
+      error: `Failed to deduct components: ${errors.join("; ")}`,
+      deducted,
+    };
+  }
+
+  return {
+    success: true,
+    deducted,
+  };
+}

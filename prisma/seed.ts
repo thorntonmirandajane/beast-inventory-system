@@ -4,6 +4,80 @@ import bcrypt from "bcryptjs";
 const prisma = new PrismaClient();
 
 // ============================================
+// CATEGORY & MATERIAL INFERENCE
+// ============================================
+
+function inferCategory(sku: string, name: string): string {
+  // Tips and ferrules
+  if (sku.includes("TIP") || sku.includes("TIPPED") || name.includes("Tip")) return "Tips";
+  if (sku.includes("FERRULE")) return "Ferrules";
+
+  // Springs
+  if (sku.includes("SPRING")) return "Springs";
+
+  // Rings and locks
+  if (sku.includes("RING") || sku.includes("LOCK")) return "Rings & Locks";
+
+  // Studs
+  if (sku.includes("STUD")) return "Studs";
+
+  // Blades
+  if (sku.includes("BLADE")) return "Blades";
+
+  // Pins
+  if (sku.includes("PIN")) return "Pins";
+
+  // Packaging
+  if (sku.includes("PACK") || sku.includes("BACKER") || sku.includes("CLAMSHELL")) return "Packaging";
+
+  // Broadheads (assembled products)
+  if (name.includes("BROADHEAD")) return "Broadheads";
+
+  // Accessories
+  if (sku.includes("BEAST-") && (sku.includes("AID") || sku.includes("BAND") || sku.includes("FP") || sku.includes("STICKER") || sku.includes("INSERT"))) {
+    return "Accessories";
+  }
+
+  // Practice tips
+  if (sku.includes("PT-") && name.includes("Practice")) return "Practice Tips";
+
+  return "Other";
+}
+
+function inferMaterial(sku: string, name: string): string {
+  // Titanium
+  if (sku.startsWith("TI-") || name.includes("TITANIUM") || name.includes("Titanium")) return "Titanium";
+
+  // Steel
+  if (sku.startsWith("ST-") || sku.includes("STEEL") || name.includes("STEEL") || name.includes("Steel")) return "Steel";
+
+  // Trump (special aluminum)
+  if (sku.startsWith("TR-") || name.includes("TRUMP")) return "Aluminum (Trump)";
+
+  // Deep6 (special aluminum)
+  if (sku.startsWith("D6-") || name.includes("DEEP6") || name.includes("Deep 6") || name.includes("D6")) return "Aluminum (D6)";
+
+  // Standard aluminum (default for most SKUs that aren't steel or titanium)
+  if (sku.includes("BEAST") || sku.includes("FERRULE") || sku.includes("STUD-")) return "Aluminum";
+
+  // Blades (typically stainless steel)
+  if (sku.includes("BLADE") && !sku.includes("BLADED")) return "Stainless Steel";
+
+  // Springs (stainless steel)
+  if (sku.includes("SPRING")) return "Stainless Steel";
+
+  // Packaging materials
+  if (sku.includes("BACKER") || sku.includes("CLAMSHELL")) return "Cardboard/Plastic";
+
+  // Accessories
+  if (sku.includes("BAND")) return "Elastic";
+  if (sku.includes("STICKER")) return "Vinyl";
+  if (sku.includes("INSERT")) return "Paper/Cardboard";
+
+  return "Mixed/Other";
+}
+
+// ============================================
 // SKU DATA FROM CSV
 // ============================================
 
@@ -572,13 +646,23 @@ async function main() {
   const skuMap = new Map<string, string>(); // sku code -> id
 
   for (const sku of skuData) {
+    const category = inferCategory(sku.sku, sku.name);
+    const material = inferMaterial(sku.sku, sku.name);
+
     const created = await prisma.sku.upsert({
       where: { sku: sku.sku },
-      update: { name: sku.name, type: sku.type },
+      update: {
+        name: sku.name,
+        type: sku.type,
+        category,
+        material,
+      },
       create: {
         sku: sku.sku,
         name: sku.name,
         type: sku.type,
+        category,
+        material,
       },
     });
     skuMap.set(sku.sku, created.id);

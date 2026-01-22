@@ -5,6 +5,7 @@ import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { calculateBuildEligibility } from "../utils/inventory.server";
+import { getUsedInProducts } from "../utils/bom.server";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -25,12 +26,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         },
         orderBy: { componentSku: { sku: "asc" } },
       },
-      usedInBoms: {
-        include: {
-          parentSku: true,
-        },
-        orderBy: { parentSku: { sku: "asc" } },
-      },
       inventoryItems: {
         where: { quantity: { gt: 0 } },
         orderBy: { state: "asc" },
@@ -47,6 +42,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   if (!sku) {
     throw new Response("SKU not found", { status: 404 });
   }
+
+  // Get all products that use this SKU (recursive)
+  const usedInProducts = await getUsedInProducts(id!);
 
   // Calculate build eligibility if this is a buildable SKU
   let buildEligibility = null;
@@ -90,6 +88,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     sku,
     buildEligibility,
     inventoryByState,
+    usedInProducts,
     recentReceiving,
     allSkus,
     allManufacturers,
@@ -422,7 +421,7 @@ export default function SkuDetail() {
     sku,
     buildEligibility,
     inventoryByState,
-    recentWorkOrders,
+    usedInProducts,
     recentReceiving,
     allManufacturers,
     allSkus,
@@ -542,7 +541,7 @@ export default function SkuDetail() {
           <div className="stat-label">Components</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">{sku.usedInBoms.length}</div>
+          <div className="stat-value">{usedInProducts.length}</div>
           <div className="stat-label">Used In</div>
         </div>
       </div>
@@ -893,10 +892,11 @@ export default function SkuDetail() {
         </div>
 
         {/* Used In */}
-        {sku.usedInBoms.length > 0 && (
+        {usedInProducts.length > 0 && (
           <div className="card">
             <div className="card-header">
               <h2 className="card-title">Used In</h2>
+              <p className="text-sm text-gray-500">All products that use this SKU (including indirect)</p>
             </div>
             <table className="data-table">
               <thead>
@@ -908,25 +908,27 @@ export default function SkuDetail() {
                 </tr>
               </thead>
               <tbody>
-                {sku.usedInBoms.map((bom) => (
-                  <tr key={bom.id}>
+                {usedInProducts.map((product) => (
+                  <tr key={product.id}>
                     <td>
                       <Link
-                        to={`/skus/${bom.parentSku.id}`}
+                        to={`/skus/${product.id}`}
                         className="font-mono text-sm text-blue-600 hover:underline"
+                        style={{ paddingLeft: `${product.depth * 20}px` }}
                       >
-                        {bom.parentSku.sku}
+                        {product.depth > 0 && "└─ "}
+                        {product.sku}
                       </Link>
                     </td>
                     <td className="max-w-xs truncate text-sm">
-                      {bom.parentSku.name}
+                      {product.name}
                     </td>
                     <td>
-                      <span className={`badge ${getTypeColor(bom.parentSku.type)}`}>
-                        {bom.parentSku.type}
+                      <span className={`badge ${getTypeColor(product.type)}`}>
+                        {product.type}
                       </span>
                     </td>
-                    <td className="text-right font-semibold">{bom.quantity}</td>
+                    <td className="text-right font-semibold">{product.quantity}</td>
                   </tr>
                 ))}
               </tbody>
