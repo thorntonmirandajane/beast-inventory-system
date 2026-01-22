@@ -1,8 +1,10 @@
-import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData, Link, useSearchParams } from "react-router";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
+import { useLoaderData, Link, useSearchParams, useFetcher } from "react-router";
 import { requireUser } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { autoDeductRawMaterials } from "../utils/inventory.server";
+import { useState } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -131,7 +133,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       sku: sku.sku,
       name: sku.name,
       type: sku.type,
+      category: sku.category,
+      material: sku.material,
+      received: byState.RECEIVED,
       raw: byState.RAW,
+      assembled: byState.ASSEMBLED,
+      completed: byState.COMPLETED,
       inAssembly,
       onOrderPOs,
       totalOnOrder,
