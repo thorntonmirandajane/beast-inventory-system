@@ -18,6 +18,7 @@ model User {
   firstName String
   lastName  String
   role      UserRole @default(WORKER)
+  payRate   Float?   // Hourly pay rate in dollars
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

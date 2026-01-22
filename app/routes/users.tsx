@@ -26,6 +26,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const firstName = formData.get("firstName") as string;
     const lastName = formData.get("lastName") as string;
     const role = formData.get("role") as UserRole;
+    const payRateStr = formData.get("payRate") as string;
 
     if (!email || !password || !firstName || !lastName || !role) {
       return { error: "All fields are required" };
@@ -40,6 +41,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     const hashedPassword = await hashPassword(password);
+    const payRate = payRateStr ? parseFloat(payRateStr) : null;
 
     const newUser = await prisma.user.create({
       data: {
@@ -48,12 +50,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         firstName,
         lastName,
         role,
+        payRate,
       },
     });
 
     await createAuditLog(user.id, "CREATE_USER", "User", newUser.id, {
       email: newUser.email,
       role: newUser.role,
+      payRate,
     });
 
     return { success: true, message: `User ${firstName} ${lastName} created` };
@@ -63,15 +67,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const userId = formData.get("userId") as string;
     const role = formData.get("role") as UserRole;
     const isActive = formData.get("isActive") === "true";
+    const payRateStr = formData.get("payRate") as string;
+    const payRate = payRateStr ? parseFloat(payRateStr) : null;
 
     await prisma.user.update({
       where: { id: userId },
-      data: { role, isActive },
+      data: { role, isActive, payRate },
     });
 
     await createAuditLog(user.id, "UPDATE_USER", "User", userId, {
       role,
       isActive,
+      payRate,
     });
 
     return { success: true, message: "User updated" };
@@ -106,14 +113,12 @@ export default function Users() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
-  const roles: UserRole[] = ["ADMIN", "SUPERVISOR", "WORKER"];
+  const roles: UserRole[] = ["ADMIN", "WORKER"];
 
   const getRoleColor = (role: UserRole) => {
     switch (role) {
       case "ADMIN":
         return "bg-purple-100 text-purple-800";
-      case "SUPERVISOR":
-        return "bg-blue-100 text-blue-800";
       case "WORKER":
         return "bg-gray-100 text-gray-800";
       default:
@@ -143,7 +148,7 @@ export default function Users() {
         <div className="card-body">
           <Form method="post">
             <input type="hidden" name="intent" value="create" />
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               <div className="form-group mb-0">
                 <label className="form-label">First Name *</label>
                 <input
@@ -195,6 +200,17 @@ export default function Users() {
                   ))}
                 </select>
               </div>
+              <div className="form-group mb-0">
+                <label className="form-label">Pay Rate ($/hr)</label>
+                <input
+                  type="number"
+                  name="payRate"
+                  className="form-input"
+                  placeholder="Hourly rate"
+                  step="0.01"
+                  min="0"
+                />
+              </div>
             </div>
             <div className="mt-4">
               <button
@@ -220,6 +236,7 @@ export default function Users() {
               <th>Name</th>
               <th>Email</th>
               <th>Role</th>
+              <th className="text-right">Pay Rate</th>
               <th>Status</th>
               <th>Created</th>
               <th>Actions</th>
@@ -235,6 +252,13 @@ export default function Users() {
                 <td>
                   <span className={`badge ${getRoleColor(u.role)}`}>{u.role}</span>
                 </td>
+                <td className="text-right">
+                  {u.payRate ? (
+                    <span className="font-medium text-green-600">${u.payRate.toFixed(2)}/hr</span>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </td>
                 <td>
                   <span
                     className={`badge ${
@@ -248,7 +272,7 @@ export default function Users() {
                 <td>
                   {u.id !== user.id && (
                     <div className="space-y-2">
-                      {/* Update Role/Status */}
+                      {/* Update Role/Status/Pay Rate */}
                       <Form method="post" className="flex items-center gap-2">
                         <input type="hidden" name="intent" value="update" />
                         <input type="hidden" name="userId" value={u.id} />
@@ -271,6 +295,15 @@ export default function Users() {
                           <option value="true">Active</option>
                           <option value="false">Inactive</option>
                         </select>
+                        <input
+                          type="number"
+                          name="payRate"
+                          className="form-input text-sm py-1.5 px-2 w-24"
+                          placeholder="$/hr"
+                          step="0.01"
+                          min="0"
+                          defaultValue={u.payRate || ""}
+                        />
                         <button
                           type="submit"
                           className="btn btn-sm btn-secondary"
