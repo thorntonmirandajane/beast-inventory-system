@@ -35,6 +35,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         where: { quantity: { gt: 0 } },
         orderBy: { state: "asc" },
       },
+      manufacturers: {
+        include: {
+          manufacturer: true,
+        },
+        orderBy: { isPreferred: "desc" },
+      },
     },
   });
 
@@ -83,6 +89,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
+  // Get all manufacturers
+  const allManufacturers = await prisma.manufacturer.findMany({
+    where: { isActive: true },
+    orderBy: { name: "asc" },
+  });
+
   return {
     user,
     sku,
@@ -91,6 +103,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     recentWorkOrders,
     recentReceiving,
     allSkus,
+    allManufacturers,
   };
 };
 
@@ -181,6 +194,122 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { success: true, message: "SKU updated successfully" };
   }
 
+  if (intent === "add-manufacturer") {
+    const manufacturerName = (formData.get("manufacturerName") as string)?.trim();
+    const existingManufacturerId = formData.get("existingManufacturerId") as string;
+    const cost = formData.get("cost") as string;
+    const leadTimeDays = formData.get("leadTimeDays") as string;
+    const isPreferred = formData.get("isPreferred") === "true";
+    const notes = formData.get("notes") as string;
+
+    let manufacturerId = existingManufacturerId;
+
+    // Create new manufacturer if name provided
+    if (manufacturerName && !existingManufacturerId) {
+      const existing = await prisma.manufacturer.findUnique({
+        where: { name: manufacturerName },
+      });
+
+      if (existing) {
+        manufacturerId = existing.id;
+      } else {
+        const newManufacturer = await prisma.manufacturer.create({
+          data: { name: manufacturerName },
+        });
+        manufacturerId = newManufacturer.id;
+      }
+    }
+
+    if (!manufacturerId) {
+      return { error: "Please select or create a manufacturer" };
+    }
+
+    // Check if already exists
+    const existing = await prisma.skuManufacturer.findUnique({
+      where: {
+        skuId_manufacturerId: {
+          skuId: id!,
+          manufacturerId,
+        },
+      },
+    });
+
+    if (existing) {
+      return { error: "This manufacturer is already added to this SKU" };
+    }
+
+    // If this is set as preferred, unset other preferred
+    if (isPreferred) {
+      await prisma.skuManufacturer.updateMany({
+        where: { skuId: id },
+        data: { isPreferred: false },
+      });
+    }
+
+    await prisma.skuManufacturer.create({
+      data: {
+        skuId: id!,
+        manufacturerId,
+        cost: cost ? parseFloat(cost) : null,
+        leadTimeDays: leadTimeDays ? parseInt(leadTimeDays, 10) : null,
+        isPreferred,
+        notes: notes || null,
+      },
+    });
+
+    await createAuditLog(user.id, "ADD_SKU_MANUFACTURER", "SkuManufacturer", id!, {
+      manufacturerId,
+    });
+
+    return { success: true, message: "Manufacturer added successfully" };
+  }
+
+  if (intent === "remove-manufacturer") {
+    const skuManufacturerId = formData.get("skuManufacturerId") as string;
+
+    await prisma.skuManufacturer.delete({
+      where: { id: skuManufacturerId },
+    });
+
+    await createAuditLog(user.id, "REMOVE_SKU_MANUFACTURER", "SkuManufacturer", id!, {
+      skuManufacturerId,
+    });
+
+    return { success: true, message: "Manufacturer removed" };
+  }
+
+  if (intent === "update-manufacturer") {
+    const skuManufacturerId = formData.get("skuManufacturerId") as string;
+    const cost = formData.get("cost") as string;
+    const leadTimeDays = formData.get("leadTimeDays") as string;
+    const isPreferred = formData.get("isPreferred") === "true";
+    const notes = formData.get("notes") as string;
+
+    // If this is set as preferred, unset other preferred
+    if (isPreferred) {
+      await prisma.skuManufacturer.updateMany({
+        where: { skuId: id, id: { not: skuManufacturerId } },
+        data: { isPreferred: false },
+      });
+    }
+
+    await prisma.skuManufacturer.update({
+      where: { id: skuManufacturerId },
+      data: {
+        cost: cost ? parseFloat(cost) : null,
+        leadTimeDays: leadTimeDays ? parseInt(leadTimeDays, 10) : null,
+        isPreferred,
+        notes: notes || null,
+      },
+    });
+
+    await createAuditLog(user.id, "UPDATE_SKU_MANUFACTURER", "SkuManufacturer", id!, {
+      skuManufacturerId,
+    });
+
+    return { success: true, message: "Manufacturer updated" };
+  }
+
   return { error: "Invalid action" };
 };
 
@@ -192,6 +321,7 @@ export default function SkuDetail() {
     inventoryByState,
     recentWorkOrders,
     recentReceiving,
+    allManufacturers,
     allSkus,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -398,6 +528,143 @@ export default function SkuDetail() {
             </table>
           </div>
         )}
+
+        {/* Manufacturers */}
+        <div className="card">
+          <div className="card-header flex items-center justify-between">
+            <div>
+              <h2 className="card-title">Manufacturers</h2>
+              <p className="text-sm text-gray-500">Suppliers for this SKU with cost and lead time</p>
+            </div>
+          </div>
+          <div className="card-body">
+            {sku.manufacturers.length === 0 ? (
+              <div className="text-center text-gray-500 py-4">
+                No manufacturers added yet
+              </div>
+            ) : (
+              <table className="data-table mb-4">
+                <thead>
+                  <tr>
+                    <th>Manufacturer</th>
+                    <th className="text-right">Cost/Unit</th>
+                    <th className="text-right">Lead Time</th>
+                    <th>Preferred</th>
+                    <th>Notes</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sku.manufacturers.map((sm) => (
+                    <tr key={sm.id}>
+                      <td className="font-semibold">{sm.manufacturer.name}</td>
+                      <td className="text-right">
+                        {sm.cost ? `$${sm.cost.toFixed(2)}` : "—"}
+                      </td>
+                      <td className="text-right">
+                        {sm.leadTimeDays ? `${sm.leadTimeDays} days` : "—"}
+                      </td>
+                      <td>
+                        {sm.isPreferred && (
+                          <span className="badge bg-green-100 text-green-700">
+                            Preferred
+                          </span>
+                        )}
+                      </td>
+                      <td className="text-sm text-gray-500 max-w-xs truncate">
+                        {sm.notes || "—"}
+                      </td>
+                      <td>
+                        <Form method="post">
+                          <input type="hidden" name="intent" value="remove-manufacturer" />
+                          <input type="hidden" name="skuManufacturerId" value={sm.id} />
+                          <button
+                            type="submit"
+                            className="text-red-600 hover:text-red-800 text-sm"
+                          >
+                            Remove
+                          </button>
+                        </Form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {/* Add Manufacturer Form */}
+            <div className="border-t pt-4">
+              <h3 className="font-semibold mb-3">Add Manufacturer</h3>
+              <Form method="post" className="space-y-3">
+                <input type="hidden" name="intent" value="add-manufacturer" />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="form-group">
+                    <label className="form-label">Select Existing</label>
+                    <select name="existingManufacturerId" className="form-select">
+                      <option value="">— Or create new below —</option>
+                      {allManufacturers.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Or Create New</label>
+                    <input
+                      type="text"
+                      name="manufacturerName"
+                      className="form-input"
+                      placeholder="New manufacturer name"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Cost Per Unit ($)</label>
+                    <input
+                      type="number"
+                      name="cost"
+                      step="0.01"
+                      className="form-input"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Lead Time (days)</label>
+                    <input
+                      type="number"
+                      name="leadTimeDays"
+                      className="form-input"
+                      placeholder="30"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Notes</label>
+                    <input
+                      type="text"
+                      name="notes"
+                      className="form-input"
+                      placeholder="Optional notes"
+                    />
+                  </div>
+                  <div className="form-group flex items-center">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        name="isPreferred"
+                        value="true"
+                        className="form-checkbox"
+                      />
+                      <span>Mark as Preferred</span>
+                    </label>
+                  </div>
+                </div>
+                <button type="submit" className="btn btn-primary">
+                  Add Manufacturer
+                </button>
+              </Form>
+            </div>
+          </div>
+        </div>
 
         {/* Used In */}
         {sku.usedInBoms.length > 0 && (

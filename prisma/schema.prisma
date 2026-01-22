@@ -119,6 +119,9 @@ model Sku {
   workerTasks     WorkerTask[]    @relation("TaskSku")
   timeEntryLines  TimeEntryLine[] @relation("TimeEntryLineSku")
 
+  // Manufacturer relations
+  manufacturers   SkuManufacturer[]
+
   @@map("skus")
 }
 
@@ -202,6 +205,8 @@ model POItem {
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
   skuId           String
   sku             Sku           @relation(fields: [skuId], references: [id])
+  manufacturerId  String?
+  manufacturer    Manufacturer? @relation(fields: [manufacturerId], references: [id])
   quantityOrdered Int
   quantityReceived Int          @default(0)
   notes           String?
@@ -371,6 +376,43 @@ model ProcessTime {
   @@unique([skuId, processType])
   @@index([skuId])
   @@map("process_times")
+}
+
+// ============================================
+// MANUFACTURERS
+// ============================================
+
+model Manufacturer {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  skuManufacturers SkuManufacturer[]
+  poItems          POItem[]
+
+  @@map("manufacturers")
+}
+
+model SkuManufacturer {
+  id             String       @id @default(cuid())
+  skuId          String
+  sku            Sku          @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  manufacturerId String
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id])
+  cost           Float?       // Cost per unit from this manufacturer
+  leadTimeDays   Int?         // Lead time in days
+  isPreferred    Boolean      @default(false)
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([skuId, manufacturerId])
+  @@index([skuId])
+  @@index([manufacturerId])
+  @@map("sku_manufacturers")
 }
 
 // ============================================

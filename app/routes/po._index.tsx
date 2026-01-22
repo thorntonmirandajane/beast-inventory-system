@@ -29,6 +29,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       items: {
         include: {
           sku: true,
+          manufacturer: true,
         },
       },
       createdBy: true,
@@ -41,6 +42,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Get raw material SKUs for creating new POs
   const rawSkus = await prisma.sku.findMany({
     where: { isActive: true, type: "RAW" },
+    include: {
+      manufacturers: {
+        include: {
+          manufacturer: true,
+        },
+        orderBy: { isPreferred: "desc" },
+      },
+    },
     orderBy: { sku: "asc" },
   });
 
@@ -67,7 +76,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // Parse items from JSON
     const itemsJson = formData.get("itemsJson") as string;
-    const items: { skuId: string; quantity: number }[] = itemsJson
+    const items: { skuId: string; quantity: number; manufacturerId?: string | null }[] = itemsJson
       ? JSON.parse(itemsJson)
       : [];
 
@@ -90,6 +99,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           create: items.map((item) => ({
             skuId: item.skuId,
             quantityOrdered: item.quantity,
+            manufacturerId: item.manufacturerId || null,
           })),
         },
       },
@@ -230,7 +240,13 @@ export default function PurchaseOrders() {
 
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [expandedPO, setExpandedPO] = useState<string | null>(null);
-  const [selectedItems, setSelectedItems] = useState<{ skuId: string; sku: string; name: string; quantity: number }[]>([]);
+  const [selectedItems, setSelectedItems] = useState<{
+    skuId: string;
+    sku: string;
+    name: string;
+    quantity: number;
+    manufacturerId?: string | null;
+  }[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
 
   const tabs = [
@@ -252,12 +268,26 @@ export default function PurchaseOrders() {
   });
 
   const addItem = (sku: typeof rawSkus[0]) => {
-    setSelectedItems([...selectedItems, { skuId: sku.id, sku: sku.sku, name: sku.name, quantity: 1 }]);
+    // Default to preferred manufacturer if available
+    const preferredManuf = sku.manufacturers.find((m) => m.isPreferred);
+    const defaultManufId = preferredManuf?.manufacturerId || sku.manufacturers[0]?.manufacturerId || null;
+
+    setSelectedItems([...selectedItems, {
+      skuId: sku.id,
+      sku: sku.sku,
+      name: sku.name,
+      quantity: 1,
+      manufacturerId: defaultManufId,
+    }]);
     setSearchTerm("");
   };
 
   const updateQuantity = (skuId: string, quantity: number) => {
     setSelectedItems(selectedItems.map((item) => item.skuId === skuId ? { ...item, quantity: Math.max(1, quantity) } : item));
+  };
+
+  const updateManufacturer = (skuId: string, manufacturerId: string | null) => {
+    setSelectedItems(selectedItems.map((item) => item.skuId === skuId ? { ...item, manufacturerId } : item));
   };
 
   const removeItem = (skuId: string) => {
@@ -323,7 +353,11 @@ export default function PurchaseOrders() {
               <input
                 type="hidden"
                 name="itemsJson"
-                value={JSON.stringify(selectedItems.map((i) => ({ skuId: i.skuId, quantity: i.quantity })))}
+                value={JSON.stringify(selectedItems.map((i) => ({
+                  skuId: i.skuId,
+                  quantity: i.quantity,
+                  manufacturerId: i.manufacturerId,
+                })))}
               />
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
@@ -342,32 +376,56 @@ export default function PurchaseOrders() {
                 <div className="mb-6">
                   <label className="form-label">Selected Items ({selectedItems.length})</label>
                   <div className="space-y-2">
-                    {selectedItems.map((item) => (
-                      <div key={item.skuId} className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded">
-                        <div className="flex-1">
-                          <span className="font-mono font-semibold">{item.sku.toUpperCase()}</span>
-                          <span className="mx-2 text-gray-400">—</span>
-                          <span className="text-gray-600">{item.name}</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm text-gray-500">Qty:</span>
-                            <input
-                              type="number"
-                              value={item.quantity}
-                              onChange={(e) => updateQuantity(item.skuId, parseInt(e.target.value, 10))}
-                              className="form-input w-20 text-center"
-                              min="1"
-                            />
+                    {selectedItems.map((item) => {
+                      const skuData = rawSkus.find((s) => s.id === item.skuId);
+                      const manufacturers = skuData?.manufacturers || [];
+
+                      return (
+                        <div key={item.skuId} className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded gap-3">
+                          <div className="flex-1 min-w-0">
+                            <span className="font-mono font-semibold">{item.sku.toUpperCase()}</span>
+                            <span className="mx-2 text-gray-400">—</span>
+                            <span className="text-gray-600">{item.name}</span>
                           </div>
-                          <button type="button" onClick={() => removeItem(item.skuId)} className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded">
-                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
+                          <div className="flex items-center gap-3">
+                            {manufacturers.length > 0 && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm text-gray-500">From:</span>
+                                <select
+                                  value={item.manufacturerId || ""}
+                                  onChange={(e) => updateManufacturer(item.skuId, e.target.value || null)}
+                                  className="form-select text-sm"
+                                >
+                                  <option value="">— Select —</option>
+                                  {manufacturers.map((m) => (
+                                    <option key={m.id} value={m.manufacturerId}>
+                                      {m.manufacturer.name}
+                                      {m.isPreferred ? " (Preferred)" : ""}
+                                      {m.cost ? ` - $${m.cost.toFixed(2)}` : ""}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm text-gray-500">Qty:</span>
+                              <input
+                                type="number"
+                                value={item.quantity}
+                                onChange={(e) => updateQuantity(item.skuId, parseInt(e.target.value, 10))}
+                                className="form-input w-20 text-center"
+                                min="1"
+                              />
+                            </div>
+                            <button type="button" onClick={() => removeItem(item.skuId)} className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded">
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
