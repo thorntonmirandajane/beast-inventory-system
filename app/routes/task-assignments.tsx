@@ -29,10 +29,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
-  // Get existing pending/in-progress tasks grouped by worker
+  // Get existing pending tasks grouped by worker
   const existingTasks = await prisma.workerTask.findMany({
     where: {
-      status: { in: ["PENDING", "IN_PROGRESS"] },
+      status: "PENDING",
     },
     include: {
       user: {
@@ -349,11 +349,6 @@ export default function TaskAssignments() {
                                     }`}
                                   >
                                     {task.priority >= 2 ? "URGENT" : "HIGH"}
-                                  </span>
-                                )}
-                                {task.status === "IN_PROGRESS" && (
-                                  <span className="badge text-xs bg-green-200 text-green-700">
-                                    IN PROGRESS
                                   </span>
                                 )}
                               </div>

@@ -239,17 +239,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message: "Task added to your backlog" };
   }
 
-  if (intent === "start-task") {
-    const taskId = formData.get("taskId") as string;
-
-    await prisma.workerTask.update({
-      where: { id: taskId },
-      data: { status: "IN_PROGRESS" },
-    });
-
-    return { success: true };
-  }
-
   return { error: "Invalid action" };
 };
 
@@ -438,11 +427,7 @@ export default function WorkerDashboard() {
                 {dailyTasks.map((task) => (
                   <div
                     key={task.id}
-                    className={`p-3 rounded border ${
-                      task.status === "IN_PROGRESS"
-                        ? "bg-green-50 border-green-200"
-                        : "bg-blue-50 border-blue-200"
-                    }`}
+                    className="p-3 rounded border bg-blue-50 border-blue-200"
                   >
                     <div className="flex items-center justify-between">
                       <div>
@@ -463,11 +448,6 @@ export default function WorkerDashboard() {
                               {task.priority >= 2 ? "URGENT" : "HIGH"}
                             </span>
                           )}
-                          {task.status === "IN_PROGRESS" && (
-                            <span className="badge text-xs bg-green-200 text-green-700">
-                              IN PROGRESS
-                            </span>
-                          )}
                         </div>
                         {task.sku && (
                           <div className="text-sm text-gray-600 font-mono">
@@ -485,19 +465,6 @@ export default function WorkerDashboard() {
                           </div>
                         )}
                       </div>
-                      {task.status === "PENDING" && (
-                        <Form method="post">
-                          <input type="hidden" name="intent" value="start-task" />
-                          <input type="hidden" name="taskId" value={task.id} />
-                          <button
-                            type="submit"
-                            className="btn btn-sm btn-primary"
-                            disabled={isSubmitting}
-                          >
-                            Start
-                          </button>
-                        </Form>
-                      )}
                     </div>
                   </div>
                 ))}
@@ -566,11 +533,7 @@ export default function WorkerDashboard() {
                 {backlogTasks.map((task) => (
                   <div
                     key={task.id}
-                    className={`p-2 rounded border ${
-                      task.status === "IN_PROGRESS"
-                        ? "bg-green-50 border-green-200"
-                        : "bg-gray-50 border-gray-200"
-                    }`}
+                    className="p-2 rounded border bg-gray-50 border-gray-200"
                   >
                     <div className="flex items-center justify-between">
                       <div>
@@ -579,28 +542,10 @@ export default function WorkerDashboard() {
                             (p) => p.processName === task.processName
                           )?.displayName || task.processName}
                         </span>
-                        {task.status === "IN_PROGRESS" && (
-                          <span className="badge text-xs bg-green-200 text-green-700 ml-2">
-                            IN PROGRESS
-                          </span>
-                        )}
                         {task.notes && (
                           <div className="text-xs text-gray-500">{task.notes}</div>
                         )}
                       </div>
-                      {task.status === "PENDING" && (
-                        <Form method="post">
-                          <input type="hidden" name="intent" value="start-task" />
-                          <input type="hidden" name="taskId" value={task.id} />
-                          <button
-                            type="submit"
-                            className="btn btn-xs btn-secondary"
-                            disabled={isSubmitting}
-                          >
-                            Start
-                          </button>
-                        </Form>
-                      )}
                     </div>
                   </div>
                 ))}

@@ -248,13 +248,6 @@ export default function TimeEntryApprovals() {
     return `${h}h ${m}m`;
   };
 
-  const getEfficiencyColor = (efficiency: number | null) => {
-    if (!efficiency) return "text-gray-600 bg-gray-100";
-    if (efficiency >= 100) return "text-green-600 bg-green-100";
-    if (efficiency >= 80) return "text-yellow-600 bg-yellow-100";
-    return "text-red-600 bg-red-100";
-  };
-
   const getProcessDisplay = (processName: string) => {
     return (
       processConfigs.find((p) => p.processName === processName)?.displayName ||
@@ -319,13 +312,6 @@ export default function TimeEntryApprovals() {
                     <div className="flex items-center gap-3">
                       <span className="font-semibold text-lg">
                         {entry.user.firstName} {entry.user.lastName}
-                      </span>
-                      <span
-                        className={`badge font-semibold ${getEfficiencyColor(
-                          entry.efficiency
-                        )}`}
-                      >
-                        {entry.efficiency?.toFixed(0) || 0}% Efficiency
                       </span>
                     </div>
                     <div className="text-sm text-gray-500">
@@ -607,7 +593,6 @@ export default function TimeEntryApprovals() {
                 <th>Worker</th>
                 <th>Date</th>
                 <th>Hours</th>
-                <th>Efficiency</th>
                 <th>Status</th>
                 <th>Processed By</th>
               </tr>
@@ -620,13 +605,6 @@ export default function TimeEntryApprovals() {
                   </td>
                   <td>{formatDate(entry.clockInTime)}</td>
                   <td>{formatMinutes(entry.actualMinutes || 0)}</td>
-                  <td>
-                    <span
-                      className={`badge ${getEfficiencyColor(entry.efficiency)}`}
-                    >
-                      {entry.efficiency?.toFixed(0) || 0}%
-                    </span>
-                  </td>
                   <td>
                     <span
                       className={`badge ${

@@ -95,11 +95,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  // Get worker's tasks that were in progress during this shift
+  // Get worker's pending tasks during this shift
   const activeTasks = await prisma.workerTask.findMany({
     where: {
       userId: user.id,
-      status: { in: ["PENDING", "IN_PROGRESS"] },
+      status: "PENDING",
     },
     include: {
       sku: true,
@@ -391,11 +391,7 @@ export default function ClockOutEntry() {
                 {activeTasks.map((task) => (
                   <div
                     key={task.id}
-                    className={`p-2 rounded border ${
-                      task.status === "IN_PROGRESS"
-                        ? "bg-green-50 border-green-200"
-                        : "bg-gray-50 border-gray-200"
-                    }`}
+                    className="p-2 rounded border bg-gray-50 border-gray-200"
                   >
                     <div className="flex items-center gap-2">
                       <span className="font-medium">
@@ -411,11 +407,6 @@ export default function ClockOutEntry() {
                       {task.targetQuantity && (
                         <span className="text-sm text-gray-500">
                           Target: {task.targetQuantity}
-                        </span>
-                      )}
-                      {task.status === "IN_PROGRESS" && (
-                        <span className="badge text-xs bg-green-200 text-green-700">
-                          IN PROGRESS
                         </span>
                       )}
                     </div>
