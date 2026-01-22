@@ -4,13 +4,15 @@ import { requireUser } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { autoDeductRawMaterials } from "../utils/inventory.server";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
   const url = new URL(request.url);
   const typeFilter = url.searchParams.get("type") || "all";
   const search = url.searchParams.get("search") || "";
+  const sortBy = url.searchParams.get("sortBy") || "sku";
+  const sortDir = url.searchParams.get("sortDir") || "asc";
 
   // Build where clause
   const whereClause: any = { isActive: true };
@@ -45,7 +47,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  // Build map of on-order quantities by SKU (renamed from pending)
+  // Build map of on-order quantities by SKU
   const onOrderBySkuId: Record<string, { quantity: number; poId: string; poNumber: string }[]> = {};
   for (const item of pendingPOItems) {
     const pending = item.quantityOrdered - item.quantityReceived;
@@ -97,7 +99,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   // Calculate inventory totals for each SKU
-  const inventory = skus.map((sku) => {
+  let inventory = skus.map((sku) => {
     const byState: Record<string, number> = {
       RECEIVED: 0,
       RAW: 0,
@@ -109,16 +111,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       if (byState[item.state] !== undefined) {
         byState[item.state] += item.quantity;
       }
-    }
-
-    // Determine "available" based on type
-    let available = 0;
-    if (sku.type === "RAW") {
-      available = byState.RAW;
-    } else if (sku.type === "ASSEMBLY") {
-      available = byState.ASSEMBLED;
-    } else {
-      available = byState.COMPLETED;
     }
 
     // Get on-order POs for this SKU (only for RAW materials)
@@ -135,7 +127,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       type: sku.type,
       category: sku.category,
       material: sku.material,
-      received: byState.RECEIVED,
       raw: byState.RAW,
       assembled: byState.ASSEMBLED,
       completed: byState.COMPLETED,
@@ -143,6 +134,62 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       onOrderPOs,
       totalOnOrder,
     };
+  });
+
+  // Apply sorting
+  inventory.sort((a, b) => {
+    let aVal: any, bVal: any;
+    switch (sortBy) {
+      case "sku":
+        aVal = a.sku;
+        bVal = b.sku;
+        break;
+      case "name":
+        aVal = a.name;
+        bVal = b.name;
+        break;
+      case "type":
+        aVal = a.type;
+        bVal = b.type;
+        break;
+      case "category":
+        aVal = a.category || "";
+        bVal = b.category || "";
+        break;
+      case "material":
+        aVal = a.material || "";
+        bVal = b.material || "";
+        break;
+      case "raw":
+        aVal = a.raw;
+        bVal = b.raw;
+        break;
+      case "inAssembly":
+        aVal = a.inAssembly;
+        bVal = b.inAssembly;
+        break;
+      case "assembled":
+        aVal = a.assembled;
+        bVal = b.assembled;
+        break;
+      case "completed":
+        aVal = a.completed;
+        bVal = b.completed;
+        break;
+      case "onOrder":
+        aVal = a.totalOnOrder;
+        bVal = b.totalOnOrder;
+        break;
+      default:
+        aVal = a.sku;
+        bVal = b.sku;
+    }
+
+    if (typeof aVal === "string" && typeof bVal === "string") {
+      return sortDir === "asc" ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+    } else {
+      return sortDir === "asc" ? aVal - bVal : bVal - aVal;
+    }
   });
 
   // Get counts by type
@@ -153,7 +200,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     completed: await prisma.sku.count({ where: { isActive: true, type: "COMPLETED" } }),
   };
 
-  return { user, inventory, counts, typeFilter, search };
+  return { user, inventory, counts, typeFilter, search, sortBy, sortDir };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -223,15 +270,64 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message: `Updated to ${newQuantity}` };
   }
 
+  if (intent === "batch-update") {
+    const updates = JSON.parse(formData.get("updates") as string);
+
+    for (const update of updates) {
+      const { skuId, state, quantity } = update;
+
+      // Get current quantity
+      const existingItem = await prisma.inventoryItem.findFirst({
+        where: { skuId, state },
+      });
+
+      const oldQuantity = existingItem?.quantity || 0;
+      const quantityChange = quantity - oldQuantity;
+
+      // Update or create inventory item
+      if (existingItem) {
+        if (quantity === 0) {
+          await prisma.inventoryItem.delete({ where: { id: existingItem.id } });
+        } else {
+          await prisma.inventoryItem.update({
+            where: { id: existingItem.id },
+            data: { quantity },
+          });
+        }
+      } else if (quantity > 0) {
+        await prisma.inventoryItem.create({
+          data: { skuId, state, quantity },
+        });
+      }
+
+      // Auto-deduct if needed
+      if (state === "ASSEMBLED" && quantityChange > 0) {
+        const sku = await prisma.sku.findUnique({ where: { id: skuId } });
+        if (sku?.type === "ASSEMBLY") {
+          await autoDeductRawMaterials(skuId, quantityChange);
+        }
+      }
+    }
+
+    return { success: true, message: `Batch updated ${updates.length} items` };
+  }
+
   return { error: "Invalid action" };
 };
 
-// Editable cell component for inline editing
-function EditableCell({ skuId, state, initialValue, isAdmin }: {
+// Editable cell component for inline editing with drag-fill
+function EditableCell({
+  skuId,
+  state,
+  initialValue,
+  isAdmin,
+  onDragFillStart
+}: {
   skuId: string;
   state: string;
   initialValue: number;
   isAdmin: boolean;
+  onDragFillStart: (skuId: string, state: string, value: number) => void;
 }) {
   const fetcher = useFetcher();
   const [isEditing, setIsEditing] = useState(false);
@@ -282,19 +378,83 @@ function EditableCell({ skuId, state, initialValue, isAdmin }: {
   return (
     <span
       onClick={() => setIsEditing(true)}
-      className={`cursor-pointer px-2 py-1 rounded hover:bg-blue-50 ${
+      onMouseDown={(e) => {
+        if (e.button === 0) {
+          const target = e.target as HTMLElement;
+          const rect = target.getBoundingClientRect();
+          const isCorner = e.clientX > rect.right - 10 && e.clientY > rect.bottom - 10;
+          if (isCorner) {
+            e.preventDefault();
+            onDragFillStart(skuId, state, initialValue);
+          }
+        }
+      }}
+      className={`cursor-pointer px-2 py-1 rounded hover:bg-blue-50 relative ${
         initialValue > 0 ? "text-gray-900 font-medium" : "text-gray-400"
       }`}
-      title="Click to edit"
+      style={{
+        position: "relative",
+      }}
+      title="Click to edit, or drag bottom-right corner to fill down"
     >
       {initialValue}
+      <span
+        className="absolute bottom-0 right-0 w-2 h-2 bg-blue-500 cursor-se-resize"
+        style={{
+          width: "6px",
+          height: "6px",
+          borderRadius: "50%",
+        }}
+      />
     </span>
   );
 }
 
 export default function Inventory() {
-  const { user, inventory, counts, typeFilter, search } = useLoaderData<typeof loader>();
+  const { user, inventory, counts, typeFilter, search, sortBy, sortDir } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [filters, setFilters] = useState({
+    sku: "",
+    name: "",
+    type: "",
+    category: "",
+    material: "",
+  });
+  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
+    sku: true,
+    name: true,
+    type: true,
+    category: true,
+    material: true,
+    raw: true,
+    inAssembly: true,
+    assembled: true,
+    completed: true,
+    onOrder: true,
+  });
+  const [dragFillState, setDragFillState] = useState<{
+    active: boolean;
+    startSkuId: string;
+    state: string;
+    value: number;
+    selectedRows: string[];
+  } | null>(null);
+  const fetcher = useFetcher();
+
+  // Load visible columns from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem("inventory-visible-columns");
+    if (saved) {
+      setVisibleColumns(JSON.parse(saved));
+    }
+  }, []);
+
+  // Save visible columns to localStorage
+  const toggleColumn = (column: string) => {
+    const newVisible = { ...visibleColumns, [column]: !visibleColumns[column] };
+    setVisibleColumns(newVisible);
+    localStorage.setItem("inventory-visible-columns", JSON.stringify(newVisible));
+  };
 
   const handleSearch = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -305,6 +465,17 @@ export default function Inventory() {
       params.set("search", newSearch);
     } else {
       params.delete("search");
+    }
+    setSearchParams(params);
+  };
+
+  const handleSort = (column: string) => {
+    const params = new URLSearchParams(searchParams);
+    if (sortBy === column) {
+      params.set("sortDir", sortDir === "asc" ? "desc" : "asc");
+    } else {
+      params.set("sortBy", column);
+      params.set("sortDir", "asc");
     }
     setSearchParams(params);
   };
@@ -329,11 +500,131 @@ export default function Inventory() {
     }
   };
 
+  // Apply client-side filters
+  const filteredInventory = inventory.filter((item) => {
+    if (filters.sku && !item.sku.toLowerCase().includes(filters.sku.toLowerCase())) return false;
+    if (filters.name && !item.name.toLowerCase().includes(filters.name.toLowerCase())) return false;
+    if (filters.type && item.type !== filters.type) return false;
+    if (filters.category && (!item.category || !item.category.toLowerCase().includes(filters.category.toLowerCase()))) return false;
+    if (filters.material && (!item.material || !item.material.toLowerCase().includes(filters.material.toLowerCase()))) return false;
+    return true;
+  });
+
+  // Determine which columns to show based on tab
+  const shouldShowColumn = (column: string): boolean => {
+    if (!visibleColumns[column]) return false;
+
+    // All tab shows everything
+    if (typeFilter === "all") return true;
+
+    // Raw Materials tab
+    if (typeFilter === "raw") {
+      return ["sku", "name", "category", "material", "raw", "inAssembly", "onOrder"].includes(column);
+    }
+
+    // Assembly tab
+    if (typeFilter === "assembly") {
+      return ["sku", "name", "category", "material", "raw", "assembled"].includes(column);
+    }
+
+    // Completed tab
+    if (typeFilter === "completed") {
+      return ["sku", "name", "category", "material", "completed"].includes(column);
+    }
+
+    return true;
+  };
+
+  // Check if a cell should show N/A
+  const shouldShowNA = (item: any, column: string): boolean => {
+    if (typeFilter !== "all") return false;
+
+    if (item.type === "ASSEMBLY") {
+      return ["raw", "onOrder"].includes(column);
+    }
+    if (item.type === "COMPLETED") {
+      return ["raw", "inAssembly", "onOrder"].includes(column);
+    }
+    return false;
+  };
+
+  // Handle drag fill start
+  const handleDragFillStart = (skuId: string, state: string, value: number) => {
+    setDragFillState({
+      active: true,
+      startSkuId: skuId,
+      state,
+      value,
+      selectedRows: [skuId],
+    });
+  };
+
+  // Handle drag fill end
+  const handleDragFillEnd = () => {
+    if (!dragFillState || dragFillState.selectedRows.length <= 1) {
+      setDragFillState(null);
+      return;
+    }
+
+    const count = dragFillState.selectedRows.length - 1;
+    const confirmed = window.confirm(
+      `Fill ${dragFillState.value} to ${count} cell${count > 1 ? "s" : ""} below?`
+    );
+
+    if (confirmed) {
+      const updates = dragFillState.selectedRows.map((skuId) => ({
+        skuId,
+        state: dragFillState.state,
+        quantity: dragFillState.value,
+      }));
+
+      fetcher.submit(
+        { intent: "batch-update", updates: JSON.stringify(updates) },
+        { method: "post" }
+      );
+    }
+
+    setDragFillState(null);
+  };
+
+  // Handle row hover during drag
+  const handleRowMouseEnter = (skuId: string) => {
+    if (dragFillState?.active) {
+      const startIdx = filteredInventory.findIndex((i) => i.id === dragFillState.startSkuId);
+      const currentIdx = filteredInventory.findIndex((i) => i.id === skuId);
+
+      if (currentIdx >= startIdx) {
+        const selectedRows = filteredInventory
+          .slice(startIdx, currentIdx + 1)
+          .map((i) => i.id);
+        setDragFillState({ ...dragFillState, selectedRows });
+      }
+    }
+  };
+
+  // Listen for mouse up globally
+  useEffect(() => {
+    const handleMouseUp = () => {
+      if (dragFillState?.active) {
+        handleDragFillEnd();
+      }
+    };
+
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => window.removeEventListener("mouseup", handleMouseUp);
+  }, [dragFillState]);
+
+  // Get unique values for filter dropdowns
+  const getUniqueValues = (key: keyof typeof filteredInventory[0]) => {
+    const values = new Set(inventory.map((item) => item[key]).filter(Boolean));
+    return Array.from(values).sort();
+  };
+
   return (
     <Layout user={user}>
       <div className="page-header">
         <h1 className="page-title">Inventory</h1>
-        <p className="page-subtitle">View current inventory levels by SKU</p>
+        <p className="page-subtitle">View and edit inventory levels - click cells to edit, drag corner to fill down</p>
       </div>
 
       {/* Search */}
@@ -373,9 +664,29 @@ export default function Inventory() {
         ))}
       </div>
 
+      {/* Column Visibility */}
+      <div className="card mb-4">
+        <div className="card-body">
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">Column Visibility</h3>
+          <div className="flex flex-wrap gap-4">
+            {Object.keys(visibleColumns).map((col) => (
+              <label key={col} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={visibleColumns[col]}
+                  onChange={() => toggleColumn(col)}
+                  className="rounded border-gray-300"
+                />
+                <span className="capitalize">{col === "inAssembly" ? "In Assembly" : col === "onOrder" ? "On Order" : col}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {/* Inventory Table */}
       <div className="card">
-        {inventory.length === 0 ? (
+        {filteredInventory.length === 0 ? (
           <div className="card-body">
             <div className="empty-state">
               <svg
@@ -404,114 +715,226 @@ export default function Inventory() {
             <table className="data-table w-full">
               <thead>
                 <tr>
-                  <th className="sticky left-0 bg-white z-10">SKU</th>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Category</th>
-                  <th>Material</th>
-                  {(typeFilter === "all" || typeFilter === "raw") && (
-                    <>
-                      <th className="text-right">Received</th>
-                      <th className="text-right">RAW</th>
-                      <th className="text-right">In Assembly</th>
-                      <th className="text-right">On Order</th>
-                    </>
+                  {shouldShowColumn("sku") && (
+                    <th className="sticky left-0 bg-white z-10 cursor-pointer" onClick={() => handleSort("sku")}>
+                      SKU {sortBy === "sku" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
                   )}
-                  {(typeFilter === "all" || typeFilter === "assembly") && (
-                    <>
-                      <th className="text-right">RAW (Components)</th>
-                      <th className="text-right">Assembled</th>
-                    </>
+                  {shouldShowColumn("name") && (
+                    <th className="cursor-pointer" onClick={() => handleSort("name")}>
+                      Name {sortBy === "name" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
                   )}
-                  {(typeFilter === "all" || typeFilter === "completed") && (
-                    <th className="text-right">Completed</th>
+                  {shouldShowColumn("type") && typeFilter === "all" && (
+                    <th className="cursor-pointer" onClick={() => handleSort("type")}>
+                      Type {sortBy === "type" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
                   )}
+                  {shouldShowColumn("category") && (
+                    <th className="cursor-pointer" onClick={() => handleSort("category")}>
+                      Category {sortBy === "category" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
+                  )}
+                  {shouldShowColumn("material") && (
+                    <th className="cursor-pointer" onClick={() => handleSort("material")}>
+                      Material {sortBy === "material" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
+                  )}
+                  {shouldShowColumn("raw") && (
+                    <th className="text-right cursor-pointer" onClick={() => handleSort("raw")}>
+                      {typeFilter === "assembly" ? "RAW (Components)" : "RAW"} {sortBy === "raw" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
+                  )}
+                  {shouldShowColumn("inAssembly") && (
+                    <th className="text-right cursor-pointer" onClick={() => handleSort("inAssembly")}>
+                      In Assembly {sortBy === "inAssembly" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
+                  )}
+                  {shouldShowColumn("assembled") && (
+                    <th className="text-right cursor-pointer" onClick={() => handleSort("assembled")}>
+                      Assembled {sortBy === "assembled" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
+                  )}
+                  {shouldShowColumn("completed") && (
+                    <th className="text-right cursor-pointer" onClick={() => handleSort("completed")}>
+                      Completed {sortBy === "completed" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
+                  )}
+                  {shouldShowColumn("onOrder") && (
+                    <th className="text-right cursor-pointer" onClick={() => handleSort("onOrder")}>
+                      On Order {sortBy === "onOrder" && (sortDir === "asc" ? "↑" : "↓")}
+                    </th>
+                  )}
+                </tr>
+                <tr>
+                  {shouldShowColumn("sku") && (
+                    <th className="sticky left-0 bg-white z-10">
+                      <input
+                        type="text"
+                        placeholder="Filter..."
+                        value={filters.sku}
+                        onChange={(e) => setFilters({ ...filters, sku: e.target.value })}
+                        className="w-full px-2 py-1 text-xs border rounded"
+                      />
+                    </th>
+                  )}
+                  {shouldShowColumn("name") && (
+                    <th>
+                      <input
+                        type="text"
+                        placeholder="Filter..."
+                        value={filters.name}
+                        onChange={(e) => setFilters({ ...filters, name: e.target.value })}
+                        className="w-full px-2 py-1 text-xs border rounded"
+                      />
+                    </th>
+                  )}
+                  {shouldShowColumn("type") && typeFilter === "all" && (
+                    <th>
+                      <select
+                        value={filters.type}
+                        onChange={(e) => setFilters({ ...filters, type: e.target.value })}
+                        className="w-full px-2 py-1 text-xs border rounded"
+                      >
+                        <option value="">All</option>
+                        {getUniqueValues("type").map((val) => (
+                          <option key={val} value={val}>{val}</option>
+                        ))}
+                      </select>
+                    </th>
+                  )}
+                  {shouldShowColumn("category") && (
+                    <th>
+                      <select
+                        value={filters.category}
+                        onChange={(e) => setFilters({ ...filters, category: e.target.value })}
+                        className="w-full px-2 py-1 text-xs border rounded"
+                      >
+                        <option value="">All</option>
+                        {getUniqueValues("category").map((val) => (
+                          <option key={val} value={val}>{val}</option>
+                        ))}
+                      </select>
+                    </th>
+                  )}
+                  {shouldShowColumn("material") && (
+                    <th>
+                      <select
+                        value={filters.material}
+                        onChange={(e) => setFilters({ ...filters, material: e.target.value })}
+                        className="w-full px-2 py-1 text-xs border rounded"
+                      >
+                        <option value="">All</option>
+                        {getUniqueValues("material").map((val) => (
+                          <option key={val} value={val}>{val}</option>
+                        ))}
+                      </select>
+                    </th>
+                  )}
+                  {shouldShowColumn("raw") && <th></th>}
+                  {shouldShowColumn("inAssembly") && <th></th>}
+                  {shouldShowColumn("assembled") && <th></th>}
+                  {shouldShowColumn("completed") && <th></th>}
+                  {shouldShowColumn("onOrder") && <th></th>}
                 </tr>
               </thead>
               <tbody>
-                {inventory.map((item) => (
-                  <tr key={item.id} className="hover:bg-gray-50">
-                    <td className="sticky left-0 bg-white">
-                      <Link
-                        to={`/skus/${item.id}`}
-                        className="font-mono text-sm text-blue-600 hover:underline"
-                      >
-                        {item.sku}
-                      </Link>
-                    </td>
-                    <td className="max-w-xs truncate text-sm">{item.name}</td>
-                    <td>
-                      <span className={`badge ${getTypeClass(item.type)}`}>
-                        {item.type}
-                      </span>
-                    </td>
-                    <td className="text-sm text-gray-600">{item.category || "—"}</td>
-                    <td className="text-sm text-gray-600">{item.material || "—"}</td>
-                    {(typeFilter === "all" || typeFilter === "raw") && (
-                      <>
-                        <td className="text-right">
-                          <EditableCell
-                            skuId={item.id}
-                            state="RECEIVED"
-                            initialValue={item.received || 0}
-                            isAdmin={user.role === "ADMIN"}
-                          />
-                        </td>
-                        <td className="text-right">
+                {filteredInventory.map((item) => (
+                  <tr
+                    key={item.id}
+                    className={`hover:bg-gray-50 ${
+                      dragFillState?.selectedRows.includes(item.id) ? "bg-blue-50" : ""
+                    }`}
+                    onMouseEnter={() => handleRowMouseEnter(item.id)}
+                  >
+                    {shouldShowColumn("sku") && (
+                      <td className="sticky left-0 bg-white">
+                        <Link
+                          to={`/skus/${item.id}`}
+                          className="font-mono text-sm text-blue-600 hover:underline"
+                        >
+                          {item.sku}
+                        </Link>
+                      </td>
+                    )}
+                    {shouldShowColumn("name") && (
+                      <td className="max-w-xs truncate text-sm">{item.name}</td>
+                    )}
+                    {shouldShowColumn("type") && typeFilter === "all" && (
+                      <td>
+                        <span className={`badge ${getTypeClass(item.type)}`}>
+                          {item.type}
+                        </span>
+                      </td>
+                    )}
+                    {shouldShowColumn("category") && (
+                      <td className="text-sm text-gray-600">{item.category || "—"}</td>
+                    )}
+                    {shouldShowColumn("material") && (
+                      <td className="text-sm text-gray-600">{item.material || "—"}</td>
+                    )}
+                    {shouldShowColumn("raw") && (
+                      <td className="text-right">
+                        {shouldShowNA(item, "raw") ? (
+                          <span className="text-gray-400">N/A</span>
+                        ) : (
                           <EditableCell
                             skuId={item.id}
                             state="RAW"
                             initialValue={item.raw || 0}
                             isAdmin={user.role === "ADMIN"}
+                            onDragFillStart={handleDragFillStart}
                           />
-                        </td>
-                        <td className="text-right">
+                        )}
+                      </td>
+                    )}
+                    {shouldShowColumn("inAssembly") && (
+                      <td className="text-right">
+                        {shouldShowNA(item, "inAssembly") ? (
+                          <span className="text-gray-400">N/A</span>
+                        ) : (
                           <span className={item.inAssembly > 0 ? "text-blue-600 text-sm" : "text-gray-400 text-sm"}>
                             {item.inAssembly}
                           </span>
-                        </td>
-                        <td className="text-right">
-                          {item.type === "RAW" && item.totalOnOrder > 0 ? (
-                            <Link
-                              to="/po?status=submitted"
-                              className="text-yellow-600 text-sm hover:underline"
-                            >
-                              {item.totalOnOrder}
-                            </Link>
-                          ) : (
-                            <span className="text-gray-400 text-sm">0</span>
-                          )}
-                        </td>
-                      </>
+                        )}
+                      </td>
                     )}
-                    {(typeFilter === "all" || typeFilter === "assembly") && (
-                      <>
-                        <td className="text-right">
-                          <EditableCell
-                            skuId={item.id}
-                            state="RAW"
-                            initialValue={item.raw || 0}
-                            isAdmin={user.role === "ADMIN"}
-                          />
-                        </td>
-                        <td className="text-right">
-                          <EditableCell
-                            skuId={item.id}
-                            state="ASSEMBLED"
-                            initialValue={item.assembled || 0}
-                            isAdmin={user.role === "ADMIN"}
-                          />
-                        </td>
-                      </>
+                    {shouldShowColumn("assembled") && (
+                      <td className="text-right">
+                        <EditableCell
+                          skuId={item.id}
+                          state="ASSEMBLED"
+                          initialValue={item.assembled || 0}
+                          isAdmin={user.role === "ADMIN"}
+                          onDragFillStart={handleDragFillStart}
+                        />
+                      </td>
                     )}
-                    {(typeFilter === "all" || typeFilter === "completed") && (
+                    {shouldShowColumn("completed") && (
                       <td className="text-right">
                         <EditableCell
                           skuId={item.id}
                           state="COMPLETED"
                           initialValue={item.completed || 0}
                           isAdmin={user.role === "ADMIN"}
+                          onDragFillStart={handleDragFillStart}
                         />
+                      </td>
+                    )}
+                    {shouldShowColumn("onOrder") && (
+                      <td className="text-right">
+                        {shouldShowNA(item, "onOrder") ? (
+                          <span className="text-gray-400">N/A</span>
+                        ) : item.type === "RAW" && item.totalOnOrder > 0 ? (
+                          <Link
+                            to="/po?status=submitted"
+                            className="text-yellow-600 text-sm hover:underline"
+                          >
+                            {item.totalOnOrder}
+                          </Link>
+                        ) : (
+                          <span className="text-gray-400 text-sm">0</span>
+                        )}
                       </td>
                     )}
                   </tr>
