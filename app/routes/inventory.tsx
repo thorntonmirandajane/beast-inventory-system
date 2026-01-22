@@ -14,11 +14,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const sortBy = url.searchParams.get("sortBy") || "sku";
   const sortDir = url.searchParams.get("sortDir") || "asc";
 
-  // Build where clause
+  // Build where clause - always fetch all active SKUs
   const whereClause: any = { isActive: true };
-  if (typeFilter !== "all") {
-    whereClause.type = typeFilter.toUpperCase();
-  }
   if (search) {
     whereClause.OR = [
       { sku: { contains: search, mode: "insensitive" } },
@@ -420,18 +417,6 @@ export default function Inventory() {
     category: "",
     material: "",
   });
-  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
-    sku: true,
-    name: true,
-    type: true,
-    category: true,
-    material: true,
-    raw: true,
-    inAssembly: true,
-    assembled: true,
-    completed: true,
-    onOrder: true,
-  });
   const [dragFillState, setDragFillState] = useState<{
     active: boolean;
     startSkuId: string;
@@ -440,21 +425,6 @@ export default function Inventory() {
     selectedRows: string[];
   } | null>(null);
   const fetcher = useFetcher();
-
-  // Load visible columns from localStorage on mount
-  useEffect(() => {
-    const saved = localStorage.getItem("inventory-visible-columns");
-    if (saved) {
-      setVisibleColumns(JSON.parse(saved));
-    }
-  }, []);
-
-  // Save visible columns to localStorage
-  const toggleColumn = (column: string) => {
-    const newVisible = { ...visibleColumns, [column]: !visibleColumns[column] };
-    setVisibleColumns(newVisible);
-    localStorage.setItem("inventory-visible-columns", JSON.stringify(newVisible));
-  };
 
   const handleSearch = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -502,6 +472,12 @@ export default function Inventory() {
 
   // Apply client-side filters
   const filteredInventory = inventory.filter((item) => {
+    // Filter by tab type
+    if (typeFilter !== "all") {
+      if (item.type !== typeFilter.toUpperCase()) return false;
+    }
+
+    // Filter by search/filter inputs
     if (filters.sku && !item.sku.toLowerCase().includes(filters.sku.toLowerCase())) return false;
     if (filters.name && !item.name.toLowerCase().includes(filters.name.toLowerCase())) return false;
     if (filters.type && item.type !== filters.type) return false;
@@ -512,8 +488,6 @@ export default function Inventory() {
 
   // Determine which columns to show based on tab
   const shouldShowColumn = (column: string): boolean => {
-    if (!visibleColumns[column]) return false;
-
     // All tab shows everything
     if (typeFilter === "all") return true;
 
@@ -662,26 +636,6 @@ export default function Inventory() {
             </span>
           </Link>
         ))}
-      </div>
-
-      {/* Column Visibility */}
-      <div className="card mb-4">
-        <div className="card-body">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">Column Visibility</h3>
-          <div className="flex flex-wrap gap-4">
-            {Object.keys(visibleColumns).map((col) => (
-              <label key={col} className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={visibleColumns[col]}
-                  onChange={() => toggleColumn(col)}
-                  className="rounded border-gray-300"
-                />
-                <span className="capitalize">{col === "inAssembly" ? "In Assembly" : col === "onOrder" ? "On Order" : col}</span>
-              </label>
-            ))}
-          </div>
-        </div>
       </div>
 
       {/* Inventory Table */}
