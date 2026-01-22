@@ -10,6 +10,8 @@ export default [
   route("inventory", "routes/inventory.tsx"),
   route("skus", "routes/skus._index.tsx"),
   route("skus/new", "routes/skus.new.tsx"),
+  route("skus/import", "routes/skus.import.tsx"),
+  route("skus/export", "routes/skus.export.tsx"),
   route("skus/print", "routes/skus.print.tsx"),
   route("skus/:id", "routes/skus.$id.tsx"),
   route("build", "routes/build.tsx"),

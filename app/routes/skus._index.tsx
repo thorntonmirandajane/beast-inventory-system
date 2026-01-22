@@ -93,9 +93,17 @@ export default function SkusList() {
             Print Barcodes
           </Link>
           {user.role === "ADMIN" && (
-            <Link to="/skus/new" className="btn btn-primary">
-              + Add New SKU
-            </Link>
+            <>
+              <Link to="/skus/export" className="btn btn-secondary">
+                Export CSV
+              </Link>
+              <Link to="/skus/import" className="btn btn-secondary">
+                Import CSV
+              </Link>
+              <Link to="/skus/new" className="btn btn-primary">
+                + Add New SKU
+              </Link>
+            </>
           )}
         </div>
       </div>

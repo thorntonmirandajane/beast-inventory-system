@@ -523,36 +523,33 @@ export default function SkuDetail() {
             {/* Set Inventory Form */}
             {user.role === "ADMIN" && (
               <div className="border-t pt-4">
-                <h3 className="font-semibold mb-3">Set Inventory Level</h3>
+                <h3 className="font-semibold mb-3">Adjust Inventory</h3>
                 <p className="text-sm text-gray-500 mb-3">
-                  Manually adjust inventory for a specific state. This only affects this SKU.
+                  Set the quantity for each inventory state. This only affects this SKU.
                 </p>
-                <Form method="post" className="flex gap-3">
-                  <input type="hidden" name="intent" value="set-inventory" />
-                  <div className="form-group mb-0 flex-1">
-                    <select name="state" className="form-select" required>
-                      <option value="">Select State</option>
-                      <option value="RECEIVED">RECEIVED</option>
-                      <option value="RAW">RAW</option>
-                      <option value="ASSEMBLED">ASSEMBLED</option>
-                      <option value="COMPLETED">COMPLETED</option>
-                      <option value="TRANSFERRED">TRANSFERRED</option>
-                    </select>
-                  </div>
-                  <div className="form-group mb-0 flex-1">
-                    <input
-                      type="number"
-                      name="quantity"
-                      className="form-input"
-                      placeholder="Quantity"
-                      min="0"
-                      required
-                    />
-                  </div>
-                  <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
-                    Set
-                  </button>
-                </Form>
+                <div className="space-y-2">
+                  {["RECEIVED", "RAW", "ASSEMBLED", "COMPLETED", "TRANSFERRED"].map((state) => (
+                    <Form key={state} method="post" className="flex items-center gap-3">
+                      <input type="hidden" name="intent" value="set-inventory" />
+                      <input type="hidden" name="state" value={state} />
+                      <div className="flex-1">
+                        <span className={`badge ${getStateColor(state)}`}>{state}</span>
+                      </div>
+                      <input
+                        type="number"
+                        name="quantity"
+                        className="form-input w-32"
+                        placeholder="Qty"
+                        min="0"
+                        defaultValue={inventoryByState[state] || 0}
+                        required
+                      />
+                      <button type="submit" className="btn btn-sm btn-primary" disabled={isSubmitting}>
+                        Update
+                      </button>
+                    </Form>
+                  ))}
+                </div>
               </div>
             )}
           </div>
