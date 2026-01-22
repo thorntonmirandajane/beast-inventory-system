@@ -63,16 +63,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     {} as Record<string, number>
   );
 
-  // Get recent work orders for this SKU
-  const recentWorkOrders = await prisma.workOrder.findMany({
-    where: { outputSkuId: sku.id },
-    orderBy: { createdAt: "desc" },
-    take: 10,
-    include: {
-      createdBy: true,
-    },
-  });
-
   // Get recent receiving records for this SKU
   const recentReceiving = await prisma.receivingRecord.findMany({
     where: { skuId: sku.id },
@@ -100,7 +90,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     sku,
     buildEligibility,
     inventoryByState,
-    recentWorkOrders,
     recentReceiving,
     allSkus,
     allManufacturers,
@@ -117,16 +106,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     // Check if SKU is used anywhere
     const usedInBom = await prisma.bomComponent.count({ where: { componentSkuId: id } });
     const hasInventory = await prisma.inventoryItem.count({ where: { skuId: id, quantity: { gt: 0 } } });
-    const hasWorkOrders = await prisma.workOrder.count({ where: { outputSkuId: id } });
 
     if (usedInBom > 0) {
       return { error: "Cannot delete: This SKU is used as a component in other products" };
     }
     if (hasInventory > 0) {
       return { error: "Cannot delete: This SKU has inventory" };
-    }
-    if (hasWorkOrders > 0) {
-      return { error: "Cannot delete: This SKU has work orders" };
     }
 
     // Delete BOM components first, then the SKU
@@ -519,14 +504,6 @@ export default function SkuDetail() {
         </div>
 
         <div className="flex gap-2">
-          {buildEligibility && buildEligibility.maxBuildable > 0 && (
-            <Link
-              to={`/work-orders?sku=${sku.id}`}
-              className="btn btn-primary"
-            >
-              Create Work Order
-            </Link>
-          )}
         </div>
       </div>
 
@@ -957,51 +934,6 @@ export default function SkuDetail() {
           </div>
         )}
 
-        {/* Recent Work Orders */}
-        {recentWorkOrders.length > 0 && (
-          <div className="card">
-            <div className="card-header">
-              <h2 className="card-title">Recent Work Orders</h2>
-            </div>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Order #</th>
-                  <th>Target</th>
-                  <th>Built</th>
-                  <th>Status</th>
-                  <th>Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentWorkOrders.map((wo) => (
-                  <tr key={wo.id}>
-                    <td className="font-mono text-sm">{wo.orderNumber.slice(0, 8)}</td>
-                    <td>{wo.quantityToBuild}</td>
-                    <td>{wo.quantityBuilt}</td>
-                    <td>
-                      <span
-                        className={`badge ${
-                          wo.status === "COMPLETED"
-                            ? "status-completed"
-                            : wo.status === "IN_PROGRESS"
-                            ? "status-in-progress"
-                            : wo.status === "CANCELLED"
-                            ? "status-rejected"
-                            : "status-pending"
-                        }`}
-                      >
-                        {wo.status}
-                      </span>
-                    </td>
-                    <td>{new Date(wo.createdAt).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
         {/* Recent Receiving */}
         {recentReceiving.length > 0 && (
           <div className="card">
@@ -1175,7 +1107,6 @@ export default function SkuDetail() {
             <ul className="list-disc list-inside text-sm text-gray-600 mb-4">
               <li>Are not used as a component in other products</li>
               <li>Have no inventory</li>
-              <li>Have no work orders</li>
             </ul>
             <Form method="post" onSubmit={(e) => {
               if (!confirm(`Are you sure you want to delete ${sku.sku}? This cannot be undone.`)) {

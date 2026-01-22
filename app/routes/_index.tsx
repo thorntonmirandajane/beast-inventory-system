@@ -15,7 +15,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     assemblySkus,
     completedSkus,
     pendingReceiving,
-    activeWorkOrders,
     recentTransfers,
   ] = await Promise.all([
     prisma.sku.count({ where: { isActive: true } }),
@@ -23,7 +22,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     prisma.sku.count({ where: { isActive: true, type: "ASSEMBLY" } }),
     prisma.sku.count({ where: { isActive: true, type: "COMPLETED" } }),
     prisma.receivingRecord.count({ where: { status: "PENDING" } }),
-    prisma.workOrder.count({ where: { status: { in: ["PENDING", "IN_PROGRESS"] } } }),
     prisma.transfer.count({
       where: {
         shippedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
@@ -66,7 +64,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       assemblySkus,
       completedSkus,
       pendingReceiving,
-      activeWorkOrders,
       recentTransfers,
     },
     inventoryStats,
@@ -102,12 +99,6 @@ export default function Dashboard() {
           <div className="stat-label">Pending Receiving</div>
           <div className="stat-value">{stats.pendingReceiving}</div>
           <div className="text-sm text-gray-500 mt-2">Awaiting sign-off</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-label">Active Work Orders</div>
-          <div className="stat-value">{stats.activeWorkOrders}</div>
-          <div className="text-sm text-gray-500 mt-2">In progress</div>
         </div>
 
         <div className="stat-card">
