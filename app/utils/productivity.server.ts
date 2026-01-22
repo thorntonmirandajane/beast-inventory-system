@@ -267,7 +267,8 @@ export async function approveTimeEntry(
 export async function rejectTimeEntry(
   timeEntryId: string,
   rejectedById: string,
-  reason: string
+  reason: string,
+  photo: string | null = null
 ) {
   const entry = await prisma.workerTimeEntry.findUnique({
     where: { id: timeEntryId },
@@ -287,6 +288,7 @@ export async function rejectTimeEntry(
     data: {
       status: "REJECTED",
       rejectionReason: reason,
+      rejectionPhoto: photo,
       approvedById: rejectedById,
       approvedAt: new Date(),
     },

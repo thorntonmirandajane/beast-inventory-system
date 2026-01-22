@@ -88,16 +88,118 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "reject") {
     const reason = formData.get("reason") as string;
+    const photo = formData.get("photo") as string;
+
     if (!reason) {
       return { error: "Please provide a rejection reason" };
     }
 
     try {
-      await rejectTimeEntry(timeEntryId, user.id, reason);
-      return { success: true, message: "Time entry rejected" };
+      await rejectTimeEntry(timeEntryId, user.id, reason, photo || null);
+      return { success: true, message: "Time entry rejected and worker notified" };
     } catch (error) {
       return { error: error instanceof Error ? error.message : "Failed to reject" };
     }
+  }
+
+  if (intent === "edit-line") {
+    const lineId = formData.get("lineId") as string;
+    const quantity = parseInt(formData.get("quantity") as string, 10);
+
+    if (isNaN(quantity) || quantity <= 0) {
+      return { error: "Please provide a valid quantity" };
+    }
+
+    // Update the time entry line
+    const line = await prisma.timeEntryLine.findUnique({
+      where: { id: lineId },
+      include: { timeEntry: true },
+    });
+
+    if (!line) {
+      return { error: "Line not found" };
+    }
+
+    // Verify entry is still pending
+    if (line.timeEntry.status !== "PENDING") {
+      return { error: "Can only edit pending entries" };
+    }
+
+    // Update quantity and recalculate expected time
+    await prisma.timeEntryLine.update({
+      where: { id: lineId },
+      data: {
+        quantityCompleted: quantity,
+        expectedSeconds: quantity * line.secondsPerUnit,
+      },
+    });
+
+    // Recalculate time entry expected minutes and efficiency
+    const allLines = await prisma.timeEntryLine.findMany({
+      where: { timeEntryId: line.timeEntryId },
+    });
+
+    const totalExpectedSeconds = allLines.reduce((sum, l) =>
+      sum + (l.id === lineId ? quantity * line.secondsPerUnit : l.expectedSeconds), 0
+    );
+    const expectedMinutes = totalExpectedSeconds / 60;
+    const efficiency = line.timeEntry.actualMinutes
+      ? (expectedMinutes / line.timeEntry.actualMinutes) * 100
+      : 0;
+
+    await prisma.workerTimeEntry.update({
+      where: { id: line.timeEntryId },
+      data: {
+        expectedMinutes,
+        efficiency,
+      },
+    });
+
+    return { success: true, message: "Quantity updated" };
+  }
+
+  if (intent === "delete-line") {
+    const lineId = formData.get("lineId") as string;
+
+    const line = await prisma.timeEntryLine.findUnique({
+      where: { id: lineId },
+      include: { timeEntry: true },
+    });
+
+    if (!line) {
+      return { error: "Line not found" };
+    }
+
+    // Verify entry is still pending
+    if (line.timeEntry.status !== "PENDING") {
+      return { error: "Can only edit pending entries" };
+    }
+
+    // Delete the line
+    await prisma.timeEntryLine.delete({
+      where: { id: lineId },
+    });
+
+    // Recalculate time entry expected minutes and efficiency
+    const allLines = await prisma.timeEntryLine.findMany({
+      where: { timeEntryId: line.timeEntryId },
+    });
+
+    const totalExpectedSeconds = allLines.reduce((sum, l) => sum + l.expectedSeconds, 0);
+    const expectedMinutes = totalExpectedSeconds / 60;
+    const efficiency = line.timeEntry.actualMinutes
+      ? (expectedMinutes / line.timeEntry.actualMinutes) * 100
+      : 0;
+
+    await prisma.workerTimeEntry.update({
+      where: { id: line.timeEntryId },
+      data: {
+        expectedMinutes,
+        efficiency,
+      },
+    });
+
+    return { success: true, message: "Task removed" };
   }
 
   return { error: "Invalid action" };
@@ -113,6 +215,21 @@ export default function TimeEntryApprovals() {
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
   const [rejectingEntry, setRejectingEntry] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [rejectPhoto, setRejectPhoto] = useState<string>("");
+  const [editingLine, setEditingLine] = useState<string | null>(null);
+  const [editQuantity, setEditQuantity] = useState<number>(0);
+
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      // Convert to base64
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setRejectPhoto(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const formatTime = (date: Date | string) => {
     return new Date(date).toLocaleTimeString([], {
@@ -275,11 +392,13 @@ export default function TimeEntryApprovals() {
                           <th>Quantity</th>
                           <th>Expected Time</th>
                           <th>Inventory Effect</th>
+                          <th>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {entry.lines.map((line) => {
                           const transition = processTransitions[line.processName];
+                          const isEditing = editingLine === line.id;
                           return (
                             <tr key={line.id}>
                               <td className="font-medium">
@@ -294,7 +413,35 @@ export default function TimeEntryApprovals() {
                                   <span className="text-gray-400">General</span>
                                 )}
                               </td>
-                              <td>{line.quantityCompleted.toLocaleString()}</td>
+                              <td>
+                                {isEditing ? (
+                                  <Form method="post" className="inline">
+                                    <input type="hidden" name="intent" value="edit-line" />
+                                    <input type="hidden" name="lineId" value={line.id} />
+                                    <input
+                                      type="number"
+                                      name="quantity"
+                                      className="form-input w-24 text-sm py-1"
+                                      min="1"
+                                      value={editQuantity}
+                                      onChange={(e) => setEditQuantity(parseInt(e.target.value, 10))}
+                                      required
+                                    />
+                                    <button type="submit" className="btn btn-sm btn-primary ml-2" disabled={isSubmitting}>
+                                      Save
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingLine(null)}
+                                      className="btn btn-sm btn-secondary ml-1"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </Form>
+                                ) : (
+                                  line.quantityCompleted.toLocaleString()
+                                )}
+                              </td>
                               <td>{formatMinutes(line.expectedSeconds / 60)}</td>
                               <td className="text-sm">
                                 {transition ? (
@@ -311,6 +458,38 @@ export default function TimeEntryApprovals() {
                                   )
                                 ) : (
                                   <span className="text-gray-400">N/A</span>
+                                )}
+                              </td>
+                              <td>
+                                {!isEditing && (
+                                  <div className="flex gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingLine(line.id);
+                                        setEditQuantity(line.quantityCompleted);
+                                      }}
+                                      className="btn btn-sm btn-secondary"
+                                    >
+                                      Edit
+                                    </button>
+                                    <Form method="post" className="inline">
+                                      <input type="hidden" name="intent" value="delete-line" />
+                                      <input type="hidden" name="lineId" value={line.id} />
+                                      <button
+                                        type="submit"
+                                        className="btn btn-sm btn-danger"
+                                        disabled={isSubmitting}
+                                        onClick={(e) => {
+                                          if (!confirm('Remove this task?')) {
+                                            e.preventDefault();
+                                          }
+                                        }}
+                                      >
+                                        Delete
+                                      </button>
+                                    </Form>
+                                  </div>
                                 )}
                               </td>
                             </tr>
@@ -348,6 +527,9 @@ export default function TimeEntryApprovals() {
                     <Form method="post">
                       <input type="hidden" name="intent" value="reject" />
                       <input type="hidden" name="timeEntryId" value={entry.id} />
+                      {rejectPhoto && (
+                        <input type="hidden" name="photo" value={rejectPhoto} />
+                      )}
                       <div className="form-group">
                         <label className="form-label">Rejection Reason *</label>
                         <textarea
@@ -360,6 +542,24 @@ export default function TimeEntryApprovals() {
                           required
                         />
                       </div>
+                      <div className="form-group">
+                        <label className="form-label">Attach Photo (Optional)</label>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handlePhotoChange}
+                          className="form-input"
+                        />
+                        {rejectPhoto && (
+                          <div className="mt-2">
+                            <img
+                              src={rejectPhoto}
+                              alt="Preview"
+                              className="max-w-xs rounded border"
+                            />
+                          </div>
+                        )}
+                      </div>
                       <div className="flex gap-2">
                         <button
                           type="submit"
@@ -370,7 +570,10 @@ export default function TimeEntryApprovals() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setRejectingEntry(null)}
+                          onClick={() => {
+                            setRejectingEntry(null);
+                            setRejectPhoto("");
+                          }}
                           className="btn btn-sm btn-secondary"
                         >
                           Cancel
