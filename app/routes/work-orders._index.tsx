@@ -183,7 +183,7 @@ export default function WorkOrders() {
                       .filter((s) => s.type === "ASSEMBLY")
                       .map((sku) => (
                         <option key={sku.id} value={sku.id}>
-                          {sku.sku} - {sku.name}
+                          {sku.sku} | {sku.name}
                         </option>
                       ))}
                   </optgroup>
@@ -192,7 +192,7 @@ export default function WorkOrders() {
                       .filter((s) => s.type === "COMPLETED")
                       .map((sku) => (
                         <option key={sku.id} value={sku.id}>
-                          {sku.sku} - {sku.name}
+                          {sku.sku} | {sku.name}
                         </option>
                       ))}
                   </optgroup>

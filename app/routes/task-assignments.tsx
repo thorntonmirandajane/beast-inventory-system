@@ -239,7 +239,7 @@ export default function TaskAssignments() {
                   <option value="">Any SKU / General task</option>
                   {skus.map((sku) => (
                     <option key={sku.id} value={sku.id}>
-                      {sku.sku} - {sku.name}
+                      {sku.sku} | {sku.name}
                     </option>
                   ))}
                 </select>
