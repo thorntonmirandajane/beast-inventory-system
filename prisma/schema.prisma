@@ -504,6 +504,7 @@ model WorkerTimeEntry {
   approvedBy      User?            @relation("ApprovedEntries", fields: [approvedById], references: [id])
   approvedAt      DateTime?
   rejectionReason String?
+  rejectionPhoto  String?          // URL or base64 image for rejection
   lines           TimeEntryLine[]
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt

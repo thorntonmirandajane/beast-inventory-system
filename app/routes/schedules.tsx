@@ -17,11 +17,32 @@ const DAYS = [
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
 
-  if (user.role !== "ADMIN") {
-    throw new Response("UNAUTHORIZED", { status: 403 });
+  // If worker, show only their own schedule
+  if (user.role === "WORKER") {
+    const workerSchedule = await prisma.user.findUnique({
+      where: { id: user.id },
+      include: {
+        schedules: {
+          orderBy: { dayOfWeek: "asc" },
+        },
+      },
+    });
+
+    const weeklyHours = workerSchedule?.schedules.reduce((total, schedule) => {
+      if (!schedule.isActive) return total;
+      const start = parseTime(schedule.startTime);
+      const end = parseTime(schedule.endTime);
+      return total + (end - start);
+    }, 0) || 0;
+
+    return {
+      user,
+      workers: workerSchedule ? [{...workerSchedule, weeklyHours}] : [],
+      isWorkerView: true,
+    };
   }
 
-  // Get all workers with their schedules
+  // Get all workers with their schedules (admin view)
   const workers = await prisma.user.findMany({
     where: { isActive: true },
     include: {
@@ -47,7 +68,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   });
 
-  return { user, workers: workersWithHours };
+  return { user, workers: workersWithHours, isWorkerView: false };
 };
 
 function parseTime(timeStr: string): number {
@@ -106,7 +127,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Schedules() {
-  const { user, workers } = useLoaderData<typeof loader>();
+  const { user, workers, isWorkerView } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -129,8 +150,8 @@ export default function Schedules() {
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">Worker Schedules</h1>
-        <p className="page-subtitle">Manage worker weekly schedules</p>
+        <h1 className="page-title">{isWorkerView ? "My Schedule" : "Worker Schedules"}</h1>
+        <p className="page-subtitle">{isWorkerView ? "View your weekly schedule" : "Manage worker weekly schedules"}</p>
       </div>
 
       {actionData?.error && (

@@ -92,24 +92,28 @@ export function Layout({ user, children }: LayoutProps) {
 
           <div className="nav-section">
             <p className="nav-section-title">TIME & LABOR</p>
-            <Link to="/worker-dashboard" className={`nav-link ${isActive("/worker-dashboard") ? "active" : ""}`}>
-              <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
-              </svg>
-              MY DASHBOARD
-            </Link>
             <Link to="/time-clock" className={`nav-link ${isActive("/time-clock") ? "active" : ""}`}>
               <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               TIME CLOCK
             </Link>
-            <Link to="/my-efficiency" className={`nav-link ${isActive("/my-efficiency") ? "active" : ""}`}>
-              <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5M9 11.25v1.5M12 9v3.75m3-6v6" />
-              </svg>
-              MY EFFICIENCY
-            </Link>
+            {user.role === "WORKER" && (
+              <>
+                <Link to="/worker-submit-task" className={`nav-link ${isActive("/worker-submit-task") ? "active" : ""}`}>
+                  <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                  </svg>
+                  SUBMIT TASK
+                </Link>
+                <Link to="/schedules" className={`nav-link ${isActive("/schedules") ? "active" : ""}`}>
+                  <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
+                  </svg>
+                  MY SCHEDULE
+                </Link>
+              </>
+            )}
             {user.role !== "WORKER" && (
               <Link to="/capacity" className={`nav-link ${isActive("/capacity") ? "active" : ""}`}>
                 <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">

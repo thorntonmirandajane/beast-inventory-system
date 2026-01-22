@@ -19,6 +19,8 @@ export default [
   route("transfers", "routes/transfers._index.tsx"),
   route("time-clock", "routes/time-clock.tsx"),
   route("worker-dashboard", "routes/worker-dashboard.tsx"),
+  route("worker-submit-task", "routes/worker-submit-task.tsx"),
+  route("worker-clock-out-confirm", "routes/worker-clock-out-confirm.tsx"),
   route("clock-out-entry", "routes/clock-out-entry.tsx"),
   route("my-efficiency", "routes/my-efficiency.tsx"),
   route("task-assignments", "routes/task-assignments.tsx"),

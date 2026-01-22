@@ -161,8 +161,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "You are already clocked in" };
   }
 
-  if (eventType === "CLOCK_OUT" && !currentStatus.isClockedIn) {
-    return { error: "You are not clocked in" };
+  if (eventType === "CLOCK_OUT") {
+    if (!currentStatus.isClockedIn) {
+      return { error: "You are not clocked in" };
+    }
+    // For workers, redirect to confirmation page instead of directly clocking out
+    if (user.role === "WORKER") {
+      return redirect("/worker-clock-out-confirm");
+    }
   }
 
   if (eventType === "BREAK_START" && !currentStatus.isClockedIn) {
@@ -232,6 +238,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     BREAK_START: "Break started",
     BREAK_END: "Break ended",
   };
+
+  // For workers: redirect to task submission after clock-in
+  if (user.role === "WORKER" && eventType === "CLOCK_IN") {
+    return redirect("/worker-submit-task");
+  }
 
   return { success: true, message: messages[eventType] };
 };
