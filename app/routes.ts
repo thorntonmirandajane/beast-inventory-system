@@ -27,6 +27,7 @@ export default [
   route("time-entry-approvals", "routes/time-entry-approvals.tsx"),
   route("users", "routes/users.tsx"),
   route("schedules", "routes/schedules.tsx"),
+  route("payroll", "routes/payroll.tsx"),
   route("capacity", "routes/capacity.tsx"),
   route("audit-log", "routes/audit-log.tsx"),
   route("notifications", "routes/notifications.tsx"),
