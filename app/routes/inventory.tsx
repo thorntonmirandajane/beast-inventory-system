@@ -43,19 +43,54 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
   });
 
-  // Build map of pending quantities by SKU
-  const pendingBySkuId: Record<string, { quantity: number; poId: string; poNumber: string }[]> = {};
+  // Build map of on-order quantities by SKU (renamed from pending)
+  const onOrderBySkuId: Record<string, { quantity: number; poId: string; poNumber: string }[]> = {};
   for (const item of pendingPOItems) {
     const pending = item.quantityOrdered - item.quantityReceived;
     if (pending > 0) {
-      if (!pendingBySkuId[item.skuId]) {
-        pendingBySkuId[item.skuId] = [];
+      if (!onOrderBySkuId[item.skuId]) {
+        onOrderBySkuId[item.skuId] = [];
       }
-      pendingBySkuId[item.skuId].push({
+      onOrderBySkuId[item.skuId].push({
         quantity: pending,
         poId: item.purchaseOrder.id,
         poNumber: item.purchaseOrder.poNumber,
       });
+    }
+  }
+
+  // Calculate "In Assembly" - how much of each component SKU is used in assembled products
+  const inAssemblyBySkuId: Record<string, number> = {};
+
+  // Get all SKUs with their BOMs and assembled inventory
+  const skusWithBoms = await prisma.sku.findMany({
+    where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } },
+    include: {
+      bomComponents: {
+        include: {
+          componentSku: true,
+        },
+      },
+      inventoryItems: {
+        where: { state: { in: ["ASSEMBLED", "COMPLETED"] } },
+      },
+    },
+  });
+
+  // For each assembled/completed product, calculate how many components are "locked in"
+  for (const sku of skusWithBoms) {
+    const assembledQty = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
+
+    // For each component in this SKU's BOM
+    for (const bomComp of sku.bomComponents) {
+      const componentSkuId = bomComp.componentSkuId;
+      const qtyPerUnit = bomComp.quantity;
+      const totalInAssembly = assembledQty * qtyPerUnit;
+
+      if (!inAssemblyBySkuId[componentSkuId]) {
+        inAssemblyBySkuId[componentSkuId] = 0;
+      }
+      inAssemblyBySkuId[componentSkuId] += totalInAssembly;
     }
   }
 
@@ -84,20 +119,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       available = byState.COMPLETED;
     }
 
-    // Get pending POs for this SKU (only for RAW)
-    const pendingPOs = sku.type === "RAW" ? pendingBySkuId[sku.id] || [] : [];
-    const totalPending = pendingPOs.reduce((sum, p) => sum + p.quantity, 0);
+    // Get on-order POs for this SKU (only for RAW materials)
+    const onOrderPOs = sku.type === "RAW" ? onOrderBySkuId[sku.id] || [] : [];
+    const totalOnOrder = onOrderPOs.reduce((sum, p) => sum + p.quantity, 0);
+
+    // Get in-assembly quantity (how much of this SKU is locked in assemblies)
+    const inAssembly = inAssemblyBySkuId[sku.id] || 0;
 
     return {
       id: sku.id,
       sku: sku.sku,
       name: sku.name,
       type: sku.type,
-      received: byState.RECEIVED,
-      available,
-      total: Object.values(byState).reduce((a, b) => a + b, 0),
-      pendingPOs,
-      totalPending,
+      raw: byState.RAW,
+      inAssembly,
+      onOrderPOs,
+      totalOnOrder,
     };
   });
 
@@ -226,9 +263,9 @@ export default function Inventory() {
                 <th>SKU</th>
                 <th>NAME</th>
                 <th>TYPE</th>
-                <th className="text-right">PENDING POS</th>
-                <th className="text-right">AVAILABLE</th>
-                <th className="text-right">TOTAL</th>
+                <th className="text-right">RAW</th>
+                <th className="text-right">IN ASSEMBLY</th>
+                <th className="text-right">ON ORDER</th>
               </tr>
             </thead>
             <tbody>
@@ -248,19 +285,33 @@ export default function Inventory() {
                       {item.type}
                     </span>
                   </td>
+                  <td className="text-right font-semibold">
+                    {item.raw > 0 ? (
+                      <span className="text-beast-600">{item.raw}</span>
+                    ) : (
+                      <span className="text-gray-400">0</span>
+                    )}
+                  </td>
+                  <td className="text-right">
+                    {item.inAssembly > 0 ? (
+                      <span className="text-blue-600 font-medium">{item.inAssembly}</span>
+                    ) : (
+                      <span className="text-gray-400">0</span>
+                    )}
+                  </td>
                   <td className="text-right">
                     {item.type === "RAW" ? (
-                      item.totalPending > 0 ? (
+                      item.totalOnOrder > 0 ? (
                         <div className="flex items-center justify-end gap-2">
                           <span className="text-yellow-600 font-medium">
-                            {item.totalPending}
+                            {item.totalOnOrder}
                           </span>
-                          {item.pendingPOs.length > 0 && (
+                          {item.onOrderPOs.length > 0 && (
                             <Link
                               to={`/po?status=submitted`}
                               className="text-xs text-blue-600 hover:underline"
                             >
-                              ({item.pendingPOs.length} PO{item.pendingPOs.length > 1 ? "S" : ""})
+                              ({item.onOrderPOs.length} PO{item.onOrderPOs.length > 1 ? "S" : ""})
                             </Link>
                           )}
                         </div>
@@ -271,14 +322,6 @@ export default function Inventory() {
                       <span className="text-gray-400">N/A</span>
                     )}
                   </td>
-                  <td className="text-right font-semibold">
-                    {item.available > 0 ? (
-                      <span className="text-beast-600">{item.available}</span>
-                    ) : (
-                      <span className="text-gray-400">0</span>
-                    )}
-                  </td>
-                  <td className="text-right">{item.total}</td>
                 </tr>
               ))}
             </tbody>
