@@ -9,7 +9,7 @@ services:
     name: beast-inventory-system
     runtime: node
     plan: free
-    buildCommand: npm ci --include=dev --ignore-scripts && npx prisma migrate deploy && npx prisma generate && npm run build && npm run db:seed
+    buildCommand: npm ci --include=dev --ignore-scripts && npx tsx prisma/reset-schema.ts && npx prisma migrate deploy && npx prisma generate && npm run build && npm run db:seed
     startCommand: npm run start
     envVars:
       - key: NODE_ENV
