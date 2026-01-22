@@ -63,7 +63,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const processConfigs = await getAllProcessConfigs();
 
-  return { user, pendingEntries, recentEntries, processConfigs };
+  return { user, pendingEntries, recentEntries, processConfigs, processTransitions: PROCESS_TRANSITIONS };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -104,7 +104,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function TimeEntryApprovals() {
-  const { user, pendingEntries, recentEntries, processConfigs } =
+  const { user, pendingEntries, recentEntries, processConfigs, processTransitions } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -279,7 +279,7 @@ export default function TimeEntryApprovals() {
                       </thead>
                       <tbody>
                         {entry.lines.map((line) => {
-                          const transition = PROCESS_TRANSITIONS[line.processName];
+                          const transition = processTransitions[line.processName];
                           return (
                             <tr key={line.id}>
                               <td className="font-medium">

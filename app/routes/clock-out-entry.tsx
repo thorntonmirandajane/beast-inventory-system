@@ -128,6 +128,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     breakMinutes,
     totalMinutes,
     workedMinutes,
+    processTransitions: PROCESS_TRANSITIONS,
   };
 };
 
@@ -193,6 +194,7 @@ export default function ClockOutEntry() {
     breakMinutes,
     totalMinutes,
     workedMinutes,
+    processTransitions,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -317,7 +319,7 @@ export default function ClockOutEntry() {
                 const config = processConfigs.find(
                   (c) => c.processName === line.processName
                 );
-                const transition = PROCESS_TRANSITIONS[line.processName];
+                const transition = processTransitions[line.processName];
 
                 return (
                   <div
