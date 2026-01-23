@@ -87,7 +87,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const hoursWorked = totalMs / (1000 * 60 * 60);
 
-  return { user, timeEntry, clockInTime: clockInEvent?.timestamp, hoursWorked };
+  // Check for incomplete assigned tasks
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const incompleteTasks = await prisma.workerTask.findMany({
+    where: {
+      userId: user.id,
+      status: "PENDING",
+      assignmentType: "DAILY",
+      dueDate: {
+        gte: today,
+        lt: tomorrow,
+      },
+    },
+    include: { sku: true },
+    orderBy: { priority: "desc" },
+  });
+
+  return {
+    user,
+    timeEntry,
+    clockInTime: clockInEvent?.timestamp,
+    hoursWorked,
+    incompleteTasks
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -160,14 +184,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           status: "PENDING",
         },
       });
+
+      // Redirect to work summary
+      return redirect(`/worker-work-summary?entryId=${timeEntry.id}`);
     }
   }
 
+  // If no time entry, just go to time clock
   return redirect("/time-clock");
 };
 
 export default function WorkerClockOutConfirm() {
-  const { user, timeEntry, clockInTime, hoursWorked } =
+  const { user, timeEntry, clockInTime, hoursWorked, incompleteTasks } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -276,10 +304,62 @@ export default function WorkerClockOutConfirm() {
         </div>
       </div>
 
+      {/* Incomplete tasks warning */}
+      {incompleteTasks.length > 0 && (
+        <div className="card mb-6 border-yellow-500">
+          <div className="card-header bg-yellow-50">
+            <h2 className="card-title text-yellow-800">⚠️ Incomplete Assigned Tasks</h2>
+          </div>
+          <div className="card-body">
+            <p className="text-sm text-gray-700 mb-4">
+              You have {incompleteTasks.length} assigned task{incompleteTasks.length > 1 ? 's' : ''} for today that {incompleteTasks.length > 1 ? 'are' : 'is'} still pending:
+            </p>
+            <div className="space-y-2">
+              {incompleteTasks.map((task) => (
+                <div
+                  key={task.id}
+                  className="p-3 bg-white border border-yellow-300 rounded-lg"
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="font-medium text-gray-900">
+                        {task.processName.replace(/_/g, " ")}
+                      </p>
+                      {task.sku && (
+                        <p className="text-sm text-gray-600">
+                          {task.sku.sku} | {task.sku.name}
+                        </p>
+                      )}
+                      {task.targetQuantity && (
+                        <p className="text-sm text-gray-500">
+                          Target: {task.targetQuantity} units
+                        </p>
+                      )}
+                    </div>
+                    {task.priority > 0 && (
+                      <span className="badge badge-error">High Priority</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Confirmation form */}
       <div className="card">
         <div className="card-body">
           <Form method="post">
+            {incompleteTasks.length > 0 && (
+              <div className="alert alert-warning mb-6">
+                <p className="font-medium">You have incomplete assigned tasks.</p>
+                <p className="text-sm mt-1">
+                  Please confirm you understand these tasks will remain incomplete for today.
+                </p>
+              </div>
+            )}
+
             <div className="flex items-start gap-3 mb-6">
               <input
                 type="checkbox"
@@ -290,8 +370,11 @@ export default function WorkerClockOutConfirm() {
                 className="mt-1"
               />
               <label htmlFor="confirmed" className="text-sm">
-                I confirm that all tasks I completed today have been submitted and
-                the information above is accurate.
+                {incompleteTasks.length > 0 ? (
+                  <>I confirm that I cannot complete my assigned tasks today and that all work I did complete has been submitted accurately.</>
+                ) : (
+                  <>I confirm that all tasks I completed today have been submitted and the information above is accurate.</>
+                )}
               </label>
             </div>
 
