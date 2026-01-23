@@ -26,6 +26,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Get all active SKUs for optional SKU-specific tasks
   const skus = await prisma.sku.findMany({
     where: { isActive: true },
+    select: {
+      id: true,
+      sku: true,
+      name: true,
+      category: true,
+      type: true,
+    },
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
@@ -135,9 +142,44 @@ export default function TaskAssignments() {
 
   const [selectedWorker, setSelectedWorker] = useState("");
   const [assignmentType, setAssignmentType] = useState<"DAILY" | "BACKLOG">("DAILY");
+  const [selectedProcess, setSelectedProcess] = useState("");
 
   // Get today's date for the date input default
   const today = new Date().toISOString().split("T")[0];
+
+  // Get selected process config
+  const selectedProcessConfig = processConfigs.find(p => p.processName === selectedProcess);
+
+  // Filter SKUs based on selected process (same logic as worker submit)
+  const filteredSkus = selectedProcess
+    ? skus.filter(sku => {
+        if (!selectedProcessConfig) return false;
+
+        const processName = selectedProcessConfig.processName;
+
+        // TIPPING: Works with ASSEMBLY items (creates assembled tips from raw materials)
+        if (processName === "TIPPING") {
+          return sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads" || sku.category === "Tips");
+        }
+
+        // BLADING: Works with ASSEMBLY items that can have blades added
+        if (processName === "BLADING") {
+          return sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads");
+        }
+
+        // STUD_TESTING: Works with raw studs
+        if (processName === "STUD_TESTING") {
+          return sku.category === "Studs";
+        }
+
+        // COMPLETE_PACKS: Works with COMPLETED (packaged) products
+        if (processName === "COMPLETE_PACKS") {
+          return sku.type === "COMPLETED";
+        }
+
+        return true;
+      })
+    : skus;
 
   return (
     <Layout user={user}>
@@ -183,7 +225,13 @@ export default function TaskAssignments() {
 
               <div className="form-group">
                 <label className="form-label">Process *</label>
-                <select name="processName" className="form-select" required>
+                <select
+                  name="processName"
+                  className="form-select"
+                  required
+                  value={selectedProcess}
+                  onChange={(e) => setSelectedProcess(e.target.value)}
+                >
                   <option value="">Select process...</option>
                   {processConfigs.map((config) => (
                     <option key={config.processName} value={config.processName}>
@@ -236,16 +284,24 @@ export default function TaskAssignments() {
               <div className="form-group">
                 <label className="form-label">SKU (optional)</label>
                 <select name="skuId" className="form-select">
-                  <option value="">Any SKU / General task</option>
-                  {skus.map((sku) => (
+                  <option value="">
+                    {!selectedProcess ? "Select process first..." : "Any SKU / General task"}
+                  </option>
+                  {filteredSkus.map((sku) => (
                     <option key={sku.id} value={sku.id}>
                       {sku.sku} | {sku.name}
                     </option>
                   ))}
                 </select>
-                <p className="text-sm text-gray-500 mt-1">
-                  Optionally specify which SKU to work on
-                </p>
+                {selectedProcess && filteredSkus.length === 0 ? (
+                  <p className="text-sm text-yellow-600 mt-1">
+                    No SKUs found for this process type
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-500 mt-1">
+                    Optionally specify which SKU to work on
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">
