@@ -1043,6 +1043,10 @@ export default function Inventory() {
                       <td className="text-right">
                         {shouldShowNA(item, "assembled") ? (
                           <span className="text-gray-400">N/A</span>
+                        ) : typeFilter === "raw" ? (
+                          <span className={item.assembled > 0 ? "text-blue-600 text-sm" : "text-gray-400 text-sm"}>
+                            {item.assembled || 0}
+                          </span>
                         ) : typeFilter === "all" ? (
                           <span className="text-sm">{item.assembled || 0}</span>
                         ) : (
