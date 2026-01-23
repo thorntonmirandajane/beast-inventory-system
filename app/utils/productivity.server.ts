@@ -177,90 +177,120 @@ export async function submitTimeEntry(
 // Approve a time entry and adjust inventory
 export async function approveTimeEntry(
   timeEntryId: string,
-  approvedById: string
-) {
+  approvedById?: string
+): Promise<{ success: boolean; error?: string }> {
   const entry = await prisma.workerTimeEntry.findUnique({
     where: { id: timeEntryId },
     include: {
       lines: {
-        include: { sku: true },
+        include: { sku: true, workerTask: true },
       },
       user: true,
     },
   });
 
   if (!entry) {
-    throw new Error("Time entry not found");
+    return { success: false, error: "Time entry not found" };
   }
 
   if (entry.status !== "PENDING") {
-    throw new Error("Time entry is not pending approval");
+    return { success: false, error: "Time entry is not pending approval" };
   }
 
-  return prisma.$transaction(async (tx) => {
-    // Process inventory changes for each line
-    for (const line of entry.lines) {
-      if (!line.skuId) continue;
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Process inventory changes for each line
+      for (const line of entry.lines) {
+        // Skip rejected lines for inventory updates
+        if (line.isRejected) {
+          continue;
+        }
 
-      const transition = PROCESS_TRANSITIONS[line.processName];
-      if (!transition) continue;
+        // Skip MISC tasks (no inventory impact)
+        if (line.isMisc || !line.skuId) {
+          continue;
+        }
 
-      // Deduct consumed inventory
-      if (transition.consumes) {
-        await deductInventory(line.skuId, line.quantityCompleted, [transition.consumes]);
+        // Use admin-adjusted quantity if present, otherwise use submitted quantity
+        const finalQuantity = line.adminAdjustedQuantity ?? line.quantityCompleted;
+
+        if (finalQuantity === 0) {
+          continue; // Skip if fully rejected/adjusted to zero
+        }
+
+        const transition = PROCESS_TRANSITIONS[line.processName];
+        if (!transition) {
+          console.warn(`No transition found for process: ${line.processName}`);
+          continue;
+        }
+
+        // Deduct consumed inventory
+        if (transition.consumes) {
+          const deductResult = await deductInventory(
+            line.skuId,
+            finalQuantity,
+            [transition.consumes]
+          );
+
+          if (!deductResult.success) {
+            throw new Error(`Failed to deduct inventory: ${deductResult.error}`);
+          }
+        }
+
+        // Add produced inventory
+        if (transition.produces) {
+          await addInventory(line.skuId, finalQuantity, transition.produces);
+        }
+
+        // Mark linked task as completed if any
+        if (line.workerTaskId) {
+          await tx.workerTask.update({
+            where: { id: line.workerTaskId },
+            data: {
+              status: "COMPLETED",
+              completedAt: new Date(),
+            },
+          });
+        }
       }
 
-      // Add produced inventory
-      if (transition.produces) {
-        await addInventory(line.skuId, line.quantityCompleted, transition.produces);
-      }
-    }
-
-    // Mark associated tasks as completed
-    const taskIds = entry.lines
-      .filter((l) => l.workerTaskId)
-      .map((l) => l.workerTaskId!);
-
-    if (taskIds.length > 0) {
-      await tx.workerTask.updateMany({
-        where: { id: { in: taskIds } },
+      // Update the time entry
+      await tx.workerTimeEntry.update({
+        where: { id: timeEntryId },
         data: {
-          status: "COMPLETED",
-          completedAt: new Date(),
+          status: "APPROVED",
+          approvedById: approvedById || entry.userId,
+          approvedAt: new Date(),
         },
       });
-    }
 
-    // Update the time entry
-    const updatedEntry = await tx.workerTimeEntry.update({
-      where: { id: timeEntryId },
-      data: {
-        status: "APPROVED",
-        approvedById,
-        approvedAt: new Date(),
-      },
-      include: {
-        lines: true,
-        user: true,
-      },
+      // Create audit log if approvedById is provided
+      if (approvedById) {
+        await createAuditLog(
+          approvedById,
+          "APPROVE_TIME_ENTRY",
+          "WorkerTimeEntry",
+          timeEntryId,
+          {
+            workerId: entry.userId,
+            workerName: `${entry.user.firstName} ${entry.user.lastName}`,
+            efficiency: entry.efficiency,
+            linesCount: entry.lines.length,
+            adjustedLines: entry.lines.filter(l => l.adminAdjustedQuantity).length,
+            rejectedLines: entry.lines.filter(l => l.isRejected).length,
+          }
+        );
+      }
     });
 
-    // Create audit log
-    await createAuditLog(
-      approvedById,
-      "APPROVE_TIME_ENTRY",
-      "WorkerTimeEntry",
-      timeEntryId,
-      {
-        workerId: entry.userId,
-        workerName: `${entry.user.firstName} ${entry.user.lastName}`,
-        efficiency: entry.efficiency,
-        linesCount: entry.lines.length,
-      }
-    );
-
-    return updatedEntry;
-  });
+    return { success: true };
+  } catch (error) {
+    console.error("Error approving time entry:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error occurred",
+    };
+  }
 }
 
 // Reject a time entry
