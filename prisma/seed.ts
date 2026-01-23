@@ -77,6 +77,45 @@ function inferMaterial(sku: string, name: string): string {
   return "Mixed/Other";
 }
 
+/**
+ * Convert ALL CAPS names to Title Case for cleaner display
+ * Special handling for abbreviations like GR, IN, etc.
+ */
+function toTitleCase(str: string): string {
+  // Words that should stay uppercase
+  const keepUpperCase = new Set(["GR", "IN", "CUT", "ID", "FP", "PT", "ST", "TI", "TR", "D6"]);
+
+  // Words that should stay lowercase (unless first word)
+  const keepLowerCase = new Set(["a", "an", "and", "the", "of", "for", "in", "on", "at", "to"]);
+
+  return str
+    .split(/(\s+|-|,)/) // Split on spaces, hyphens, commas but keep delimiters
+    .map((word, index) => {
+      if (!word.trim()) return word; // Keep whitespace/delimiters as-is
+
+      const upperWord = word.toUpperCase();
+
+      // Keep certain abbreviations in uppercase
+      if (keepUpperCase.has(upperWord)) {
+        return upperWord;
+      }
+
+      // First word is always capitalized
+      if (index === 0) {
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      }
+
+      // Keep certain words lowercase unless they're first
+      if (keepLowerCase.has(word.toLowerCase())) {
+        return word.toLowerCase();
+      }
+
+      // Default: capitalize first letter, lowercase rest
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join("");
+}
+
 // ============================================
 // SKU DATA FROM CSV
 // ============================================
@@ -648,18 +687,19 @@ async function main() {
   for (const sku of skuData) {
     const category = inferCategory(sku.sku, sku.name);
     const material = inferMaterial(sku.sku, sku.name);
+    const titleCaseName = toTitleCase(sku.name);
 
     const created = await prisma.sku.upsert({
       where: { sku: sku.sku },
       update: {
-        name: sku.name,
+        name: titleCaseName,
         type: sku.type,
         category,
         material,
       },
       create: {
         sku: sku.sku,
-        name: sku.name,
+        name: titleCaseName,
         type: sku.type,
         category,
         material,
