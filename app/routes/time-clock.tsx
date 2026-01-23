@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, redirect } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, redirect, Link } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -193,18 +193,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const now = new Date();
     const dayOfWeek = now.getDay();
     const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const todayDate = new Date(now);
+    todayDate.setHours(12, 0, 0, 0); // Noon to avoid timezone issues
 
-    // Get worker's schedule for today
-    const schedule = await prisma.workerSchedule.findUnique({
+    // Get worker's schedule for today - check for date-specific first, then recurring
+    let schedule = await prisma.workerSchedule.findFirst({
       where: {
-        userId_dayOfWeek: {
-          userId: user.id,
-          dayOfWeek,
-        },
+        userId: user.id,
+        scheduleType: "SPECIFIC_DATE",
+        scheduleDate: todayDate,
+        isActive: true,
       },
     });
 
-    if (schedule && schedule.isActive) {
+    // If no date-specific schedule, check for recurring schedule
+    if (!schedule) {
+      schedule = await prisma.workerSchedule.findFirst({
+        where: {
+          userId: user.id,
+          scheduleType: "RECURRING",
+          dayOfWeek,
+          isActive: true,
+        },
+      });
+    }
+
+    if (schedule) {
       // Parse scheduled start time
       const [schedHour, schedMin] = schedule.startTime.split(":").map(Number);
       const scheduledStart = new Date(now);
@@ -363,6 +377,11 @@ export default function TimeClock() {
 
               {clockStatus.isClockedIn && !clockStatus.isOnBreak && (
                 <>
+                  {user.role === "WORKER" && (
+                    <Link to="/worker-submit-task" className="btn btn-success btn-lg">
+                      Submit Task
+                    </Link>
+                  )}
                   <Form method="post">
                     <input type="hidden" name="eventType" value="BREAK_START" />
                     <button
