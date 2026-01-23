@@ -436,6 +436,7 @@ export default function Inventory() {
     material: "",
   });
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
+  const [showHiddenColumnsDropdown, setShowHiddenColumnsDropdown] = useState(false);
   const [dragFillState, setDragFillState] = useState<{
     active: boolean;
     startSkuId: string;
@@ -534,7 +535,7 @@ export default function Inventory() {
 
     // Assembly tab
     if (typeFilter === "assembly") {
-      return ["sku", "name", "category", "material", "assembled", "inAssembly"].includes(column);
+      return ["sku", "name", "category", "material", "inAssembly", "assembled"].includes(column);
     }
 
     // Completed tab
@@ -674,6 +675,43 @@ export default function Inventory() {
         ))}
       </div>
 
+      {/* Show Hidden Columns Button */}
+      {hiddenColumns.size > 0 && (
+        <div className="mb-4 relative">
+          <button
+            onClick={() => setShowHiddenColumnsDropdown(!showHiddenColumnsDropdown)}
+            className="btn btn-secondary text-sm"
+          >
+            Show Hidden Columns ({hiddenColumns.size})
+            <svg className="w-4 h-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {showHiddenColumnsDropdown && (
+            <div className="absolute top-full mt-1 bg-white border border-gray-300 rounded shadow-lg z-20 min-w-[200px]">
+              <div className="p-2">
+                <div className="text-xs text-gray-500 font-semibold mb-2 px-2">Hidden Columns</div>
+                {Array.from(hiddenColumns).map((column) => (
+                  <button
+                    key={column}
+                    onClick={() => toggleColumnVisibility(column)}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-gray-100 rounded text-sm text-gray-400"
+                  >
+                    <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                    </svg>
+                    <span className="capitalize">
+                      {column === "inAssembly" ? "In Completed Package" : column}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Inventory Table */}
       <div className="card">
         {filteredInventory.length === 0 ? (
@@ -765,21 +803,21 @@ export default function Inventory() {
                       </div>
                     </th>
                   )}
-                  {shouldShowColumn("inAssembly") && (
-                    <th className="text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("inAssembly")}>{typeFilter === "assembly" ? "In Completed Package" : typeFilter === "raw" ? "In Completed Package" : "In Assembly"} {sortBy === "inAssembly" && (sortDir === "asc" ? "↑" : "↓")}</span>
-                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("inAssembly"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                        </button>
-                      </div>
-                    </th>
-                  )}
                   {shouldShowColumn("assembled") && (
                     <th className="text-right">
                       <div className="flex items-center justify-end gap-2">
                         <span className="cursor-pointer" onClick={() => handleSort("assembled")}>Assembled {sortBy === "assembled" && (sortDir === "asc" ? "↑" : "↓")}</span>
                         <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("assembled"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
+                    </th>
+                  )}
+                  {shouldShowColumn("inAssembly") && (
+                    <th className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("inAssembly")}>{typeFilter === "assembly" ? "In Completed Package" : typeFilter === "raw" ? "In Completed Package" : "In Assembly"} {sortBy === "inAssembly" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("inAssembly"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         </button>
                       </div>
@@ -872,8 +910,8 @@ export default function Inventory() {
                     </th>
                   )}
                   {shouldShowColumn("raw") && <th></th>}
-                  {shouldShowColumn("inAssembly") && <th></th>}
                   {shouldShowColumn("assembled") && <th></th>}
+                  {shouldShowColumn("inAssembly") && <th></th>}
                   {shouldShowColumn("completed") && <th></th>}
                   {shouldShowColumn("onOrder") && <th></th>}
                 </tr>
@@ -928,17 +966,6 @@ export default function Inventory() {
                         )}
                       </td>
                     )}
-                    {shouldShowColumn("inAssembly") && (
-                      <td className="text-right">
-                        {shouldShowNA(item, "inAssembly") ? (
-                          <span className="text-gray-400">N/A</span>
-                        ) : (
-                          <span className={item.inAssembly > 0 ? "text-blue-600 text-sm" : "text-gray-400 text-sm"}>
-                            {item.inAssembly}
-                          </span>
-                        )}
-                      </td>
-                    )}
                     {shouldShowColumn("assembled") && (
                       <td className="text-right">
                         <EditableCell
@@ -948,6 +975,17 @@ export default function Inventory() {
                           isAdmin={user.role === "ADMIN"}
                           onDragFillStart={handleDragFillStart}
                         />
+                      </td>
+                    )}
+                    {shouldShowColumn("inAssembly") && (
+                      <td className="text-right">
+                        {shouldShowNA(item, "inAssembly") ? (
+                          <span className="text-gray-400">N/A</span>
+                        ) : (
+                          <span className={item.inAssembly > 0 ? "text-blue-600 text-sm" : "text-gray-400 text-sm"}>
+                            {item.inAssembly}
+                          </span>
+                        )}
                       </td>
                     )}
                     {shouldShowColumn("completed") && (
