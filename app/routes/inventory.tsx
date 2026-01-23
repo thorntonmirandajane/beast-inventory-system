@@ -125,8 +125,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       category: sku.category,
       process: sku.material, // Renamed from material to process
       raw: byState.RAW,
-      assembled: byState.ASSEMBLED,
-      inProduction: byState.COMPLETED, // Renamed from completed to inProduction
+      assembled: byState.ASSEMBLED + byState.COMPLETED, // Combined ASSEMBLED and COMPLETED states
       inAssembly,
       onOrderPOs,
       totalOnOrder,
@@ -168,10 +167,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       case "assembled":
         aVal = a.assembled;
         bVal = b.assembled;
-        break;
-      case "inProduction":
-        aVal = a.inProduction;
-        bVal = b.inProduction;
         break;
       case "onOrder":
         aVal = a.totalOnOrder;
@@ -532,19 +527,14 @@ export default function Inventory() {
       return column !== "inAssembly";
     }
 
-    // Raw Materials tab - only RAW and In Production (read-only, calculated)
+    // Raw Materials tab - only RAW and On Order (read-only, calculated)
     if (typeFilter === "raw") {
-      return ["sku", "name", "category", "process", "raw", "inProduction", "onOrder"].includes(column);
+      return ["sku", "name", "category", "process", "raw", "onOrder"].includes(column);
     }
 
     // Assembly tab - show Type, Assembled columns (includes both ASSEMBLY and COMPLETED)
     if (typeFilter === "assembly") {
       return ["sku", "name", "category", "type", "process", "assembled"].includes(column);
-    }
-
-    // Removed completed tab - merged into assembly
-    if (typeFilter === "completed") {
-      return ["sku", "name", "category", "process", "inProduction"].includes(column);
     }
 
     return true;
@@ -558,9 +548,9 @@ export default function Inventory() {
     }
 
     // Raw materials can be in RAW state or used in assembled/completed products
-    // So they should NOT show N/A for assembled or inProduction columns
+    // So they should NOT show N/A for assembled column
     if (item.type === "RAW") {
-      return ["onOrder"].includes(column) === false && !["sku", "name", "category", "process", "raw", "assembled", "inProduction", "inAssembly"].includes(column);
+      return ["onOrder"].includes(column) === false && !["sku", "name", "category", "process", "raw", "assembled", "inAssembly"].includes(column);
     }
 
     // For "All" tab, show N/A for invalid state/type combinations
@@ -569,7 +559,7 @@ export default function Inventory() {
         return ["raw", "onOrder"].includes(column);
       }
       if (item.type === "COMPLETED") {
-        return ["raw", "assembled", "onOrder"].includes(column);
+        return ["raw", "onOrder"].includes(column); // COMPLETED items use assembled column to show quantity
       }
     }
 
@@ -720,7 +710,6 @@ export default function Inventory() {
                     </svg>
                     <span className="capitalize">
                       {column === "inAssembly" ? "In Completed Package" :
-                       column === "inProduction" ? "In Production" :
                        column === "process" ? "Process" : column}
                     </span>
                   </button>
@@ -832,18 +821,6 @@ export default function Inventory() {
                       </div>
                     </th>
                   )}
-                  {shouldShowColumn("inProduction") && (
-                    <th className="text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("inProduction")}>
-                          {typeFilter === "completed" ? "Completed" : "In Production"} {sortBy === "inProduction" && (sortDir === "asc" ? "↑" : "↓")}
-                        </span>
-                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("inProduction"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                        </button>
-                      </div>
-                    </th>
-                  )}
                   {shouldShowColumn("onOrder") && (
                     <th className="text-right">
                       <div className="flex items-center justify-end gap-2">
@@ -922,7 +899,6 @@ export default function Inventory() {
                   )}
                   {shouldShowColumn("raw") && <th></th>}
                   {shouldShowColumn("assembled") && <th></th>}
-                  {shouldShowColumn("inProduction") && <th></th>}
                   {shouldShowColumn("onOrder") && <th></th>}
                 </tr>
               </thead>
@@ -1009,30 +985,6 @@ export default function Inventory() {
                           <span className={item.inAssembly > 0 ? "text-blue-600 text-sm" : "text-gray-400 text-sm"}>
                             {item.inAssembly}
                           </span>
-                        )}
-                      </td>
-                    )}
-                    {shouldShowColumn("inProduction") && (
-                      <td className="text-right">
-                        {shouldShowNA(item, "inProduction") ? (
-                          <span className="text-gray-400">N/A</span>
-                        ) : item.type === "RAW" ? (
-                          // Read-only for raw materials (calculated value from inAssembly)
-                          <span className={item.inAssembly > 0 ? "text-blue-600 text-sm font-medium" : "text-gray-400 text-sm"}>
-                            {item.inAssembly}
-                          </span>
-                        ) : typeFilter === "all" ? (
-                          // Read-only on All tab
-                          <span className="text-sm">{item.inProduction || 0}</span>
-                        ) : (
-                          // Editable for COMPLETED types on other tabs
-                          <EditableCell
-                            skuId={item.id}
-                            state="COMPLETED"
-                            initialValue={item.inProduction || 0}
-                            isAdmin={user.role === "ADMIN"}
-                            onDragFillStart={handleDragFillStart}
-                          />
                         )}
                       </td>
                     )}
