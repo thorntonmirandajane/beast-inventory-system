@@ -410,6 +410,11 @@ body {
   @apply text-sm text-red-600 mt-2;
 }
 
+/* Button Success variant (for inventory save) */
+.btn-success {
+  @apply bg-green-600 text-white hover:bg-green-700 focus:ring-green-500;
+}
+
 /* Animations */
 @keyframes fadeIn {
   from { opacity: 0; }
@@ -429,13 +434,239 @@ body {
   animation: slideIn 0.2s ease-out;
 }
 
+/* Utility classes for mobile */
+.mobile-hidden {
+  @apply hidden lg:block;
+}
+
+.mobile-only {
+  @apply block lg:hidden;
+}
+
+.mobile-stack {
+  @apply flex-col lg:flex-row;
+}
+
+.mobile-full-width {
+  @apply w-full lg:w-auto;
+}
+
+/* Mobile-Friendly Responsive Styles */
+@media (max-width: 768px) {
+  /* Sidebar - Convert to collapsible mobile menu */
+  .sidebar {
+    @apply -translate-x-full transition-transform duration-300;
+  }
+
+  .sidebar.mobile-open {
+    @apply translate-x-0;
+  }
+
+  /* Remove sidebar margin on mobile */
+  .with-sidebar {
+    @apply ml-0;
+  }
+
+  /* Mobile menu button */
+  .mobile-menu-button {
+    @apply fixed top-4 left-4 z-50 bg-gray-900 text-white p-2 rounded-lg shadow-lg lg:hidden;
+  }
+
+  /* Page headers - stack vertically */
+  .page-header {
+    @apply flex-col items-start gap-4;
+  }
+
+  .page-title {
+    @apply text-xl;
+  }
+
+  /* Cards - reduce padding */
+  .card-header {
+    @apply px-4 py-3;
+  }
+
+  .card-body {
+    @apply p-4;
+  }
+
+  /* Stats grid - single column on mobile */
+  .stats-grid {
+    @apply grid-cols-1 gap-3;
+  }
+
+  .stat-card {
+    @apply p-4;
+  }
+
+  .stat-value {
+    @apply text-2xl;
+  }
+
+  /* Tables - horizontal scroll */
+  .data-table-wrapper {
+    @apply overflow-x-auto -mx-4;
+  }
+
+  .data-table th,
+  .data-table td {
+    @apply px-3 py-2 text-xs whitespace-nowrap;
+  }
+
+  /* Buttons - full width on mobile */
+  .btn {
+    @apply w-full justify-center;
+  }
+
+  .btn-group {
+    @apply flex-col gap-2;
+  }
+
+  .btn-sm {
+    @apply text-xs;
+  }
+
+  /* Forms - full width */
+  .form-input,
+  .form-select,
+  .form-textarea {
+    @apply text-base; /* Prevent zoom on iOS */
+  }
+
+  /* Modal - full screen on mobile */
+  .modal-content {
+    @apply mx-0 rounded-none max-h-full h-full;
+  }
+
+  /* Tabs - scrollable */
+  .tabs {
+    @apply overflow-x-auto -mx-4 px-4;
+  }
+
+  .tab {
+    @apply whitespace-nowrap;
+  }
+
+  /* Main content - reduce padding */
+  .main-content {
+    @apply p-4;
+  }
+
+  /* Login card - full width on mobile */
+  .login-card {
+    @apply mx-4;
+  }
+
+  /* Time clock - reduce text size */
+  .clock-display {
+    @apply text-4xl py-4;
+  }
+
+  .btn-lg {
+    @apply px-4 py-2.5 text-base;
+  }
+
+  /* Inventory table - make sticky first column work on mobile */
+  .data-table th.sticky,
+  .data-table td.sticky {
+    @apply sticky left-0 z-10 shadow-md;
+  }
+
+  /* Quality control - stack cards */
+  .grid {
+    @apply grid-cols-1 gap-4;
+  }
+
+  /* Schedule calendar - reduce size */
+  .calendar-day {
+    @apply min-h-16 p-1 text-xs;
+  }
+
+  .day-number {
+    @apply text-xs;
+  }
+
+  .schedule-badge {
+    @apply text-[10px] px-1;
+  }
+}
+
+/* Tablet styles (768px - 1024px) */
+@media (min-width: 768px) and (max-width: 1024px) {
+  .sidebar {
+    @apply w-48;
+  }
+
+  .with-sidebar {
+    @apply ml-48;
+  }
+
+  .stats-grid {
+    @apply grid-cols-2;
+  }
+
+  .page-title {
+    @apply text-xl;
+  }
+
+  .nav-link {
+    @apply px-3 text-sm;
+  }
+
+  .nav-link svg {
+    @apply w-4 h-4;
+  }
+}
+
+/* Touch-friendly styles for mobile */
+@media (hover: none) and (pointer: coarse) {
+  /* Increase touch targets */
+  .btn {
+    @apply min-h-[44px];
+  }
+
+  .nav-link {
+    @apply min-h-[44px];
+  }
+
+  .tab {
+    @apply min-h-[44px];
+  }
+
+  /* Disable hover effects on touch devices */
+  .nav-link:hover,
+  .btn:hover,
+  .data-table tbody tr:hover {
+    @apply bg-current;
+  }
+}
+
+/* Safe area insets for iOS notch/home indicator */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .sidebar {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .main-content {
+    padding-bottom: calc(1.5rem + env(safe-area-inset-bottom));
+  }
+}
+
 /* Print styles */
 @media print {
-  .sidebar, .no-print {
+  .sidebar, .no-print, .mobile-menu-button {
     display: none !important;
   }
 
   .with-sidebar {
     margin-left: 0 !important;
+  }
+
+  .page-header {
+    @apply mb-4;
+  }
+
+  .btn {
+    display: none !important;
   }
 }

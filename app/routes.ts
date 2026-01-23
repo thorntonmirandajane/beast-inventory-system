@@ -18,8 +18,10 @@ export default [
   route("transfers", "routes/transfers._index.tsx"),
   route("time-clock", "routes/time-clock.tsx"),
   route("worker-dashboard", "routes/worker-dashboard.tsx"),
+  route("worker-task-view", "routes/worker-task-view.tsx"),
   route("worker-submit-task", "routes/worker-submit-task.tsx"),
   route("worker-clock-out-confirm", "routes/worker-clock-out-confirm.tsx"),
+  route("worker-work-summary", "routes/worker-work-summary.tsx"),
   route("my-rejected-tasks", "routes/my-rejected-tasks.tsx"),
   route("clock-out-entry", "routes/clock-out-entry.tsx"),
   route("my-efficiency", "routes/my-efficiency.tsx"),
@@ -29,6 +31,7 @@ export default [
   route("schedules", "routes/schedules.tsx"),
   route("payroll", "routes/payroll.tsx"),
   route("capacity", "routes/capacity.tsx"),
+  route("quality-control", "routes/quality-control.tsx"),
   route("audit-log", "routes/audit-log.tsx"),
   route("notifications", "routes/notifications.tsx"),
 ] satisfies RouteConfig;

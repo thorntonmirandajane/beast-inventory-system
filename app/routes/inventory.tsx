@@ -6,6 +6,13 @@ import prisma from "../db.server";
 import { autoDeductRawMaterials } from "../utils/inventory.server";
 import { useState, useEffect } from "react";
 
+// Type for tracking pending changes
+type PendingChange = {
+  skuId: string;
+  state: string;
+  quantity: number;
+};
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
   const url = new URL(request.url);
@@ -331,31 +338,37 @@ function EditableCell({
   state,
   initialValue,
   isAdmin,
-  onDragFillStart
+  onDragFillStart,
+  onPendingChange,
+  pendingValue
 }: {
   skuId: string;
   state: string;
   initialValue: number;
   isAdmin: boolean;
   onDragFillStart: (skuId: string, state: string, value: number) => void;
+  onPendingChange: (skuId: string, state: string, quantity: number) => void;
+  pendingValue?: number;
 }) {
-  const fetcher = useFetcher();
   const [isEditing, setIsEditing] = useState(false);
-  const [value, setValue] = useState(initialValue.toString());
+  const displayValue = pendingValue !== undefined ? pendingValue : initialValue;
+  const [value, setValue] = useState(displayValue.toString());
+  const hasPendingChange = pendingValue !== undefined && pendingValue !== initialValue;
+
+  useEffect(() => {
+    setValue(displayValue.toString());
+  }, [displayValue]);
 
   const handleSubmit = () => {
     if (!isAdmin) return;
     const newValue = parseInt(value, 10);
     if (isNaN(newValue) || newValue < 0) {
-      setValue(initialValue.toString());
+      setValue(displayValue.toString());
       setIsEditing(false);
       return;
     }
     if (newValue !== initialValue) {
-      fetcher.submit(
-        { intent: "update-quantity", skuId, state, quantity: value },
-        { method: "post" }
-      );
+      onPendingChange(skuId, state, newValue);
     }
     setIsEditing(false);
   };
@@ -395,19 +408,22 @@ function EditableCell({
           const isCorner = e.clientX > rect.right - 10 && e.clientY > rect.bottom - 10;
           if (isCorner) {
             e.preventDefault();
-            onDragFillStart(skuId, state, initialValue);
+            onDragFillStart(skuId, state, displayValue);
           }
         }
       }}
       className={`cursor-pointer px-2 py-1 rounded hover:bg-blue-50 relative ${
-        initialValue > 0 ? "text-gray-900 font-medium" : "text-gray-400"
-      }`}
+        displayValue > 0 ? "text-gray-900 font-medium" : "text-gray-400"
+      } ${hasPendingChange ? "bg-yellow-100 border border-yellow-400" : ""}`}
       style={{
         position: "relative",
       }}
-      title="Click to edit, or drag bottom-right corner to fill down"
+      title={hasPendingChange ? "Unsaved change - click Save Changes button" : "Click to edit, or drag bottom-right corner to fill down"}
     >
-      {initialValue}
+      {displayValue}
+      {hasPendingChange && (
+        <span className="absolute -top-1 -right-1 w-2 h-2 bg-yellow-500 rounded-full" title="Unsaved change" />
+      )}
       <span
         className="absolute bottom-0 right-0 w-2 h-2 bg-blue-500 cursor-se-resize"
         style={{
@@ -439,6 +455,7 @@ export default function Inventory() {
     value: number;
     selectedRows: string[];
   } | null>(null);
+  const [pendingChanges, setPendingChanges] = useState<Map<string, PendingChange>>(new Map());
   const fetcher = useFetcher();
 
   const toggleColumnVisibility = (column: string) => {
@@ -577,6 +594,37 @@ export default function Inventory() {
     });
   };
 
+  // Handle adding a pending change
+  const handlePendingChange = (skuId: string, state: string, quantity: number) => {
+    const key = `${skuId}-${state}`;
+    setPendingChanges((prev) => {
+      const next = new Map(prev);
+      next.set(key, { skuId, state, quantity });
+      return next;
+    });
+  };
+
+  // Handle saving all pending changes
+  const handleSaveChanges = () => {
+    if (pendingChanges.size === 0) return;
+
+    const updates = Array.from(pendingChanges.values());
+    fetcher.submit(
+      { intent: "batch-update", updates: JSON.stringify(updates) },
+      { method: "post" }
+    );
+
+    // Clear pending changes after submit
+    setPendingChanges(new Map());
+  };
+
+  // Handle canceling all pending changes
+  const handleCancelChanges = () => {
+    if (window.confirm("Are you sure you want to discard all unsaved changes?")) {
+      setPendingChanges(new Map());
+    }
+  };
+
   // Handle drag fill end
   const handleDragFillEnd = () => {
     if (!dragFillState || dragFillState.selectedRows.length <= 1) {
@@ -590,16 +638,10 @@ export default function Inventory() {
     );
 
     if (confirmed) {
-      const updates = dragFillState.selectedRows.map((skuId) => ({
-        skuId,
-        state: dragFillState.state,
-        quantity: dragFillState.value,
-      }));
-
-      fetcher.submit(
-        { intent: "batch-update", updates: JSON.stringify(updates) },
-        { method: "post" }
-      );
+      // Add to pending changes instead of immediate submit
+      dragFillState.selectedRows.forEach((skuId) => {
+        handlePendingChange(skuId, dragFillState.state, dragFillState.value);
+      });
     }
 
     setDragFillState(null);
@@ -641,8 +683,32 @@ export default function Inventory() {
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">Inventory</h1>
-        <p className="page-subtitle">View and edit inventory levels - click cells to edit, drag corner to fill down</p>
+        <div>
+          <h1 className="page-title">Inventory</h1>
+          <p className="page-subtitle">View and edit inventory levels - click cells to edit, drag corner to fill down</p>
+        </div>
+
+        {/* Save Changes Button */}
+        {pendingChanges.size > 0 && user.role === "ADMIN" && (
+          <div className="flex gap-3 items-center">
+            <div className="text-sm text-yellow-700 bg-yellow-100 px-3 py-2 rounded border border-yellow-300">
+              {pendingChanges.size} unsaved change{pendingChanges.size > 1 ? "s" : ""}
+            </div>
+            <button
+              onClick={handleSaveChanges}
+              className="btn btn-success"
+              disabled={fetcher.state === "submitting"}
+            >
+              {fetcher.state === "submitting" ? "Saving..." : "Save Changes"}
+            </button>
+            <button
+              onClick={handleCancelChanges}
+              className="btn btn-ghost"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Search */}
@@ -956,6 +1022,8 @@ export default function Inventory() {
                             initialValue={item.raw || 0}
                             isAdmin={user.role === "ADMIN"}
                             onDragFillStart={handleDragFillStart}
+                            onPendingChange={handlePendingChange}
+                            pendingValue={pendingChanges.get(`${item.id}-RAW`)?.quantity}
                           />
                         )}
                       </td>
@@ -973,6 +1041,8 @@ export default function Inventory() {
                             initialValue={item.assembled || 0}
                             isAdmin={user.role === "ADMIN"}
                             onDragFillStart={handleDragFillStart}
+                            onPendingChange={handlePendingChange}
+                            pendingValue={pendingChanges.get(`${item.id}-ASSEMBLED`)?.quantity}
                           />
                         )}
                       </td>
