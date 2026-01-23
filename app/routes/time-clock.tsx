@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, redirect } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -239,9 +239,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     BREAK_END: "Break ended",
   };
 
-  // For workers: redirect to task submission after clock-in
+  // For workers: redirect to task view after clock-in
   if (user.role === "WORKER" && eventType === "CLOCK_IN") {
-    return redirect("/worker-submit-task");
+    return redirect("/worker-task-view?clockIn=true");
   }
 
   return { success: true, message: messages[eventType] };
