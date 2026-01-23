@@ -528,14 +528,14 @@ export default function Inventory() {
       return column !== "inAssembly";
     }
 
-    // Raw Materials tab
+    // Raw Materials tab - only RAW and In Production (read-only, calculated)
     if (typeFilter === "raw") {
-      return ["sku", "name", "category", "process", "raw", "assembled", "inProduction", "onOrder"].includes(column);
+      return ["sku", "name", "category", "process", "raw", "inProduction", "onOrder"].includes(column);
     }
 
-    // Assembly tab
+    // Assembly tab - only show Assembled column
     if (typeFilter === "assembly") {
-      return ["sku", "name", "category", "process", "assembled", "inProduction"].includes(column);
+      return ["sku", "name", "category", "process", "assembled"].includes(column);
     }
 
     // Completed tab
@@ -831,7 +831,9 @@ export default function Inventory() {
                   {shouldShowColumn("inProduction") && (
                     <th className="text-right">
                       <div className="flex items-center justify-end gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("inProduction")}>In Production {sortBy === "inProduction" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <span className="cursor-pointer" onClick={() => handleSort("inProduction")}>
+                          {typeFilter === "completed" ? "Completed" : "In Production"} {sortBy === "inProduction" && (sortDir === "asc" ? "↑" : "↓")}
+                        </span>
                         <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("inProduction"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         </button>
@@ -1006,7 +1008,13 @@ export default function Inventory() {
                       <td className="text-right">
                         {shouldShowNA(item, "inProduction") ? (
                           <span className="text-gray-400">N/A</span>
+                        ) : item.type === "RAW" ? (
+                          // Read-only for raw materials (calculated value from inAssembly)
+                          <span className={item.inAssembly > 0 ? "text-blue-600 text-sm font-medium" : "text-gray-400 text-sm"}>
+                            {item.inAssembly}
+                          </span>
                         ) : (
+                          // Editable for COMPLETED types
                           <EditableCell
                             skuId={item.id}
                             state="COMPLETED"
