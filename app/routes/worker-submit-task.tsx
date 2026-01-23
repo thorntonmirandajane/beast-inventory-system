@@ -249,8 +249,32 @@ export default function WorkerSubmitTask() {
     ? []
     : skus.filter(sku => {
         if (!selectedProcessConfig) return false;
-        // Filter by category matching process display name
-        return sku.category === selectedProcessConfig.displayName;
+
+        // Filter SKUs based on process type
+        const processName = selectedProcessConfig.processName;
+
+        // TIPPING: Works with ASSEMBLY items (creates assembled tips from raw materials)
+        if (processName === "TIPPING") {
+          return sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads" || sku.category === "Tips");
+        }
+
+        // BLADING: Works with ASSEMBLY items that can have blades added
+        if (processName === "BLADING") {
+          return sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads");
+        }
+
+        // STUD_TESTING: Works with raw studs
+        if (processName === "STUD_TESTING") {
+          return sku.category === "Studs";
+        }
+
+        // COMPLETE_PACKS: Works with COMPLETED (packaged) products
+        if (processName === "COMPLETE_PACKS") {
+          return sku.type === "COMPLETED";
+        }
+
+        // Default: show all SKUs for other processes
+        return true;
       });
 
   const handleAddTask = () => {
