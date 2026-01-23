@@ -530,7 +530,7 @@ export default function Inventory() {
 
     // Raw Materials tab
     if (typeFilter === "raw") {
-      return ["sku", "name", "category", "material", "raw", "inAssembly", "onOrder"].includes(column);
+      return ["sku", "name", "category", "material", "raw", "assembled", "inAssembly", "onOrder"].includes(column);
     }
 
     // Assembly tab
