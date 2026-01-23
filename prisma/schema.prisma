@@ -7,65 +7,411 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ============================================
-// USER & AUTHENTICATION
-// ============================================
-
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String   // bcrypt hashed
-  firstName String
-  lastName  String
-  role      UserRole @default(WORKER)
-  payRate   Float?   // Hourly pay rate in dollars
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  receivingSignOffs ReceivingRecord[] @relation("SignedOffBy")
-  receivingCreated  ReceivingRecord[] @relation("CreatedBy")
-  workOrders        WorkOrder[]
-  transfers         Transfer[]
-  auditLogs         AuditLog[]
-  clockEvents       ClockEvent[]
-  purchaseOrdersCreated  PurchaseOrder[] @relation("POCreatedBy")
-  purchaseOrdersApproved PurchaseOrder[] @relation("POApprovedBy")
-  schedules         WorkerSchedule[]
-
-  // Worker productivity relations
-  workerTasks       WorkerTask[]        @relation("WorkerTasks")
-  assignedTasks     WorkerTask[]        @relation("AssignedTasks")
-  timeEntries       WorkerTimeEntry[]
-  approvedEntries   WorkerTimeEntry[]   @relation("ApprovedEntries")
+  id                     String            @id @default(cuid())
+  email                  String            @unique
+  password               String
+  firstName              String
+  lastName               String
+  isActive               Boolean           @default(true)
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+  role                   UserRole          @default(WORKER)
+  payRate                Float?
+  auditLogs              AuditLog[]
+  clockEvents            ClockEvent[]
+  purchaseOrdersApproved PurchaseOrder[]   @relation("POApprovedBy")
+  purchaseOrdersCreated  PurchaseOrder[]   @relation("POCreatedBy")
+  receivingCreated       ReceivingRecord[] @relation("CreatedBy")
+  receivingSignOffs      ReceivingRecord[] @relation("SignedOffBy")
+  transfers              Transfer[]
+  workOrders             WorkOrder[]
+  schedules              WorkerSchedule[]
+  assignedTasks          WorkerTask[]      @relation("AssignedTasks")
+  workerTasks            WorkerTask[]      @relation("WorkerTasks")
+  approvedEntries        WorkerTimeEntry[] @relation("ApprovedEntries")
+  timeEntries            WorkerTimeEntry[]
 
   @@map("users")
 }
 
-enum UserRole {
-  ADMIN
-  WORKER
-}
-
-// ============================================
-// TIME CLOCK
-// ============================================
-
 model ClockEvent {
-  id        String         @id @default(cuid())
-  userId    String
-  user      User           @relation(fields: [userId], references: [id])
-  type      ClockEventType
-  timestamp DateTime       @default(now())
-  notes     String?
-
-  // Worker productivity relations
+  id            String           @id @default(cuid())
+  userId        String
+  type          ClockEventType
+  timestamp     DateTime         @default(now())
+  notes         String?
+  user          User             @relation(fields: [userId], references: [id])
   clockInEntry  WorkerTimeEntry? @relation("ClockIn")
   clockOutEntry WorkerTimeEntry? @relation("ClockOut")
 
   @@index([userId, timestamp])
   @@map("clock_events")
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  type      NotificationType
+  userId    String
+  message   String
+  metadata  String?
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  @@index([isRead, createdAt])
+  @@map("notifications")
+}
+
+model Sku {
+  id                  String            @id @default(cuid())
+  sku                 String            @unique
+  name                String
+  type                SkuType
+  description         String?
+  isActive            Boolean           @default(true)
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  category            String?
+  material            String?
+  usedInBoms          BomComponent[]    @relation("ComponentSku")
+  bomComponents       BomComponent[]    @relation("ParentSku")
+  inventoryItems      InventoryItem[]
+  poItems             POItem[]
+  processTimes        ProcessTime[]
+  receivingRecords    ReceivingRecord[]
+  manufacturers       SkuManufacturer[]
+  timeEntryLines      TimeEntryLine[]   @relation("TimeEntryLineSku")
+  transferItems       TransferItem[]
+  workOrdersProducing WorkOrder[]       @relation("OutputSku")
+  workerTasks         WorkerTask[]      @relation("TaskSku")
+
+  @@map("skus")
+}
+
+model BomComponent {
+  id             String @id @default(cuid())
+  parentSkuId    String
+  componentSkuId String
+  quantity       Int
+  componentSku   Sku    @relation("ComponentSku", fields: [componentSkuId], references: [id])
+  parentSku      Sku    @relation("ParentSku", fields: [parentSkuId], references: [id])
+
+  @@unique([parentSkuId, componentSkuId])
+  @@index([parentSkuId])
+  @@index([componentSkuId])
+  @@map("bom_components")
+}
+
+model InventoryItem {
+  id        String         @id @default(cuid())
+  skuId     String
+  quantity  Int
+  state     InventoryState
+  location  String?
+  notes     String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  sku       Sku            @relation(fields: [skuId], references: [id])
+
+  @@index([skuId, state])
+  @@map("inventory_items")
+}
+
+model PurchaseOrder {
+  id               String    @id @default(cuid())
+  poNumber         String    @unique
+  vendorName       String
+  status           POStatus  @default(SUBMITTED)
+  submittedAt      DateTime  @default(now())
+  estimatedArrival DateTime?
+  receivedAt       DateTime?
+  createdById      String
+  approvedById     String?
+  approvedAt       DateTime?
+  notes            String?
+  items            POItem[]
+  approvedBy       User?     @relation("POApprovedBy", fields: [approvedById], references: [id])
+  createdBy        User      @relation("POCreatedBy", fields: [createdById], references: [id])
+
+  @@index([status])
+  @@index([poNumber])
+  @@map("purchase_orders")
+}
+
+model POItem {
+  id               String        @id @default(cuid())
+  purchaseOrderId  String
+  skuId            String
+  quantityOrdered  Int
+  quantityReceived Int           @default(0)
+  notes            String?
+  manufacturerId   String?
+  manufacturer     Manufacturer? @relation(fields: [manufacturerId], references: [id])
+  purchaseOrder    PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  sku              Sku           @relation(fields: [skuId], references: [id])
+
+  @@index([purchaseOrderId])
+  @@map("po_items")
+}
+
+model ReceivingRecord {
+  id            String          @id @default(cuid())
+  skuId         String
+  quantity      Int
+  receivedAt    DateTime        @default(now())
+  createdById   String
+  signedOffById String?
+  signedOffAt   DateTime?
+  status        ReceivingStatus @default(PENDING)
+  poNumber      String?
+  vendorName    String?
+  notes         String?
+  createdBy     User            @relation("CreatedBy", fields: [createdById], references: [id])
+  signedOffBy   User?           @relation("SignedOffBy", fields: [signedOffById], references: [id])
+  sku           Sku             @relation(fields: [skuId], references: [id])
+
+  @@index([status])
+  @@index([skuId])
+  @@map("receiving_records")
+}
+
+model WorkOrder {
+  id              String                 @id @default(cuid())
+  orderNumber     String                 @unique @default(cuid())
+  outputSkuId     String
+  quantityToBuild Int
+  quantityBuilt   Int                    @default(0)
+  status          WorkOrderStatus        @default(PENDING)
+  createdById     String
+  createdAt       DateTime               @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  notes           String?
+  consumptions    WorkOrderConsumption[]
+  createdBy       User                   @relation(fields: [createdById], references: [id])
+  outputSku       Sku                    @relation("OutputSku", fields: [outputSkuId], references: [id])
+
+  @@index([status])
+  @@index([outputSkuId])
+  @@map("work_orders")
+}
+
+model WorkOrderConsumption {
+  id          String    @id @default(cuid())
+  workOrderId String
+  skuId       String
+  quantity    Int
+  consumedAt  DateTime  @default(now())
+  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id])
+
+  @@index([workOrderId])
+  @@map("work_order_consumptions")
+}
+
+model Transfer {
+  id             String         @id @default(cuid())
+  transferNumber String         @unique @default(cuid())
+  destination    String
+  shippedAt      DateTime       @default(now())
+  createdById    String
+  trackingNumber String?
+  carrier        String?
+  notes          String?
+  items          TransferItem[]
+  createdBy      User           @relation(fields: [createdById], references: [id])
+
+  @@index([destination])
+  @@map("transfers")
+}
+
+model TransferItem {
+  id         String   @id @default(cuid())
+  transferId String
+  skuId      String
+  quantity   Int
+  sku        Sku      @relation(fields: [skuId], references: [id])
+  transfer   Transfer @relation(fields: [transferId], references: [id])
+
+  @@index([transferId])
+  @@map("transfer_items")
+}
+
+model WorkerSchedule {
+  id           String       @id @default(cuid())
+  userId       String
+  dayOfWeek    Int?         // 0=Sunday, 1=Monday, etc. (null for specific dates)
+  scheduleDate DateTime?    // Specific date for one-time schedules
+  scheduleType ScheduleType @default(RECURRING)
+  startTime    String
+  endTime      String
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@unique([userId, dayOfWeek, scheduleDate])
+  @@index([userId])
+  @@index([scheduleDate])
+  @@map("worker_schedules")
+}
+
+model ProcessConfig {
+  id             String          @id @default(cuid())
+  processName    String          @unique
+  displayName    String
+  description    String?
+  secondsPerUnit Int
+  isActive       Boolean         @default(true)
+  consumesState  InventoryState?
+  producesState  InventoryState?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@map("process_configs")
+}
+
+model ProcessTime {
+  id             String @id @default(cuid())
+  skuId          String
+  processType    String
+  minutesPerUnit Float
+  sku            Sku    @relation(fields: [skuId], references: [id])
+
+  @@unique([skuId, processType])
+  @@index([skuId])
+  @@map("process_times")
+}
+
+model Manufacturer {
+  id               String            @id @default(cuid())
+  name             String            @unique
+  isActive         Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  poItems          POItem[]
+  skuManufacturers SkuManufacturer[]
+
+  @@map("manufacturers")
+}
+
+model SkuManufacturer {
+  id             String       @id @default(cuid())
+  skuId          String
+  manufacturerId String
+  cost           Float?
+  leadTimeDays   Int?
+  isPreferred    Boolean      @default(false)
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id])
+  sku            Sku          @relation(fields: [skuId], references: [id], onDelete: Cascade)
+
+  @@unique([skuId, manufacturerId])
+  @@index([skuId])
+  @@index([manufacturerId])
+  @@map("sku_manufacturers")
+}
+
+model WorkerTask {
+  id             String             @id @default(cuid())
+  userId         String
+  processName    String
+  skuId          String?
+  targetQuantity Int?
+  priority       Int                @default(0)
+  assignmentType TaskAssignmentType @default(DAILY)
+  status         TaskStatus         @default(PENDING)
+  assignedById   String
+  dueDate        DateTime?
+  notes          String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  completedAt    DateTime?
+  timeEntryLines TimeEntryLine[]
+  assignedBy     User               @relation("AssignedTasks", fields: [assignedById], references: [id])
+  sku            Sku?               @relation("TaskSku", fields: [skuId], references: [id])
+  user           User               @relation("WorkerTasks", fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@index([dueDate])
+  @@map("worker_tasks")
+}
+
+model WorkerTimeEntry {
+  id              String          @id @default(cuid())
+  userId          String
+  clockInEventId  String          @unique
+  clockOutEventId String?         @unique
+  clockInTime     DateTime
+  clockOutTime    DateTime?
+  breakMinutes    Int             @default(0)
+  actualMinutes   Int?
+  expectedMinutes Float?
+  efficiency      Float?
+  status          TimeEntryStatus @default(DRAFT)
+  approvedById    String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  rejectionPhoto  String?
+  lines           TimeEntryLine[]
+  approvedBy      User?           @relation("ApprovedEntries", fields: [approvedById], references: [id])
+  clockInEvent    ClockEvent      @relation("ClockIn", fields: [clockInEventId], references: [id])
+  clockOutEvent   ClockEvent?     @relation("ClockOut", fields: [clockOutEventId], references: [id])
+  user            User            @relation(fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@index([clockInTime])
+  @@map("worker_time_entries")
+}
+
+model TimeEntryLine {
+  id                    String          @id @default(cuid())
+  timeEntryId           String
+  processName           String
+  skuId                 String?
+  quantityCompleted     Int
+  secondsPerUnit        Int
+  expectedSeconds       Int
+  workerTaskId          String?
+  notes                 String?
+  adminAdjustedQuantity Int?
+  adminNotes            String?
+  isRejected            Boolean         @default(false)
+  rejectionReason       String?
+  rejectionQuantity     Int?
+  isMisc                Boolean         @default(false)
+  miscDescription       String?
+  createdAt             DateTime        @default(now())
+  sku                   Sku?            @relation("TimeEntryLineSku", fields: [skuId], references: [id])
+  timeEntry             WorkerTimeEntry @relation(fields: [timeEntryId], references: [id], onDelete: Cascade)
+  workerTask            WorkerTask?     @relation(fields: [workerTaskId], references: [id])
+
+  @@index([timeEntryId])
+  @@map("time_entry_lines")
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  action       String
+  resourceType String
+  resourceId   String
+  details      Json?
+  createdAt    DateTime @default(now())
+  user         User?    @relation(fields: [userId], references: [id])
+
+  @@index([action])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+enum UserRole {
+  ADMIN
+  WORKER
 }
 
 enum ClockEventType {
@@ -75,376 +421,50 @@ enum ClockEventType {
   BREAK_END
 }
 
-// ============================================
-// NOTIFICATIONS
-// ============================================
-
-model Notification {
-  id        String           @id @default(cuid())
-  type      NotificationType
-  userId    String           // Worker who triggered the notification
-  message   String
-  metadata  String?          // JSON string with additional data
-  isRead    Boolean          @default(false)
-  createdAt DateTime         @default(now())
-
-  @@index([isRead, createdAt])
-  @@map("notifications")
-}
-
 enum NotificationType {
   LATE_CLOCK_IN
   MISSED_CLOCK_IN
   MISSED_CLOCK_OUT
 }
 
-// ============================================
-// SKU & BILL OF MATERIALS
-// ============================================
-
-model Sku {
-  id          String  @id @default(cuid())
-  sku         String  @unique // e.g., "2IN-100G-BEAST"
-  name        String  // e.g., "BROADHEAD- 2.0 IN CUT - 100 GR"
-  type        SkuType
-  description String?
-  category    String?  // Process category: TIPPING, BLADING, TESTING, PACKING
-  material    String?  // Material type: TITANIUM, ALUMINUM, STEEL, etc.
-  isActive    Boolean @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  // BOM Relations - what this SKU is made FROM
-  bomComponents BomComponent[] @relation("ParentSku")
-
-  // BOM Relations - what this SKU is used IN
-  usedInBoms BomComponent[] @relation("ComponentSku")
-
-  // Inventory
-  inventoryItems InventoryItem[]
-
-  // Work Orders
-  workOrdersProducing WorkOrder[] @relation("OutputSku")
-
-  // Receiving records
-  receivingRecords ReceivingRecord[]
-
-  // Transfer line items
-  transferItems TransferItem[]
-
-  // Purchase order items
-  poItems POItem[]
-
-  // Process times
-  processTimes ProcessTime[]
-
-  // Worker productivity relations
-  workerTasks     WorkerTask[]    @relation("TaskSku")
-  timeEntryLines  TimeEntryLine[] @relation("TimeEntryLineSku")
-
-  // Manufacturer relations
-  manufacturers   SkuManufacturer[]
-
-  @@map("skus")
-}
-
 enum SkuType {
-  RAW        // Purchased raw materials
-  ASSEMBLY   // Intermediate assemblies (tipped ferrules, bladed ferrules, broadheads)
-  COMPLETED  // Finished packages ready to ship
-}
-
-// Bill of Materials - defines what components make up a parent SKU
-model BomComponent {
-  id           String @id @default(cuid())
-  parentSkuId  String
-  parentSku    Sku    @relation("ParentSku", fields: [parentSkuId], references: [id])
-  componentSkuId String
-  componentSku Sku    @relation("ComponentSku", fields: [componentSkuId], references: [id])
-  quantity     Int    // How many of this component needed to build 1 parent
-
-  @@unique([parentSkuId, componentSkuId])
-  @@index([parentSkuId])
-  @@index([componentSkuId])
-  @@map("bom_components")
-}
-
-// ============================================
-// INVENTORY
-// ============================================
-
-model InventoryItem {
-  id        String          @id @default(cuid())
-  skuId     String
-  sku       Sku             @relation(fields: [skuId], references: [id])
-  quantity  Int
-  state     InventoryState
-  location  String?         // Optional bin/shelf location
-  notes     String?
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
-
-  @@index([skuId, state])
-  @@map("inventory_items")
+  RAW
+  ASSEMBLY
+  COMPLETED
 }
 
 enum InventoryState {
-  RECEIVED      // Just received, pending sign-off
-  RAW           // Signed off and available for use
-  ASSEMBLED     // Intermediate assembly complete
-  COMPLETED     // Final package complete, ready to ship
-  TRANSFERRED   // Shipped out (historical record)
-}
-
-// ============================================
-// PURCHASE ORDERS
-// ============================================
-
-model PurchaseOrder {
-  id              String    @id @default(cuid())
-  poNumber        String    @unique
-  vendorName      String
-  status          POStatus  @default(SUBMITTED)
-  submittedAt     DateTime  @default(now())
-  estimatedArrival DateTime?
-  receivedAt      DateTime?
-  createdById     String
-  createdBy       User      @relation("POCreatedBy", fields: [createdById], references: [id])
-  approvedById    String?
-  approvedBy      User?     @relation("POApprovedBy", fields: [approvedById], references: [id])
-  approvedAt      DateTime?
-  notes           String?
-
-  items POItem[]
-
-  @@index([status])
-  @@index([poNumber])
-  @@map("purchase_orders")
-}
-
-model POItem {
-  id              String        @id @default(cuid())
-  purchaseOrderId String
-  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
-  skuId           String
-  sku             Sku           @relation(fields: [skuId], references: [id])
-  manufacturerId  String?
-  manufacturer    Manufacturer? @relation(fields: [manufacturerId], references: [id])
-  quantityOrdered Int
-  quantityReceived Int          @default(0)
-  notes           String?
-
-  @@index([purchaseOrderId])
-  @@map("po_items")
+  RECEIVED
+  RAW
+  ASSEMBLED
+  COMPLETED
+  TRANSFERRED
 }
 
 enum POStatus {
-  SUBMITTED   // PO created, waiting for delivery
-  PARTIAL     // Some items received
-  RECEIVED    // All items received, pending approval
-  APPROVED    // Approved, added to inventory
-  CANCELLED   // PO cancelled
-}
-
-// Legacy receiving records (kept for historical data)
-model ReceivingRecord {
-  id            String    @id @default(cuid())
-  skuId         String
-  sku           Sku       @relation(fields: [skuId], references: [id])
-  quantity      Int
-  receivedAt    DateTime  @default(now())
-  createdById   String
-  createdBy     User      @relation("CreatedBy", fields: [createdById], references: [id])
-  signedOffById String?
-  signedOffBy   User?     @relation("SignedOffBy", fields: [signedOffById], references: [id])
-  signedOffAt   DateTime?
-  status        ReceivingStatus @default(PENDING)
-  poNumber      String?   // Purchase order reference
-  vendorName    String?
-  notes         String?
-
-  @@index([status])
-  @@index([skuId])
-  @@map("receiving_records")
+  SUBMITTED
+  PARTIAL
+  RECEIVED
+  APPROVED
+  CANCELLED
 }
 
 enum ReceivingStatus {
-  PENDING   // Waiting for sign-off
-  APPROVED  // Signed off, added to inventory
-  REJECTED  // Rejected, not added to inventory
-}
-
-// ============================================
-// WORK ORDERS (BUILDS)
-// ============================================
-
-model WorkOrder {
-  id            String          @id @default(cuid())
-  orderNumber   String          @unique @default(cuid())
-  outputSkuId   String
-  outputSku     Sku             @relation("OutputSku", fields: [outputSkuId], references: [id])
-  quantityToBuild Int
-  quantityBuilt Int             @default(0)
-  status        WorkOrderStatus @default(PENDING)
-  createdById   String
-  createdBy     User            @relation(fields: [createdById], references: [id])
-  createdAt     DateTime        @default(now())
-  startedAt     DateTime?
-  completedAt   DateTime?
-  notes         String?
-
-  // Component consumption records
-  consumptions  WorkOrderConsumption[]
-
-  @@index([status])
-  @@index([outputSkuId])
-  @@map("work_orders")
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 enum WorkOrderStatus {
-  PENDING      // Created but not started
-  IN_PROGRESS  // Being worked on
-  COMPLETED    // All units built
-  CANCELLED    // Cancelled before completion
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
 }
-
-// Tracks which components were consumed for a work order
-model WorkOrderConsumption {
-  id          String    @id @default(cuid())
-  workOrderId String
-  workOrder   WorkOrder @relation(fields: [workOrderId], references: [id])
-  skuId       String    // The component SKU consumed
-  quantity    Int       // How many consumed
-  consumedAt  DateTime  @default(now())
-
-  @@index([workOrderId])
-  @@map("work_order_consumptions")
-}
-
-// ============================================
-// TRANSFERS / SHIPMENTS
-// ============================================
-
-model Transfer {
-  id            String         @id @default(cuid())
-  transferNumber String        @unique @default(cuid())
-  destination   String         // Where it's being shipped
-  shippedAt     DateTime       @default(now())
-  createdById   String
-  createdBy     User           @relation(fields: [createdById], references: [id])
-  trackingNumber String?
-  carrier       String?
-  notes         String?
-
-  items TransferItem[]
-
-  @@index([destination])
-  @@map("transfers")
-}
-
-model TransferItem {
-  id         String   @id @default(cuid())
-  transferId String
-  transfer   Transfer @relation(fields: [transferId], references: [id])
-  skuId      String
-  sku        Sku      @relation(fields: [skuId], references: [id])
-  quantity   Int
-
-  @@index([transferId])
-  @@map("transfer_items")
-}
-
-// ============================================
-// WORKER SCHEDULES
-// ============================================
-
-model WorkerSchedule {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  dayOfWeek Int      // 0=Sunday, 1=Monday, etc.
-  startTime String   // "08:00" format
-  endTime   String   // "17:00" format
-  isActive  Boolean  @default(true)
-
-  @@unique([userId, dayOfWeek])
-  @@index([userId])
-  @@map("worker_schedules")
-}
-
-// ============================================
-// PROCESS TIME CONFIGURATION
-// ============================================
-
-model ProcessConfig {
-  id            String  @id @default(cuid())
-  processName   String  @unique // "TIPPING", "BLADING", "STUD_TESTING", "COMPLETE_PACKS"
-  displayName   String  // "Tipping", "Blading", "Stud Testing", "Complete Packs"
-  secondsPerUnit Int    // Time in seconds to complete one unit
-  isActive      Boolean @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  @@map("process_configs")
-}
-
-// Legacy process times per SKU (can be removed later)
-model ProcessTime {
-  id            String  @id @default(cuid())
-  skuId         String
-  sku           Sku     @relation(fields: [skuId], references: [id])
-  processType   String  // "TIPPING", "BLADING", "TESTING", "PACKING"
-  minutesPerUnit Float   // Time in minutes to complete one unit
-
-  @@unique([skuId, processType])
-  @@index([skuId])
-  @@map("process_times")
-}
-
-// ============================================
-// MANUFACTURERS
-// ============================================
-
-model Manufacturer {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  skuManufacturers SkuManufacturer[]
-  poItems          POItem[]
-
-  @@map("manufacturers")
-}
-
-model SkuManufacturer {
-  id             String       @id @default(cuid())
-  skuId          String
-  sku            Sku          @relation(fields: [skuId], references: [id], onDelete: Cascade)
-  manufacturerId String
-  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id])
-  cost           Float?       // Cost per unit from this manufacturer
-  leadTimeDays   Int?         // Lead time in days
-  isPreferred    Boolean      @default(false)
-  notes          String?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-
-  @@unique([skuId, manufacturerId])
-  @@index([skuId])
-  @@index([manufacturerId])
-  @@map("sku_manufacturers")
-}
-
-// ============================================
-// WORKER PRODUCTIVITY
-// ============================================
 
 enum TaskAssignmentType {
-  DAILY    // Assigned for a specific day
-  BACKLOG  // Queued work, no specific due date
+  DAILY
+  BACKLOG
 }
 
 enum TaskStatus {
@@ -454,101 +474,13 @@ enum TaskStatus {
 }
 
 enum TimeEntryStatus {
-  DRAFT      // Worker still editing
-  PENDING    // Submitted for approval
-  APPROVED   // Admin approved
-  REJECTED   // Admin rejected
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
 }
 
-model WorkerTask {
-  id              String             @id @default(cuid())
-  userId          String
-  user            User               @relation("WorkerTasks", fields: [userId], references: [id])
-  processName     String             // TIPPING, BLADING, STUD_TESTING, COMPLETE_PACKS
-  skuId           String?
-  sku             Sku?               @relation("TaskSku", fields: [skuId], references: [id])
-  targetQuantity  Int?
-  priority        Int                @default(0)
-  assignmentType  TaskAssignmentType @default(DAILY)
-  status          TaskStatus         @default(PENDING)
-  assignedById    String
-  assignedBy      User               @relation("AssignedTasks", fields: [assignedById], references: [id])
-  dueDate         DateTime?
-  notes           String?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
-  completedAt     DateTime?
-  timeEntryLines  TimeEntryLine[]
-
-  @@index([userId, status])
-  @@index([dueDate])
-  @@map("worker_tasks")
-}
-
-model WorkerTimeEntry {
-  id              String           @id @default(cuid())
-  userId          String
-  user            User             @relation(fields: [userId], references: [id])
-  clockInEventId  String           @unique
-  clockInEvent    ClockEvent       @relation("ClockIn", fields: [clockInEventId], references: [id])
-  clockOutEventId String?          @unique
-  clockOutEvent   ClockEvent?      @relation("ClockOut", fields: [clockOutEventId], references: [id])
-  clockInTime     DateTime
-  clockOutTime    DateTime?
-  breakMinutes    Int              @default(0)
-  actualMinutes   Int?             // Total work minutes (excluding breaks)
-  expectedMinutes Float?           // Sum of expected times from lines
-  efficiency      Float?           // (expectedMinutes / actualMinutes) * 100
-  status          TimeEntryStatus  @default(DRAFT)
-  approvedById    String?
-  approvedBy      User?            @relation("ApprovedEntries", fields: [approvedById], references: [id])
-  approvedAt      DateTime?
-  rejectionReason String?
-  rejectionPhoto  String?          // URL or base64 image for rejection
-  lines           TimeEntryLine[]
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-
-  @@index([userId, status])
-  @@index([clockInTime])
-  @@map("worker_time_entries")
-}
-
-model TimeEntryLine {
-  id                String          @id @default(cuid())
-  timeEntryId       String
-  timeEntry         WorkerTimeEntry @relation(fields: [timeEntryId], references: [id], onDelete: Cascade)
-  processName       String
-  skuId             String?
-  sku               Sku?            @relation("TimeEntryLineSku", fields: [skuId], references: [id])
-  quantityCompleted Int
-  secondsPerUnit    Int             // Copied from ProcessConfig at entry time
-  expectedSeconds   Int             // quantityCompleted * secondsPerUnit
-  workerTaskId      String?
-  workerTask        WorkerTask?     @relation(fields: [workerTaskId], references: [id])
-  notes             String?
-  createdAt         DateTime        @default(now())
-
-  @@index([timeEntryId])
-  @@map("time_entry_lines")
-}
-
-// ============================================
-// AUDIT LOG
-// ============================================
-
-model AuditLog {
-  id           String   @id @default(cuid())
-  userId       String?
-  user         User?    @relation(fields: [userId], references: [id])
-  action       String   // e.g., "RECEIVE", "BUILD", "TRANSFER", "SIGN_OFF"
-  resourceType String   // e.g., "ReceivingRecord", "WorkOrder", "Transfer"
-  resourceId   String
-  details      Json?    // Additional context
-  createdAt    DateTime @default(now())
-
-  @@index([action])
-  @@index([resourceType, resourceId])
-  @@index([createdAt])
-  @@map("audit_logs")
+enum ScheduleType {
+  RECURRING
+  SPECIFIC_DATE
 }
