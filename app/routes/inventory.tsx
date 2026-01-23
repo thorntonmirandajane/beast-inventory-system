@@ -217,7 +217,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const state = formData.get("state") as string;
     const newQuantity = parseInt(formData.get("quantity") as string, 10);
 
-    if (!skuId || !state || isNaN(newQuantity) || newQuantity < 0) {
+    if (!skuId || !state || isNaN(newQuantity)) {
       return { error: "Invalid data" };
     }
 
@@ -239,7 +239,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           data: { quantity: newQuantity },
         });
       }
-    } else if (newQuantity > 0) {
+    } else if (newQuantity !== 0) {
+      // Create new item for non-zero values (including negative)
       await prisma.inventoryItem.create({
         data: { skuId, state, quantity: newQuantity },
       });
@@ -289,6 +290,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "batch-update") {
     const updates = JSON.parse(formData.get("updates") as string);
+    const deductionResults: string[] = [];
+    const errors: string[] = [];
 
     for (const update of updates) {
       const { skuId, state, quantity } = update;
@@ -311,7 +314,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             data: { quantity },
           });
         }
-      } else if (quantity > 0) {
+      } else if (quantity !== 0) {
+        // Create new item for non-zero values (including negative)
         await prisma.inventoryItem.create({
           data: { skuId, state, quantity },
         });
@@ -321,12 +325,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (quantityChange > 0) {
         const sku = await prisma.sku.findUnique({ where: { id: skuId } });
         if (sku && ((sku.type === "ASSEMBLY" && state === "ASSEMBLED") || (sku.type === "COMPLETED" && state === "COMPLETED"))) {
-          await autoDeductRawMaterials(skuId, quantityChange);
+          const deductResult = await autoDeductRawMaterials(skuId, quantityChange);
+
+          if (deductResult.success) {
+            if (deductResult.deducted.length > 0) {
+              deductionResults.push(
+                `${sku.sku}: Deducted ${deductResult.deducted.map(d => `${d.sku} (-${d.quantity})`).join(", ")}`
+              );
+            }
+          } else {
+            errors.push(`${sku.sku}: ${deductResult.error}`);
+          }
         }
       }
     }
 
-    return { success: true, message: `Batch updated ${updates.length} items` };
+    let message = `Batch updated ${updates.length} items`;
+    if (deductionResults.length > 0) {
+      message += `. Auto-deductions: ${deductionResults.join("; ")}`;
+    }
+    if (errors.length > 0) {
+      message += `. Warnings: ${errors.join("; ")}`;
+    }
+
+    return { success: true, message };
   }
 
   return { error: "Invalid action" };
@@ -362,11 +384,12 @@ function EditableCell({
   const handleSubmit = () => {
     if (!isAdmin) return;
     const newValue = parseInt(value, 10);
-    if (isNaN(newValue) || newValue < 0) {
+    if (isNaN(newValue)) {
       setValue(displayValue.toString());
       setIsEditing(false);
       return;
     }
+    // Allow negative values for RAW materials
     if (newValue !== initialValue) {
       onPendingChange(skuId, state, newValue);
     }
@@ -374,7 +397,17 @@ function EditableCell({
   };
 
   if (!isAdmin) {
-    return <span className={initialValue > 0 ? "text-gray-900 font-medium" : "text-gray-400"}>{initialValue}</span>;
+    return (
+      <span className={
+        initialValue > 0
+          ? "text-gray-900 font-medium"
+          : initialValue < 0
+            ? "text-red-600 font-medium"
+            : "text-gray-400"
+      }>
+        {initialValue}
+      </span>
+    );
   }
 
   if (isEditing) {
@@ -393,7 +426,6 @@ function EditableCell({
         }}
         className="w-20 px-2 py-1 text-right border-2 border-blue-500 rounded"
         autoFocus
-        min="0"
       />
     );
   }
@@ -413,12 +445,22 @@ function EditableCell({
         }
       }}
       className={`cursor-pointer px-2 py-1 rounded hover:bg-blue-50 relative ${
-        displayValue > 0 ? "text-gray-900 font-medium" : "text-gray-400"
+        displayValue > 0
+          ? "text-gray-900 font-medium"
+          : displayValue < 0
+            ? "text-red-600 font-medium"
+            : "text-gray-400"
       } ${hasPendingChange ? "bg-yellow-100 border border-yellow-400" : ""}`}
       style={{
         position: "relative",
       }}
-      title={hasPendingChange ? "Unsaved change - click Save Changes button" : "Click to edit, or drag bottom-right corner to fill down"}
+      title={
+        hasPendingChange
+          ? "Unsaved change - click Save Changes button"
+          : displayValue < 0
+            ? "Negative inventory - materials used before all work submissions recorded"
+            : "Click to edit, or drag bottom-right corner to fill down"
+      }
     >
       {displayValue}
       {hasPendingChange && (
@@ -711,6 +753,18 @@ export default function Inventory() {
         )}
       </div>
 
+      {/* Success/Error Messages */}
+      {fetcher.data?.success && (
+        <div className="alert alert-success mb-6">
+          {fetcher.data.message}
+        </div>
+      )}
+      {fetcher.data?.error && (
+        <div className="alert alert-error mb-6">
+          {fetcher.data.error}
+        </div>
+      )}
+
       {/* Search */}
       <form onSubmit={handleSearch} className="mb-6">
         <div className="flex gap-4">
@@ -939,9 +993,11 @@ export default function Inventory() {
                         className="w-full px-2 py-1 text-xs border rounded"
                       >
                         <option value="">All</option>
-                        {getUniqueValues("type").map((val) => (
-                          <option key={val} value={val}>{val}</option>
-                        ))}
+                        {getUniqueValues("type")
+                          .filter((val) => typeFilter !== "assembly" || val !== "RAW")
+                          .map((val) => (
+                            <option key={val} value={val}>{val}</option>
+                          ))}
                       </select>
                     </th>
                   )}
@@ -1052,12 +1108,12 @@ export default function Inventory() {
                         ) : (
                           <EditableCell
                             skuId={item.id}
-                            state="ASSEMBLED"
+                            state={item.type === "COMPLETED" ? "COMPLETED" : "ASSEMBLED"}
                             initialValue={item.assembled || 0}
                             isAdmin={user.role === "ADMIN"}
                             onDragFillStart={handleDragFillStart}
                             onPendingChange={handlePendingChange}
-                            pendingValue={pendingChanges.get(`${item.id}-ASSEMBLED`)?.quantity}
+                            pendingValue={pendingChanges.get(`${item.id}-${item.type === "COMPLETED" ? "COMPLETED" : "ASSEMBLED"}`)?.quantity}
                           />
                         )}
                       </td>

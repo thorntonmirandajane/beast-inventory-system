@@ -375,6 +375,7 @@ export async function addInventory(
 
 /**
  * Deduct inventory (used when consuming components in a build or transferring)
+ * For RAW materials, allows negative inventory to support incremental worker task submissions
  */
 export async function deductInventory(
   skuId: string,
@@ -393,7 +394,10 @@ export async function deductInventory(
 
   const totalAvailable = items.reduce((sum, i) => sum + i.quantity, 0);
 
-  if (totalAvailable < quantity) {
+  // Allow negative inventory for RAW materials (states includes "RAW")
+  const allowNegative = states.includes("RAW");
+
+  if (!allowNegative && totalAvailable < quantity) {
     return {
       success: false,
       error: `Insufficient inventory. Need ${quantity}, have ${totalAvailable}`,
@@ -418,6 +422,35 @@ export async function deductInventory(
     }
 
     remaining -= toDeduct;
+  }
+
+  // If we still have remaining quantity to deduct and we allow negative
+  // (RAW materials), create a negative inventory item
+  if (remaining > 0 && allowNegative) {
+    // Find or create a negative inventory item for this SKU/state
+    const negativeItem = await prisma.inventoryItem.findFirst({
+      where: {
+        skuId,
+        state: { in: states },
+      },
+    });
+
+    if (negativeItem) {
+      // Update existing item to go more negative
+      await prisma.inventoryItem.update({
+        where: { id: negativeItem.id },
+        data: { quantity: negativeItem.quantity - remaining },
+      });
+    } else {
+      // Create new negative inventory item
+      await prisma.inventoryItem.create({
+        data: {
+          skuId,
+          quantity: -remaining,
+          state: states[0], // Use the first state (RAW)
+        },
+      });
+    }
   }
 
   return { success: true };
@@ -591,15 +624,15 @@ export async function autoDeductRawMaterials(
   });
 
   if (!assembly) {
-    return { success: false, error: "SKU not found" };
+    return { success: false, error: "SKU not found", deducted: [] };
   }
 
   if (assembly.type !== "ASSEMBLY" && assembly.type !== "COMPLETED") {
-    return { success: false, error: "SKU is not an assembly or completed product" };
+    return { success: false, error: `SKU ${assembly.sku} is type ${assembly.type}, not ASSEMBLY or COMPLETED`, deducted: [] };
   }
 
   if (assembly.bomComponents.length === 0) {
-    return { success: false, error: "SKU has no BOM components" };
+    return { success: false, error: `SKU ${assembly.sku} has no BOM components configured`, deducted: [] };
   }
 
   const deducted: { sku: string; quantity: number }[] = [];
@@ -610,7 +643,7 @@ export async function autoDeductRawMaterials(
     const requiredQty = bomItem.quantity * quantityChange;
 
     // Determine which state to deduct from based on component type
-    let statesToDeduct: string[];
+    let statesToDeduct: InventoryState[];
     if (bomItem.componentSku.type === "RAW") {
       statesToDeduct = ["RAW"];
     } else if (bomItem.componentSku.type === "ASSEMBLY") {
@@ -628,6 +661,8 @@ export async function autoDeductRawMaterials(
     );
 
     if (!result.success) {
+      // Only treat as error for non-RAW materials
+      // RAW materials can go negative, so this shouldn't happen
       errors.push(`${bomItem.componentSku.sku}: ${result.error}`);
     } else {
       deducted.push({
@@ -637,7 +672,7 @@ export async function autoDeductRawMaterials(
     }
   }
 
-  // If any deduction failed, return error
+  // If any deduction failed (should only be for non-RAW materials), return error
   if (errors.length > 0) {
     return {
       success: false,
