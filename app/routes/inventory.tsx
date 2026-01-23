@@ -530,12 +530,12 @@ export default function Inventory() {
 
     // Raw Materials tab
     if (typeFilter === "raw") {
-      return ["sku", "name", "category", "process", "raw", "inAssembly", "onOrder"].includes(column);
+      return ["sku", "name", "category", "process", "raw", "assembled", "inProduction", "onOrder"].includes(column);
     }
 
     // Assembly tab
     if (typeFilter === "assembly") {
-      return ["sku", "name", "category", "process", "assembled", "inAssembly"].includes(column);
+      return ["sku", "name", "category", "process", "assembled", "inProduction"].includes(column);
     }
 
     // Completed tab
@@ -553,13 +553,16 @@ export default function Inventory() {
       return item.type !== "ASSEMBLY";
     }
 
+    // Raw materials can be in RAW state or used in assembled/completed products
+    // So they should NOT show N/A for assembled or inProduction columns
+    if (item.type === "RAW") {
+      return ["onOrder"].includes(column) === false && !["sku", "name", "category", "process", "raw", "assembled", "inProduction", "inAssembly"].includes(column);
+    }
+
     // For "All" tab, show N/A for invalid state/type combinations
     if (typeFilter === "all") {
-      if (item.type === "RAW") {
-        return ["assembled", "inProduction"].includes(column);
-      }
       if (item.type === "ASSEMBLY") {
-        return ["raw", "inProduction", "onOrder"].includes(column);
+        return ["raw", "onOrder"].includes(column);
       }
       if (item.type === "COMPLETED") {
         return ["raw", "assembled", "onOrder"].includes(column);
@@ -818,18 +821,8 @@ export default function Inventory() {
                   {shouldShowColumn("assembled") && (
                     <th className="text-right">
                       <div className="flex items-center justify-end gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("assembled")}>Assembled {sortBy === "assembled" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <span className="cursor-pointer" onClick={() => handleSort("assembled")}>{typeFilter === "raw" ? "In Assembled" : "Assembled"} {sortBy === "assembled" && (sortDir === "asc" ? "↑" : "↓")}</span>
                         <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("assembled"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                        </button>
-                      </div>
-                    </th>
-                  )}
-                  {shouldShowColumn("inAssembly") && (
-                    <th className="text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("inAssembly")}>{typeFilter === "assembly" ? "In Completed Package" : typeFilter === "raw" ? "In Completed Package" : "In Assembly"} {sortBy === "inAssembly" && (sortDir === "asc" ? "↑" : "↓")}</span>
-                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("inAssembly"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         </button>
                       </div>
@@ -923,7 +916,6 @@ export default function Inventory() {
                   )}
                   {shouldShowColumn("raw") && <th></th>}
                   {shouldShowColumn("assembled") && <th></th>}
-                  {shouldShowColumn("inAssembly") && <th></th>}
                   {shouldShowColumn("inProduction") && <th></th>}
                   {shouldShowColumn("onOrder") && <th></th>}
                 </tr>
