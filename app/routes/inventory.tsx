@@ -485,8 +485,7 @@ export default function Inventory() {
   const tabs = [
     { id: "all", label: "All", count: counts.all },
     { id: "raw", label: "Raw Materials", count: counts.raw },
-    { id: "assembly", label: "Assemblies", count: counts.assembly },
-    { id: "completed", label: "Completed", count: counts.completed },
+    { id: "assembly", label: "Assemblies", count: counts.assembly + counts.completed },
   ];
 
   const getTypeClass = (type: string) => {
@@ -506,7 +505,12 @@ export default function Inventory() {
   const filteredInventory = inventory.filter((item) => {
     // Filter by tab type
     if (typeFilter !== "all") {
-      if (item.type !== typeFilter.toUpperCase()) return false;
+      // Assembly tab now includes both ASSEMBLY and COMPLETED
+      if (typeFilter === "assembly") {
+        if (item.type !== "ASSEMBLY" && item.type !== "COMPLETED") return false;
+      } else if (item.type !== typeFilter.toUpperCase()) {
+        return false;
+      }
     }
 
     // Filter by search/filter inputs
@@ -533,12 +537,12 @@ export default function Inventory() {
       return ["sku", "name", "category", "process", "raw", "inProduction", "onOrder"].includes(column);
     }
 
-    // Assembly tab - only show Assembled column
+    // Assembly tab - show Type, Assembled columns (includes both ASSEMBLY and COMPLETED)
     if (typeFilter === "assembly") {
-      return ["sku", "name", "category", "process", "assembled"].includes(column);
+      return ["sku", "name", "category", "type", "process", "assembled"].includes(column);
     }
 
-    // Completed tab
+    // Removed completed tab - merged into assembly
     if (typeFilter === "completed") {
       return ["sku", "name", "category", "process", "inProduction"].includes(column);
     }
@@ -778,7 +782,7 @@ export default function Inventory() {
                       </div>
                     </th>
                   )}
-                  {shouldShowColumn("type") && typeFilter === "all" && (
+                  {shouldShowColumn("type") && (
                     <th>
                       <div className="flex items-center justify-between gap-2">
                         <span className="cursor-pointer" onClick={() => handleSort("type")}>Type {sortBy === "type" && (sortDir === "asc" ? "↑" : "↓")}</span>
@@ -874,7 +878,7 @@ export default function Inventory() {
                       />
                     </th>
                   )}
-                  {shouldShowColumn("type") && typeFilter === "all" && (
+                  {shouldShowColumn("type") && (
                     <th>
                       <select
                         value={filters.type}
@@ -944,7 +948,7 @@ export default function Inventory() {
                     {shouldShowColumn("name") && (
                       <td className="max-w-xs truncate text-sm">{item.name}</td>
                     )}
-                    {shouldShowColumn("type") && typeFilter === "all" && (
+                    {shouldShowColumn("type") && (
                       <td>
                         <span className={`badge ${getTypeClass(item.type)}`}>
                           {item.type}
@@ -967,6 +971,8 @@ export default function Inventory() {
                       <td className="text-right">
                         {shouldShowNA(item, "raw") ? (
                           <span className="text-gray-400">N/A</span>
+                        ) : typeFilter === "all" ? (
+                          <span className="text-sm">{item.raw || 0}</span>
                         ) : (
                           <EditableCell
                             skuId={item.id}
@@ -982,6 +988,8 @@ export default function Inventory() {
                       <td className="text-right">
                         {shouldShowNA(item, "assembled") ? (
                           <span className="text-gray-400">N/A</span>
+                        ) : typeFilter === "all" ? (
+                          <span className="text-sm">{item.assembled || 0}</span>
                         ) : (
                           <EditableCell
                             skuId={item.id}
@@ -1013,8 +1021,11 @@ export default function Inventory() {
                           <span className={item.inAssembly > 0 ? "text-blue-600 text-sm font-medium" : "text-gray-400 text-sm"}>
                             {item.inAssembly}
                           </span>
+                        ) : typeFilter === "all" ? (
+                          // Read-only on All tab
+                          <span className="text-sm">{item.inProduction || 0}</span>
                         ) : (
-                          // Editable for COMPLETED types
+                          // Editable for COMPLETED types on other tabs
                           <EditableCell
                             skuId={item.id}
                             state="COMPLETED"
