@@ -1,8 +1,21 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, redirect } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, redirect, useFetcher } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { useState } from "react";
+
+interface PendingTask {
+  id: string; // Client-side temp ID
+  processName: string;
+  processDisplayName: string;
+  skuId: string | null;
+  skuDisplay: string | null;
+  quantity: number;
+  isMisc: boolean;
+  miscDescription: string | null;
+  secondsPerUnit: number;
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -69,17 +82,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Get process categories for selection
-  const processCategories = ["TIPPING", "BLADING", "STUD_TESTING", "COMPLETE_PACKS"];
-
-  // Get all active SKUs grouped by category
-  const skus = await prisma.sku.findMany({
+  // Get all active processes from ProcessConfig
+  const processes = await prisma.processConfig.findMany({
     where: { isActive: true },
-    select: { id: true, sku: true, name: true, category: true },
-    orderBy: [{ category: "asc" }, { sku: "asc" }],
+    orderBy: { displayName: "asc" },
   });
 
-  // Get assigned tasks (as notes)
+  // Get all active SKUs with category info
+  const skus = await prisma.sku.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      sku: true,
+      name: true,
+      category: true,
+      type: true,
+    },
+    orderBy: [{ type: "asc" }, { sku: "asc" }],
+  });
+
+  // Get assigned tasks for display
   const assignedTasks = await prisma.workerTask.findMany({
     where: {
       userId: user.id,
@@ -93,7 +115,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { priority: "desc" },
   });
 
-  return { user, timeEntry, processCategories, skus, assignedTasks };
+  return { user, timeEntry, processes, skus, assignedTasks };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -106,13 +128,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  if (intent === "add-task") {
-    const processName = formData.get("processName") as string;
-    const skuId = formData.get("skuId") as string;
-    const quantity = parseInt(formData.get("quantity") as string, 10);
+  if (intent === "submit-tasks") {
+    const tasksJson = formData.get("tasks") as string;
 
-    if (!processName || !skuId || isNaN(quantity) || quantity <= 0) {
-      return { error: "Please provide process, SKU, and valid quantity" };
+    if (!tasksJson) {
+      return { error: "No tasks to submit" };
+    }
+
+    const tasks: PendingTask[] = JSON.parse(tasksJson);
+
+    if (tasks.length === 0) {
+      return { error: "No tasks to submit" };
     }
 
     // Find today's time entry
@@ -147,31 +173,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
     }
 
-    // Get process config for seconds per unit (default if not found)
-    const processConfig = await prisma.processConfig.findUnique({
-      where: { processName },
-    });
-    const secondsPerUnit = processConfig?.secondsPerUnit || 60;
+    // Create all TimeEntryLine records
+    for (const task of tasks) {
+      await prisma.timeEntryLine.create({
+        data: {
+          timeEntryId: timeEntry.id,
+          processName: task.processName,
+          skuId: task.isMisc ? null : task.skuId,
+          quantityCompleted: task.quantity,
+          secondsPerUnit: task.secondsPerUnit,
+          expectedSeconds: task.quantity * task.secondsPerUnit,
+          isMisc: task.isMisc,
+          miscDescription: task.isMisc ? task.miscDescription : null,
+        },
+      });
 
-    // Create time entry line
-    await prisma.timeEntryLine.create({
-      data: {
-        timeEntryId: timeEntry.id,
-        processName,
-        skuId,
-        quantityCompleted: quantity,
-        secondsPerUnit,
-        expectedSeconds: quantity * secondsPerUnit,
-      },
-    });
+      await createAuditLog(user.id, "SUBMIT_TASK", "TimeEntryLine", timeEntry.id, {
+        processName: task.processName,
+        skuId: task.skuId,
+        quantity: task.quantity,
+        isMisc: task.isMisc,
+      });
+    }
 
-    await createAuditLog(user.id, "SUBMIT_TASK", "TimeEntryLine", timeEntry.id, {
-      processName,
-      skuId,
-      quantity,
-    });
-
-    return { success: true, message: `Task submitted: ${quantity} units` };
+    return redirect("/worker-dashboard?submitted=true");
   }
 
   if (intent === "delete-task") {
@@ -202,17 +227,112 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function WorkerSubmitTask() {
-  const { user, timeEntry, processCategories, skus, assignedTasks } =
+  const { user, timeEntry, processes, skus, assignedTasks } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const fetcher = useFetcher();
   const isSubmitting = navigation.state === "submitting";
+
+  // Client-side state for task staging
+  const [pendingTasks, setPendingTasks] = useState<PendingTask[]>([]);
+  const [selectedProcess, setSelectedProcess] = useState("");
+  const [selectedSku, setSelectedSku] = useState("");
+  const [quantity, setQuantity] = useState<number>(0);
+  const [miscDescription, setMiscDescription] = useState("");
+
+  // Filter SKUs based on selected process
+  const selectedProcessConfig = processes.find(p => p.processName === selectedProcess);
+  const isMiscTask = selectedProcess === "MISC";
+
+  const filteredSkus = isMiscTask
+    ? []
+    : skus.filter(sku => {
+        if (!selectedProcessConfig) return false;
+        // Filter by category matching process display name
+        return sku.category === selectedProcessConfig.displayName;
+      });
+
+  const handleAddTask = () => {
+    // Validation
+    if (!selectedProcess) {
+      alert("Please select a process");
+      return;
+    }
+
+    if (!isMiscTask && !selectedSku) {
+      alert("Please select a SKU");
+      return;
+    }
+
+    if (isMiscTask && !miscDescription.trim()) {
+      alert("Please provide a description for MISC task");
+      return;
+    }
+
+    if (!quantity || quantity <= 0) {
+      alert("Please enter a valid quantity");
+      return;
+    }
+
+    const processConfig = processes.find(p => p.processName === selectedProcess);
+    const sku = skus.find(s => s.id === selectedSku);
+
+    const newTask: PendingTask = {
+      id: crypto.randomUUID(),
+      processName: selectedProcess,
+      processDisplayName: processConfig?.displayName || selectedProcess,
+      skuId: isMiscTask ? null : selectedSku,
+      skuDisplay: isMiscTask ? null : (sku ? `${sku.sku} | ${sku.name}` : null),
+      quantity,
+      isMisc: isMiscTask,
+      miscDescription: isMiscTask ? miscDescription : null,
+      secondsPerUnit: processConfig?.secondsPerUnit || 60,
+    };
+
+    setPendingTasks([...pendingTasks, newTask]);
+
+    // Reset form
+    setQuantity(0);
+    setMiscDescription("");
+    setSelectedSku("");
+  };
+
+  const handleDeletePending = (taskId: string) => {
+    setPendingTasks(pendingTasks.filter(t => t.id !== taskId));
+  };
+
+  const handleSubmitAll = () => {
+    if (pendingTasks.length === 0) {
+      alert("No tasks to submit");
+      return;
+    }
+
+    const form = document.createElement("form");
+    form.method = "post";
+    form.style.display = "none";
+
+    const intentInput = document.createElement("input");
+    intentInput.type = "hidden";
+    intentInput.name = "intent";
+    intentInput.value = "submit-tasks";
+    form.appendChild(intentInput);
+
+    const tasksInput = document.createElement("input");
+    tasksInput.type = "hidden";
+    tasksInput.name = "tasks";
+    tasksInput.value = JSON.stringify(pendingTasks);
+    form.appendChild(tasksInput);
+
+    document.body.appendChild(form);
+    form.submit();
+  };
 
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">Submit Task</h1>
-        <p className="page-subtitle">Record work completed during your shift</p>
+        <h1 className="page-title">Submit Tasks</h1>
+        <p className="page-subtitle">Add multiple tasks, then submit all at once</p>
       </div>
 
       {actionData?.error && (
@@ -224,53 +344,78 @@ export default function WorkerSubmitTask() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Submit new task */}
+        {/* Add task form */}
         <div className="card">
           <div className="card-header">
             <h2 className="card-title">Add Completed Work</h2>
           </div>
           <div className="card-body">
-            <Form method="post">
-              <input type="hidden" name="intent" value="add-task" />
-
+            <div className="space-y-4">
               <div className="form-group">
                 <label htmlFor="processName" className="form-label">
                   Process Type
                 </label>
                 <select
                   id="processName"
-                  name="processName"
+                  value={selectedProcess}
+                  onChange={(e) => {
+                    setSelectedProcess(e.target.value);
+                    setSelectedSku(""); // Reset SKU when process changes
+                  }}
                   className="form-input"
-                  required
                 >
                   <option value="">Select process...</option>
-                  {processCategories.map((proc) => (
-                    <option key={proc} value={proc}>
-                      {proc.replace(/_/g, " ")}
+                  {processes.map((proc) => (
+                    <option key={proc.processName} value={proc.processName}>
+                      {proc.displayName}
                     </option>
                   ))}
+                  <option value="MISC">MISC (Miscellaneous)</option>
                 </select>
               </div>
 
-              <div className="form-group">
-                <label htmlFor="skuId" className="form-label">
-                  SKU
-                </label>
-                <select
-                  id="skuId"
-                  name="skuId"
-                  className="form-input"
-                  required
-                >
-                  <option value="">Select SKU...</option>
-                  {skus.map((sku) => (
-                    <option key={sku.id} value={sku.id}>
-                      {sku.sku} | {sku.name}
-                      {sku.category ? ` (${sku.category})` : ""}
+              {isMiscTask ? (
+                <div className="form-group">
+                  <label htmlFor="miscDescription" className="form-label">
+                    Task Description *
+                  </label>
+                  <textarea
+                    id="miscDescription"
+                    value={miscDescription}
+                    onChange={(e) => setMiscDescription(e.target.value)}
+                    className="form-input"
+                    rows={3}
+                    placeholder="Describe the miscellaneous task..."
+                  />
+                </div>
+              ) : (
+                <div className="form-group">
+                  <label htmlFor="skuId" className="form-label">
+                    SKU {selectedProcess && `(${selectedProcessConfig?.displayName})`}
+                  </label>
+                  <select
+                    id="skuId"
+                    value={selectedSku}
+                    onChange={(e) => setSelectedSku(e.target.value)}
+                    className="form-input"
+                    disabled={!selectedProcess || isMiscTask}
+                  >
+                    <option value="">
+                      {!selectedProcess ? "Select process first..." : "Select SKU..."}
                     </option>
-                  ))}
-                </select>
-              </div>
+                    {filteredSkus.map((sku) => (
+                      <option key={sku.id} value={sku.id}>
+                        {sku.sku} | {sku.name}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedProcess && !isMiscTask && filteredSkus.length === 0 && (
+                    <p className="text-sm text-yellow-600 mt-1">
+                      No SKUs found for this process type
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="form-group">
                 <label htmlFor="quantity" className="form-label">
@@ -279,34 +424,33 @@ export default function WorkerSubmitTask() {
                 <input
                   type="number"
                   id="quantity"
-                  name="quantity"
+                  value={quantity || ""}
+                  onChange={(e) => setQuantity(parseInt(e.target.value, 10) || 0)}
                   className="form-input"
                   min="1"
-                  required
                 />
               </div>
 
               <button
-                type="submit"
-                className="btn btn-primary w-full"
-                disabled={isSubmitting}
+                type="button"
+                onClick={handleAddTask}
+                className="btn btn-secondary w-full"
               >
-                {isSubmitting ? "Submitting..." : "Submit Task"}
+                Add to List
               </button>
-            </Form>
+            </div>
           </div>
         </div>
 
-        {/* Assigned tasks (notes) */}
+        {/* Assigned tasks reference */}
         {assignedTasks.length > 0 && (
           <div className="card">
             <div className="card-header">
-              <h2 className="card-title">Assigned Tasks (Notes)</h2>
+              <h2 className="card-title">Assigned Tasks (Reference)</h2>
             </div>
             <div className="card-body">
               <p className="text-sm text-gray-600 mb-4">
-                These are your assigned tasks for reference. They won't be
-                automatically marked complete.
+                These are your assigned tasks for reference.
               </p>
               <div className="space-y-3">
                 {assignedTasks.map((task) => (
@@ -349,11 +493,77 @@ export default function WorkerSubmitTask() {
         )}
       </div>
 
-      {/* Today's submitted tasks */}
+      {/* Pending tasks staging area */}
+      {pendingTasks.length > 0 && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">Tasks to Submit ({pendingTasks.length})</h2>
+          </div>
+          <div className="card-body">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Process</th>
+                  <th>SKU / Description</th>
+                  <th>Quantity</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingTasks.map((task) => (
+                  <tr key={task.id}>
+                    <td className="font-medium">{task.processDisplayName}</td>
+                    <td>
+                      {task.isMisc ? (
+                        <div className="text-sm">
+                          <span className="badge badge-secondary">MISC</span>
+                          <p className="mt-1 text-gray-600">{task.miscDescription}</p>
+                        </div>
+                      ) : (
+                        <span className="text-sm">{task.skuDisplay}</span>
+                      )}
+                    </td>
+                    <td className="font-semibold">{task.quantity}</td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => handleDeletePending(task.id)}
+                        className="btn btn-sm btn-danger"
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <div className="mt-4 flex gap-4">
+              <button
+                type="button"
+                onClick={handleSubmitAll}
+                className="btn btn-primary"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? "Submitting..." : "Approve & Submit All"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingTasks([])}
+                className="btn btn-ghost"
+              >
+                Clear All
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Previously submitted tasks today */}
       {timeEntry && timeEntry.lines.length > 0 && (
         <div className="card mt-6">
           <div className="card-header">
-            <h2 className="card-title">Tasks Submitted Today</h2>
+            <h2 className="card-title">Previously Submitted Tasks Today</h2>
           </div>
           <div className="card-body">
             <div className="space-y-3">
@@ -366,11 +576,16 @@ export default function WorkerSubmitTask() {
                     <p className="font-medium">
                       {line.processName.replace(/_/g, " ")}
                     </p>
-                    {line.sku && (
+                    {line.isMisc ? (
+                      <div className="text-sm text-gray-600">
+                        <span className="badge badge-secondary">MISC</span>
+                        <p className="mt-1">{line.miscDescription}</p>
+                      </div>
+                    ) : line.sku ? (
                       <p className="text-sm text-gray-600">
                         {line.sku.sku} | {line.sku.name}
                       </p>
-                    )}
+                    ) : null}
                     <p className="text-sm text-gray-500">
                       Quantity: {line.quantityCompleted}
                     </p>
