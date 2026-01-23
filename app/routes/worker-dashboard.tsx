@@ -158,6 +158,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     currentTimeEntry = existing;
   }
 
+  // Get rejected tasks (last 30 days)
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const rejectedLines = await prisma.timeEntryLine.findMany({
+    where: {
+      timeEntry: { userId: user.id },
+      isRejected: true,
+      createdAt: { gte: thirtyDaysAgo },
+    },
+    include: {
+      sku: true,
+      timeEntry: {
+        select: {
+          clockInTime: true,
+          clockOutTime: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+
   return {
     user,
     clockStatus,
@@ -166,6 +189,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     processConfigs,
     efficiencyStats,
     currentTimeEntry,
+    rejectedLines,
   };
 };
 
@@ -251,6 +275,7 @@ export default function WorkerDashboard() {
     processConfigs,
     efficiencyStats,
     currentTimeEntry,
+    rejectedLines,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -554,6 +579,76 @@ export default function WorkerDashboard() {
           </div>
         </div>
       </div>
+
+      {/* Rejected Tasks */}
+      {rejectedLines.length > 0 && (
+        <div className="card mt-6 border-red-500">
+          <div className="card-header bg-red-50">
+            <h2 className="card-title text-red-800">⚠️ Rejected Tasks</h2>
+          </div>
+          <div className="card-body">
+            <p className="text-sm text-gray-700 mb-4">
+              The following tasks were rejected during quality control. Please review the feedback.
+            </p>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Process</th>
+                  <th>SKU</th>
+                  <th>Rejected Qty</th>
+                  <th>Reason</th>
+                  <th>Admin Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rejectedLines.map((line) => (
+                  <tr key={line.id}>
+                    <td>
+                      {line.timeEntry.clockOutTime
+                        ? new Date(line.timeEntry.clockOutTime).toLocaleDateString()
+                        : new Date(line.timeEntry.clockInTime).toLocaleDateString()}
+                    </td>
+                    <td className="font-medium">
+                      {line.processName.replace(/_/g, " ")}
+                    </td>
+                    <td>
+                      {line.isMisc ? (
+                        <div>
+                          <span className="badge badge-secondary">MISC</span>
+                          <p className="text-xs text-gray-600 mt-1">
+                            {line.miscDescription}
+                          </p>
+                        </div>
+                      ) : line.sku ? (
+                        <div>
+                          <div className="font-mono text-sm">{line.sku.sku}</div>
+                          <div className="text-xs text-gray-500">{line.sku.name}</div>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="text-red-600 font-bold">
+                      {line.rejectionQuantity || line.quantityCompleted}
+                    </td>
+                    <td>
+                      <div className="text-sm">
+                        {line.rejectionReason || <span className="text-gray-400">—</span>}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="text-sm text-gray-600">
+                        {line.adminNotes || <span className="text-gray-400">—</span>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Quick Links */}
       <div className="mt-6 flex flex-wrap gap-3">
