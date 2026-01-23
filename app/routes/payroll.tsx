@@ -3,6 +3,7 @@ import { useLoaderData, Form, useNavigation } from "react-router";
 import { requireUser } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { calculateWeeklyHours, calculateOvertimePay } from "../utils/overtime.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -45,41 +46,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { timestamp: "asc" },
   });
 
-  // Calculate hours for each worker
+  // Calculate hours for each worker with overtime
   const payrollData = workers.map((worker) => {
     const workerEvents = clockEvents.filter((e) => e.userId === worker.id);
 
-    let totalMs = 0;
-    let clockInTime: Date | null = null;
-    let breakStartTime: Date | null = null;
+    // Calculate weekly hours
+    const weeklyHours = calculateWeeklyHours(workerEvents);
 
-    for (const event of workerEvents) {
-      switch (event.type) {
-        case "CLOCK_IN":
-          clockInTime = event.timestamp;
-          break;
-        case "CLOCK_OUT":
-          if (clockInTime) {
-            totalMs += event.timestamp.getTime() - clockInTime.getTime();
-            clockInTime = null;
-          }
-          break;
-        case "BREAK_START":
-          if (clockInTime) {
-            totalMs += event.timestamp.getTime() - clockInTime.getTime();
-          }
-          breakStartTime = event.timestamp;
-          clockInTime = null;
-          break;
-        case "BREAK_END":
-          clockInTime = event.timestamp;
-          breakStartTime = null;
-          break;
-      }
-    }
-
-    const hours = totalMs / (1000 * 60 * 60);
-    const pay = worker.payRate ? hours * worker.payRate : 0;
+    // Calculate overtime pay
+    const overtimeCalc = calculateOvertimePay(weeklyHours, worker.payRate || 0);
 
     return {
       id: worker.id,
@@ -87,27 +62,52 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       lastName: worker.lastName,
       email: worker.email,
       payRate: worker.payRate || 0,
-      hours: parseFloat(hours.toFixed(2)),
-      pay: parseFloat(pay.toFixed(2)),
+      regularHours: parseFloat(overtimeCalc.regularHours.toFixed(2)),
+      overtimeHours: parseFloat(overtimeCalc.overtimeHours.toFixed(2)),
+      totalHours: parseFloat((overtimeCalc.regularHours + overtimeCalc.overtimeHours).toFixed(2)),
+      regularPay: parseFloat(overtimeCalc.regularPay.toFixed(2)),
+      overtimePay: parseFloat(overtimeCalc.overtimePay.toFixed(2)),
+      totalPay: parseFloat(overtimeCalc.totalPay.toFixed(2)),
+      weeklyBreakdown: weeklyHours,
     };
   });
 
-  const totalHours = payrollData.reduce((sum, w) => sum + w.hours, 0);
-  const totalPay = payrollData.reduce((sum, w) => sum + w.pay, 0);
+  const totalRegularHours = payrollData.reduce((sum, w) => sum + w.regularHours, 0);
+  const totalOvertimeHours = payrollData.reduce((sum, w) => sum + w.overtimeHours, 0);
+  const totalHours = payrollData.reduce((sum, w) => sum + w.totalHours, 0);
+  const totalRegularPay = payrollData.reduce((sum, w) => sum + w.regularPay, 0);
+  const totalOvertimePay = payrollData.reduce((sum, w) => sum + w.overtimePay, 0);
+  const totalPay = payrollData.reduce((sum, w) => sum + w.totalPay, 0);
 
   return {
     user,
     payrollData,
     startDate: startDate.toISOString().split("T")[0],
     endDate: endDate.toISOString().split("T")[0],
+    totalRegularHours: parseFloat(totalRegularHours.toFixed(2)),
+    totalOvertimeHours: parseFloat(totalOvertimeHours.toFixed(2)),
     totalHours: parseFloat(totalHours.toFixed(2)),
+    totalRegularPay: parseFloat(totalRegularPay.toFixed(2)),
+    totalOvertimePay: parseFloat(totalOvertimePay.toFixed(2)),
     totalPay: parseFloat(totalPay.toFixed(2)),
+    workerCount: payrollData.length,
   };
 };
 
 export default function Payroll() {
-  const { user, payrollData, startDate, endDate, totalHours, totalPay } =
-    useLoaderData<typeof loader>();
+  const {
+    user,
+    payrollData,
+    startDate,
+    endDate,
+    totalRegularHours,
+    totalOvertimeHours,
+    totalHours,
+    totalRegularPay,
+    totalOvertimePay,
+    totalPay,
+    workerCount,
+  } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
 
@@ -162,22 +162,20 @@ export default function Payroll() {
       {/* Summary Stats */}
       <div className="stats-grid mb-6">
         <div className="stat-card">
-          <div className="stat-value">{payrollData.length}</div>
-          <div className="stat-label">Active Workers</div>
+          <div className="stat-value">{workerCount}</div>
+          <div className="stat-label">Total Workers</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">{totalHours.toFixed(2)}</div>
-          <div className="stat-label">Total Hours</div>
+          <div className="stat-value">{totalRegularHours.toFixed(1)}h</div>
+          <div className="stat-label">Regular Hours</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">${totalPay.toFixed(2)}</div>
-          <div className="stat-label">Total Owed</div>
+          <div className="stat-value text-orange-600">{totalOvertimeHours.toFixed(1)}h</div>
+          <div className="stat-label">Overtime Hours</div>
         </div>
         <div className="stat-card">
-          <div className="stat-value">
-            ${totalHours > 0 ? (totalPay / totalHours).toFixed(2) : "0.00"}
-          </div>
-          <div className="stat-label">Avg Rate/Hour</div>
+          <div className="stat-value text-green-600">${totalPay.toFixed(2)}</div>
+          <div className="stat-label">Total Pay</div>
         </div>
       </div>
 
@@ -197,10 +195,12 @@ export default function Payroll() {
             <thead>
               <tr>
                 <th>Worker</th>
-                <th>Email</th>
                 <th className="text-right">Pay Rate</th>
-                <th className="text-right">Hours Worked</th>
-                <th className="text-right">Amount Owed</th>
+                <th className="text-right">Regular Hours</th>
+                <th className="text-right">Overtime Hours</th>
+                <th className="text-right">Regular Pay</th>
+                <th className="text-right">Overtime Pay</th>
+                <th className="text-right">Total Pay</th>
               </tr>
             </thead>
             <tbody>
@@ -209,32 +209,33 @@ export default function Payroll() {
                   <td className="font-medium">
                     {worker.firstName} {worker.lastName}
                   </td>
-                  <td className="text-sm text-gray-600">{worker.email}</td>
                   <td className="text-right">
                     {worker.payRate > 0 ? (
-                      <span className="font-medium">${worker.payRate.toFixed(2)}/hr</span>
+                      <span>${worker.payRate.toFixed(2)}/hr</span>
                     ) : (
-                      <span className="text-red-600 font-medium">Not Set</span>
+                      <span className="text-yellow-600">Not Set</span>
                     )}
                   </td>
-                  <td className="text-right font-semibold">
-                    {worker.hours.toFixed(2)}
+                  <td className="text-right">{worker.regularHours.toFixed(1)}h</td>
+                  <td className={`text-right ${worker.overtimeHours > 0 ? "text-orange-600 font-bold" : ""}`}>
+                    {worker.overtimeHours > 0 ? `${worker.overtimeHours.toFixed(1)}h` : "—"}
                   </td>
-                  <td className="text-right font-semibold text-green-600">
-                    ${worker.pay.toFixed(2)}
+                  <td className="text-right">${worker.regularPay.toFixed(2)}</td>
+                  <td className={`text-right ${worker.overtimePay > 0 ? "text-orange-600 font-bold" : ""}`}>
+                    {worker.overtimePay > 0 ? `$${worker.overtimePay.toFixed(2)}` : "—"}
                   </td>
+                  <td className="text-right font-bold">${worker.totalPay.toFixed(2)}</td>
                 </tr>
               ))}
             </tbody>
             <tfoot>
-              <tr className="bg-gray-50 font-semibold">
-                <td colSpan={3} className="text-right">
-                  TOTALS:
-                </td>
-                <td className="text-right">{totalHours.toFixed(2)} hrs</td>
-                <td className="text-right text-green-600">
-                  ${totalPay.toFixed(2)}
-                </td>
+              <tr className="bg-gray-50 font-bold">
+                <td colSpan={2} className="text-right">TOTAL</td>
+                <td className="text-right">{totalRegularHours.toFixed(1)}h</td>
+                <td className="text-right text-orange-600">{totalOvertimeHours.toFixed(1)}h</td>
+                <td className="text-right">${totalRegularPay.toFixed(2)}</td>
+                <td className="text-right text-orange-600">${totalOvertimePay.toFixed(2)}</td>
+                <td className="text-right text-green-600">${totalPay.toFixed(2)}</td>
               </tr>
             </tfoot>
           </table>
