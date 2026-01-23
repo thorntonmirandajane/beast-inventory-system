@@ -123,10 +123,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       name: sku.name,
       type: sku.type,
       category: sku.category,
-      material: sku.material,
+      process: sku.material, // Renamed from material to process
       raw: byState.RAW,
       assembled: byState.ASSEMBLED,
-      completed: byState.COMPLETED,
+      inProduction: byState.COMPLETED, // Renamed from completed to inProduction
       inAssembly,
       onOrderPOs,
       totalOnOrder,
@@ -153,9 +153,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         aVal = a.category || "";
         bVal = b.category || "";
         break;
-      case "material":
-        aVal = a.material || "";
-        bVal = b.material || "";
+      case "process":
+        aVal = a.process || "";
+        bVal = b.process || "";
         break;
       case "raw":
         aVal = a.raw;
@@ -169,9 +169,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         aVal = a.assembled;
         bVal = b.assembled;
         break;
-      case "completed":
-        aVal = a.completed;
-        bVal = b.completed;
+      case "inProduction":
+        aVal = a.inProduction;
+        bVal = b.inProduction;
         break;
       case "onOrder":
         aVal = a.totalOnOrder;
@@ -433,7 +433,7 @@ export default function Inventory() {
     name: "",
     type: "",
     category: "",
-    material: "",
+    process: "",
   });
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [showHiddenColumnsDropdown, setShowHiddenColumnsDropdown] = useState(false);
@@ -514,7 +514,7 @@ export default function Inventory() {
     if (filters.name && !item.name.toLowerCase().includes(filters.name.toLowerCase())) return false;
     if (filters.type && item.type !== filters.type) return false;
     if (filters.category && (!item.category || !item.category.toLowerCase().includes(filters.category.toLowerCase()))) return false;
-    if (filters.material && (!item.material || !item.material.toLowerCase().includes(filters.material.toLowerCase()))) return false;
+    if (filters.process && (!item.process || !item.process.toLowerCase().includes(filters.process.toLowerCase()))) return false;
     return true;
   });
 
@@ -530,17 +530,17 @@ export default function Inventory() {
 
     // Raw Materials tab
     if (typeFilter === "raw") {
-      return ["sku", "name", "category", "material", "raw", "assembled", "inAssembly", "onOrder"].includes(column);
+      return ["sku", "name", "category", "process", "raw", "inAssembly", "onOrder"].includes(column);
     }
 
     // Assembly tab
     if (typeFilter === "assembly") {
-      return ["sku", "name", "category", "material", "inAssembly", "assembled"].includes(column);
+      return ["sku", "name", "category", "process", "assembled", "inAssembly"].includes(column);
     }
 
     // Completed tab
     if (typeFilter === "completed") {
-      return ["sku", "name", "category", "material", "completed"].includes(column);
+      return ["sku", "name", "category", "process", "inProduction"].includes(column);
     }
 
     return true;
@@ -548,14 +548,24 @@ export default function Inventory() {
 
   // Check if a cell should show N/A
   const shouldShowNA = (item: any, column: string): boolean => {
-    if (typeFilter !== "all") return false;
+    // Process: only ASSEMBLY items have values, RAW and COMPLETED show N/A
+    if (column === "process") {
+      return item.type !== "ASSEMBLY";
+    }
 
-    if (item.type === "ASSEMBLY") {
-      return ["raw", "onOrder"].includes(column);
+    // For "All" tab, show N/A for invalid state/type combinations
+    if (typeFilter === "all") {
+      if (item.type === "RAW") {
+        return ["assembled", "inProduction"].includes(column);
+      }
+      if (item.type === "ASSEMBLY") {
+        return ["raw", "inProduction", "onOrder"].includes(column);
+      }
+      if (item.type === "COMPLETED") {
+        return ["raw", "assembled", "onOrder"].includes(column);
+      }
     }
-    if (item.type === "COMPLETED") {
-      return ["raw", "inAssembly", "onOrder"].includes(column);
-    }
+
     return false;
   };
 
@@ -702,7 +712,9 @@ export default function Inventory() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
                     </svg>
                     <span className="capitalize">
-                      {column === "inAssembly" ? "In Completed Package" : column}
+                      {column === "inAssembly" ? "In Completed Package" :
+                       column === "inProduction" ? "In Production" :
+                       column === "process" ? "Process" : column}
                     </span>
                   </button>
                 ))}
@@ -783,11 +795,11 @@ export default function Inventory() {
                       </div>
                     </th>
                   )}
-                  {shouldShowColumn("material") && (
+                  {shouldShowColumn("process") && (
                     <th>
                       <div className="flex items-center justify-between gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("material")}>Material {sortBy === "material" && (sortDir === "asc" ? "↑" : "↓")}</span>
-                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("material"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                        <span className="cursor-pointer" onClick={() => handleSort("process")}>Process {sortBy === "process" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("process"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         </button>
                       </div>
@@ -823,11 +835,11 @@ export default function Inventory() {
                       </div>
                     </th>
                   )}
-                  {shouldShowColumn("completed") && (
+                  {shouldShowColumn("inProduction") && (
                     <th className="text-right">
                       <div className="flex items-center justify-end gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("completed")}>Completed {sortBy === "completed" && (sortDir === "asc" ? "↑" : "↓")}</span>
-                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("completed"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                        <span className="cursor-pointer" onClick={() => handleSort("inProduction")}>In Production {sortBy === "inProduction" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("inProduction"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         </button>
                       </div>
@@ -895,15 +907,15 @@ export default function Inventory() {
                       </select>
                     </th>
                   )}
-                  {shouldShowColumn("material") && (
+                  {shouldShowColumn("process") && (
                     <th>
                       <select
-                        value={filters.material}
-                        onChange={(e) => setFilters({ ...filters, material: e.target.value })}
+                        value={filters.process}
+                        onChange={(e) => setFilters({ ...filters, process: e.target.value })}
                         className="w-full px-2 py-1 text-xs border rounded"
                       >
                         <option value="">All</option>
-                        {getUniqueValues("material").map((val) => (
+                        {getUniqueValues("process").map((val) => (
                           <option key={val} value={val}>{val}</option>
                         ))}
                       </select>
@@ -912,7 +924,7 @@ export default function Inventory() {
                   {shouldShowColumn("raw") && <th></th>}
                   {shouldShowColumn("assembled") && <th></th>}
                   {shouldShowColumn("inAssembly") && <th></th>}
-                  {shouldShowColumn("completed") && <th></th>}
+                  {shouldShowColumn("inProduction") && <th></th>}
                   {shouldShowColumn("onOrder") && <th></th>}
                 </tr>
               </thead>
@@ -948,8 +960,14 @@ export default function Inventory() {
                     {shouldShowColumn("category") && (
                       <td className="text-sm text-gray-600">{item.category || "—"}</td>
                     )}
-                    {shouldShowColumn("material") && (
-                      <td className="text-sm text-gray-600">{item.material || "—"}</td>
+                    {shouldShowColumn("process") && (
+                      <td className="text-sm text-gray-600">
+                        {shouldShowNA(item, "process") ? (
+                          <span className="text-gray-400">N/A</span>
+                        ) : (
+                          item.process || "—"
+                        )}
+                      </td>
                     )}
                     {shouldShowColumn("raw") && (
                       <td className="text-right">
@@ -968,13 +986,17 @@ export default function Inventory() {
                     )}
                     {shouldShowColumn("assembled") && (
                       <td className="text-right">
-                        <EditableCell
-                          skuId={item.id}
-                          state="ASSEMBLED"
-                          initialValue={item.assembled || 0}
-                          isAdmin={user.role === "ADMIN"}
-                          onDragFillStart={handleDragFillStart}
-                        />
+                        {shouldShowNA(item, "assembled") ? (
+                          <span className="text-gray-400">N/A</span>
+                        ) : (
+                          <EditableCell
+                            skuId={item.id}
+                            state="ASSEMBLED"
+                            initialValue={item.assembled || 0}
+                            isAdmin={user.role === "ADMIN"}
+                            onDragFillStart={handleDragFillStart}
+                          />
+                        )}
                       </td>
                     )}
                     {shouldShowColumn("inAssembly") && (
@@ -988,15 +1010,19 @@ export default function Inventory() {
                         )}
                       </td>
                     )}
-                    {shouldShowColumn("completed") && (
+                    {shouldShowColumn("inProduction") && (
                       <td className="text-right">
-                        <EditableCell
-                          skuId={item.id}
-                          state="COMPLETED"
-                          initialValue={item.completed || 0}
-                          isAdmin={user.role === "ADMIN"}
-                          onDragFillStart={handleDragFillStart}
-                        />
+                        {shouldShowNA(item, "inProduction") ? (
+                          <span className="text-gray-400">N/A</span>
+                        ) : (
+                          <EditableCell
+                            skuId={item.id}
+                            state="COMPLETED"
+                            initialValue={item.inProduction || 0}
+                            isAdmin={user.role === "ADMIN"}
+                            onDragFillStart={handleDragFillStart}
+                          />
+                        )}
                       </td>
                     )}
                     {shouldShowColumn("onOrder") && (
