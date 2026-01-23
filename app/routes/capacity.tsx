@@ -88,6 +88,59 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
+  if (intent === "create-process") {
+    const displayName = formData.get("displayName") as string;
+    const secondsPerUnit = parseInt(formData.get("secondsPerUnit") as string, 10);
+    const description = formData.get("description") as string;
+
+    // Generate process name (uppercase, underscores)
+    const processName = displayName
+      .toUpperCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^A-Z_0-9]/g, "");
+
+    // Validation
+    if (!displayName || !processName) {
+      return { error: "Display name is required" };
+    }
+
+    if (!secondsPerUnit || secondsPerUnit < 1) {
+      return { error: "Seconds per unit must be at least 1" };
+    }
+
+    // Check for duplicates
+    const existing = await prisma.processConfig.findUnique({
+      where: { processName },
+    });
+
+    if (existing) {
+      return { error: `Process "${processName}" already exists` };
+    }
+
+    // Create process
+    const process = await prisma.processConfig.create({
+      data: {
+        processName,
+        displayName,
+        description: description || null,
+        secondsPerUnit,
+        isActive: true,
+      },
+    });
+
+    await createAuditLog(user.id, "CREATE_PROCESS", "ProcessConfig", process.id, {
+      processName,
+      displayName,
+      secondsPerUnit,
+    });
+
+    return {
+      success: true,
+      message: `Process "${displayName}" created successfully`,
+      warning: "Remember to add inventory transitions in productivity.server.ts if needed",
+    };
+  }
+
   if (intent === "update-process") {
     const processId = formData.get("processId") as string;
     const secondsPerUnit = parseInt(formData.get("secondsPerUnit") as string, 10);
@@ -231,6 +284,68 @@ export default function Capacity() {
                 </div>
               )}
             </div>
+
+            {/* Create New Process */}
+            {user.role === "ADMIN" && (
+              <div className="mt-6 pt-6 border-t">
+                <h3 className="font-semibold mb-4">Create New Process</h3>
+                <Form method="post">
+                  <input type="hidden" name="intent" value="create-process" />
+
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div className="form-group mb-0">
+                      <label className="form-label">Display Name *</label>
+                      <input
+                        type="text"
+                        name="displayName"
+                        required
+                        placeholder="e.g., Packaging"
+                        className="form-input"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Process name will be auto-generated (e.g., PACKAGING)
+                      </p>
+                    </div>
+
+                    <div className="form-group mb-0">
+                      <label className="form-label">Seconds Per Unit *</label>
+                      <input
+                        type="number"
+                        name="secondsPerUnit"
+                        required
+                        min="1"
+                        step="1"
+                        placeholder="120"
+                        className="form-input"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Average time to complete one unit
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="form-group mb-4">
+                    <label className="form-label">Description (Optional)</label>
+                    <textarea
+                      name="description"
+                      placeholder="Describe what this process involves..."
+                      className="form-input"
+                      rows={2}
+                    />
+                  </div>
+
+                  {actionData?.warning && (
+                    <div className="alert alert-warning mb-4 text-sm">
+                      <strong>Note:</strong> {actionData.warning}
+                    </div>
+                  )}
+
+                  <button type="submit" className="btn btn-primary w-full" disabled={isSubmitting}>
+                    {isSubmitting ? "Creating..." : "Create Process"}
+                  </button>
+                </Form>
+              </div>
+            )}
           </div>
         </div>
 
