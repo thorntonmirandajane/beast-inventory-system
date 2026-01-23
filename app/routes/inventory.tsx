@@ -243,11 +243,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
     }
 
-    // If this is an assembly and ASSEMBLED state is increasing, auto-deduct raw materials
-    if (state === "ASSEMBLED" && quantityChange > 0) {
-      const sku = await prisma.sku.findUnique({ where: { id: skuId } });
+    // Auto-deduct components when increasing assembled/completed quantities
+    const sku = await prisma.sku.findUnique({ where: { id: skuId } });
 
-      if (sku?.type === "ASSEMBLY") {
+    if (quantityChange > 0 && sku) {
+      // For assemblies: deduct when ASSEMBLED state increases
+      if (sku.type === "ASSEMBLY" && state === "ASSEMBLED") {
+        const deductResult = await autoDeductRawMaterials(skuId, quantityChange);
+
+        if (!deductResult.success) {
+          return {
+            error: `Quantity updated but auto-deduction failed: ${deductResult.error}`,
+            partialSuccess: true,
+          };
+        }
+
+        return {
+          success: true,
+          message: `Updated to ${newQuantity}. Auto-deducted: ${deductResult.deducted.map(d => `${d.sku} (-${d.quantity})`).join(", ")}`,
+        };
+      }
+
+      // For completed products: deduct when COMPLETED state increases
+      if (sku.type === "COMPLETED" && state === "COMPLETED") {
         const deductResult = await autoDeductRawMaterials(skuId, quantityChange);
 
         if (!deductResult.success) {
@@ -297,10 +315,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       }
 
-      // Auto-deduct if needed
-      if (state === "ASSEMBLED" && quantityChange > 0) {
+      // Auto-deduct components if needed
+      if (quantityChange > 0) {
         const sku = await prisma.sku.findUnique({ where: { id: skuId } });
-        if (sku?.type === "ASSEMBLY") {
+        if (sku && ((sku.type === "ASSEMBLY" && state === "ASSEMBLED") || (sku.type === "COMPLETED" && state === "COMPLETED"))) {
           await autoDeductRawMaterials(skuId, quantityChange);
         }
       }
@@ -417,6 +435,7 @@ export default function Inventory() {
     category: "",
     material: "",
   });
+  const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [dragFillState, setDragFillState] = useState<{
     active: boolean;
     startSkuId: string;
@@ -425,6 +444,18 @@ export default function Inventory() {
     selectedRows: string[];
   } | null>(null);
   const fetcher = useFetcher();
+
+  const toggleColumnVisibility = (column: string) => {
+    setHiddenColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(column)) {
+        next.delete(column);
+      } else {
+        next.add(column);
+      }
+      return next;
+    });
+  };
 
   const handleSearch = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -488,8 +519,13 @@ export default function Inventory() {
 
   // Determine which columns to show based on tab
   const shouldShowColumn = (column: string): boolean => {
-    // All tab shows everything
-    if (typeFilter === "all") return true;
+    // Check if column is hidden by user
+    if (hiddenColumns.has(column)) return false;
+
+    // All tab - show all except "inAssembly" since we have "assembled"
+    if (typeFilter === "all") {
+      return column !== "inAssembly";
+    }
 
     // Raw Materials tab
     if (typeFilter === "raw") {
@@ -498,7 +534,7 @@ export default function Inventory() {
 
     // Assembly tab
     if (typeFilter === "assembly") {
-      return ["sku", "name", "category", "material", "raw", "assembled"].includes(column);
+      return ["sku", "name", "category", "material", "assembled", "inAssembly"].includes(column);
     }
 
     // Completed tab
@@ -670,53 +706,103 @@ export default function Inventory() {
               <thead>
                 <tr>
                   {shouldShowColumn("sku") && (
-                    <th className="sticky left-0 bg-white z-10 cursor-pointer" onClick={() => handleSort("sku")}>
-                      SKU {sortBy === "sku" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th className="sticky left-0 bg-white z-10">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("sku")}>SKU {sortBy === "sku" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("sku"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("name") && (
-                    <th className="cursor-pointer" onClick={() => handleSort("name")}>
-                      Name {sortBy === "name" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("name")}>Name {sortBy === "name" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("name"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("type") && typeFilter === "all" && (
-                    <th className="cursor-pointer" onClick={() => handleSort("type")}>
-                      Type {sortBy === "type" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("type")}>Type {sortBy === "type" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("type"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("category") && (
-                    <th className="cursor-pointer" onClick={() => handleSort("category")}>
-                      Category {sortBy === "category" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("category")}>Category {sortBy === "category" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("category"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("material") && (
-                    <th className="cursor-pointer" onClick={() => handleSort("material")}>
-                      Material {sortBy === "material" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("material")}>Material {sortBy === "material" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("material"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("raw") && (
-                    <th className="text-right cursor-pointer" onClick={() => handleSort("raw")}>
-                      {typeFilter === "assembly" ? "RAW (Components)" : "RAW"} {sortBy === "raw" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("raw")}>{typeFilter === "assembly" ? "RAW (Components)" : "RAW"} {sortBy === "raw" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("raw"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("inAssembly") && (
-                    <th className="text-right cursor-pointer" onClick={() => handleSort("inAssembly")}>
-                      In Assembly {sortBy === "inAssembly" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("inAssembly")}>{typeFilter === "assembly" ? "In Completed Package" : typeFilter === "raw" ? "In Completed Package" : "In Assembly"} {sortBy === "inAssembly" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("inAssembly"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("assembled") && (
-                    <th className="text-right cursor-pointer" onClick={() => handleSort("assembled")}>
-                      Assembled {sortBy === "assembled" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("assembled")}>Assembled {sortBy === "assembled" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("assembled"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("completed") && (
-                    <th className="text-right cursor-pointer" onClick={() => handleSort("completed")}>
-                      Completed {sortBy === "completed" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("completed")}>Completed {sortBy === "completed" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("completed"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                   {shouldShowColumn("onOrder") && (
-                    <th className="text-right cursor-pointer" onClick={() => handleSort("onOrder")}>
-                      On Order {sortBy === "onOrder" && (sortDir === "asc" ? "↑" : "↓")}
+                    <th className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("onOrder")}>On Order {sortBy === "onOrder" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("onOrder"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
                     </th>
                   )}
                 </tr>

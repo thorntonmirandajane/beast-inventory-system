@@ -562,8 +562,12 @@ export async function executeBuild(
 // ============================================
 
 /**
- * Automatically deduct raw materials when assembled quantity increases
- * Called from inventory route when user edits assembled quantity inline
+ * Automatically deduct BOM components when assembled/completed quantity increases
+ * Deducts from the appropriate state based on component type:
+ * - RAW components → deduct from RAW state
+ * - ASSEMBLY components → deduct from ASSEMBLED state
+ * - COMPLETED components → deduct from COMPLETED state
+ * Called from inventory route when user edits quantity inline
  */
 export async function autoDeductRawMaterials(
   assemblySkuId: string,
@@ -587,15 +591,15 @@ export async function autoDeductRawMaterials(
   });
 
   if (!assembly) {
-    return { success: false, error: "Assembly SKU not found" };
+    return { success: false, error: "SKU not found" };
   }
 
-  if (assembly.type !== "ASSEMBLY") {
-    return { success: false, error: "SKU is not an assembly" };
+  if (assembly.type !== "ASSEMBLY" && assembly.type !== "COMPLETED") {
+    return { success: false, error: "SKU is not an assembly or completed product" };
   }
 
   if (assembly.bomComponents.length === 0) {
-    return { success: false, error: "Assembly has no BOM components" };
+    return { success: false, error: "SKU has no BOM components" };
   }
 
   const deducted: { sku: string; quantity: number }[] = [];
@@ -605,11 +609,22 @@ export async function autoDeductRawMaterials(
   for (const bomItem of assembly.bomComponents) {
     const requiredQty = bomItem.quantity * quantityChange;
 
-    // Deduct from RAW state
+    // Determine which state to deduct from based on component type
+    let statesToDeduct: string[];
+    if (bomItem.componentSku.type === "RAW") {
+      statesToDeduct = ["RAW"];
+    } else if (bomItem.componentSku.type === "ASSEMBLY") {
+      statesToDeduct = ["ASSEMBLED"];
+    } else if (bomItem.componentSku.type === "COMPLETED") {
+      statesToDeduct = ["COMPLETED"];
+    } else {
+      statesToDeduct = ["RAW"]; // fallback
+    }
+
     const result = await deductInventory(
       bomItem.componentSkuId,
       requiredQty,
-      ["RAW"]
+      statesToDeduct
     );
 
     if (!result.success) {
