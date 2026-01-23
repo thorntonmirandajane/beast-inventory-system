@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData, Link } from "react-router";
+import { useLoaderData, Link, redirect } from "react-router";
 import { requireUser } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -7,6 +7,11 @@ import { getAllBuildEligibility } from "../utils/inventory.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
+
+  // Redirect workers to time clock instead of inventory dashboard
+  if (user.role === "WORKER") {
+    throw redirect("/time-clock");
+  }
 
   // Get counts
   const [
