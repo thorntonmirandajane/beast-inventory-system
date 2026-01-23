@@ -544,9 +544,9 @@ export default function Inventory() {
       return column !== "inAssembly";
     }
 
-    // Raw Materials tab - show RAW, In Assembly (where used), and On Order
+    // Raw Materials tab - show RAW, Assembled (where used), and On Order
     if (typeFilter === "raw") {
-      return ["sku", "name", "category", "process", "raw", "inAssembly", "onOrder"].includes(column);
+      return ["sku", "name", "category", "process", "raw", "assembled", "onOrder"].includes(column);
     }
 
     // Assembly tab - show Type, Assembled columns (includes both ASSEMBLY and COMPLETED)

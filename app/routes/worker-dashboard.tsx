@@ -121,6 +121,10 @@ async function getClockStatus(userId: string): Promise<ClockStatus> {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
 
+  // Check for success message from task submission
+  const url = new URL(request.url);
+  const submitted = url.searchParams.get("submitted") === "true";
+
   const clockStatus = await getClockStatus(user.id);
 
   // Get worker's assigned tasks
@@ -190,6 +194,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     efficiencyStats,
     currentTimeEntry,
     rejectedLines,
+    submitted,
   };
 };
 
@@ -276,6 +281,7 @@ export default function WorkerDashboard() {
     efficiencyStats,
     currentTimeEntry,
     rejectedLines,
+    submitted,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -316,6 +322,11 @@ export default function WorkerDashboard() {
       )}
       {actionData?.success && actionData.message && (
         <div className="alert alert-success">{actionData.message}</div>
+      )}
+      {submitted && (
+        <div className="alert alert-success">
+          Tasks submitted successfully! Your work has been recorded.
+        </div>
       )}
 
       {/* Clock Status Card */}

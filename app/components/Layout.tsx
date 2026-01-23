@@ -133,6 +133,12 @@ export function Layout({ user, children }: LayoutProps) {
                 </svg>
                 TASK ASSIGNMENTS
               </Link>
+              <Link to="/admin-submit-worker-task" className={`nav-link ${isActive("/admin-submit-worker-task") ? "active" : ""}`}>
+                <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z" />
+                </svg>
+                SUBMIT WORKER TASK
+              </Link>
               <Link to="/quality-control" className={`nav-link ${isActive("/quality-control") ? "active" : ""}`}>
                 <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
@@ -143,7 +149,7 @@ export function Layout({ user, children }: LayoutProps) {
                 <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                TIME APPROVALS
+                TASK APPROVALS
               </Link>
               <Link to="/payroll" className={`nav-link ${isActive("/payroll") ? "active" : ""}`}>
                 <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">

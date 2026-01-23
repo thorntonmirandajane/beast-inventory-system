@@ -32,6 +32,7 @@ export default [
   route("payroll", "routes/payroll.tsx"),
   route("capacity", "routes/capacity.tsx"),
   route("quality-control", "routes/quality-control.tsx"),
+  route("admin-submit-worker-task", "routes/admin-submit-worker-task.tsx"),
   route("audit-log", "routes/audit-log.tsx"),
   route("notifications", "routes/notifications.tsx"),
 ] satisfies RouteConfig;
