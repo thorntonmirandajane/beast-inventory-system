@@ -76,15 +76,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
       if (!sku) return null;
 
-      const currentInventory = await prisma.inventoryItem.aggregate({
-        where: {
-          skuId: forecast.skuId,
-          state: "COMPLETED",
-        },
-        _sum: { quantity: true },
-      });
-
-      const current = currentInventory._sum.quantity || 0;
+      const current = forecast.currentInGallatin;
       const target = forecast.quantity;
       const percentage = target > 0 ? Math.round((current / target) * 100) : 0;
 

@@ -1,6 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
-import { useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -177,35 +176,11 @@ export default function Capacity() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
-  // What-if calculator state
-  const [selectedProcess, setSelectedProcess] = useState(processConfigs[0]?.processName || "");
-  const [timeframeDays, setTimeframeDays] = useState(7);
-  const [workerCount, setWorkerCount] = useState(scheduledWorkers);
-  const [hoursPerWorker, setHoursPerWorker] = useState(
-    scheduledWorkers > 0 ? Math.round(totalWeeklyHours / scheduledWorkers) : 40
-  );
-
-  // Calculate capacity
-  const selectedConfig = processConfigs.find((p) => p.processName === selectedProcess);
-  const secondsPerUnit = selectedConfig?.secondsPerUnit || 30;
-
-  const totalWorkHours = workerCount * hoursPerWorker * (timeframeDays / 7);
-  const totalWorkSeconds = totalWorkHours * 3600;
-  const unitsCanComplete = Math.floor(totalWorkSeconds / secondsPerUnit);
-
-  // Calculate completion times for different quantities
-  const calculateTimeForUnits = (units: number) => {
-    const totalSeconds = units * secondsPerUnit;
-    const totalHours = totalSeconds / 3600;
-    const daysNeeded = totalHours / (workerCount * hoursPerWorker / 7);
-    return { totalHours: totalHours.toFixed(1), daysNeeded: daysNeeded.toFixed(1) };
-  };
-
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">Capacity Planning</h1>
-        <p className="page-subtitle">Process times and what-if analysis</p>
+        <h1 className="page-title">Process Times</h1>
+        <p className="page-subtitle">Configure time per unit for each process</p>
       </div>
 
       {actionData?.error && (
@@ -231,13 +206,12 @@ export default function Capacity() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Process Time Configuration */}
-        <div className="card">
-          <div className="card-header">
-            <h2 className="card-title">Process Times</h2>
-            <p className="text-sm text-gray-500">Time per unit for each process</p>
-          </div>
+      {/* Process Time Configuration */}
+      <div className="card mb-6">
+        <div className="card-header">
+          <h2 className="card-title">Process Times</h2>
+          <p className="text-sm text-gray-500">Time per unit for each process</p>
+        </div>
           <div className="card-body">
             <div className="space-y-4">
               {processConfigs.map((config) => (
@@ -346,113 +320,6 @@ export default function Capacity() {
                 </Form>
               </div>
             )}
-          </div>
-        </div>
-
-        {/* What-If Calculator */}
-        <div className="card">
-          <div className="card-header">
-            <h2 className="card-title">What-If Calculator</h2>
-            <p className="text-sm text-gray-500">Estimate production capacity</p>
-          </div>
-          <div className="card-body">
-            <div className="space-y-4">
-              {/* Process Selection */}
-              <div className="form-group mb-0">
-                <label className="form-label">Process</label>
-                <select
-                  className="form-select"
-                  value={selectedProcess}
-                  onChange={(e) => setSelectedProcess(e.target.value)}
-                >
-                  {processConfigs.map((config) => (
-                    <option key={config.processName} value={config.processName}>
-                      {config.displayName} ({config.secondsPerUnit} sec/unit)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Timeframe */}
-              <div className="form-group mb-0">
-                <label className="form-label">Timeframe</label>
-                <div className="flex gap-2">
-                  {[7, 14, 30].map((days) => (
-                    <button
-                      key={days}
-                      type="button"
-                      className={`btn btn-sm ${
-                        timeframeDays === days ? "btn-primary" : "btn-secondary"
-                      }`}
-                      onClick={() => setTimeframeDays(days)}
-                    >
-                      {days} days
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Workers */}
-              <div className="form-group mb-0">
-                <label className="form-label">Number of Workers</label>
-                <input
-                  type="number"
-                  className="form-input"
-                  value={workerCount}
-                  onChange={(e) => setWorkerCount(parseInt(e.target.value, 10) || 1)}
-                  min="1"
-                />
-              </div>
-
-              {/* Hours per Worker */}
-              <div className="form-group mb-0">
-                <label className="form-label">Hours per Worker (weekly)</label>
-                <input
-                  type="number"
-                  className="form-input"
-                  value={hoursPerWorker}
-                  onChange={(e) => setHoursPerWorker(parseInt(e.target.value, 10) || 1)}
-                  min="1"
-                  max="168"
-                />
-              </div>
-
-              {/* Results */}
-              <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
-                <h3 className="font-semibold text-blue-900 mb-3">Estimated Capacity</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <div className="text-3xl font-bold text-blue-700">
-                      {unitsCanComplete.toLocaleString()}
-                    </div>
-                    <div className="text-sm text-blue-600">
-                      units in {timeframeDays} days
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-3xl font-bold text-blue-700">
-                      {totalWorkHours.toFixed(0)}
-                    </div>
-                    <div className="text-sm text-blue-600">total work hours</div>
-                  </div>
-                </div>
-
-                <div className="mt-4 pt-4 border-t border-blue-200">
-                  <h4 className="font-medium text-blue-900 mb-2">Time to Complete:</h4>
-                  <div className="grid grid-cols-3 gap-2 text-sm">
-                    {[100, 500, 1000, 5000, 10000].map((units) => {
-                      const { totalHours, daysNeeded } = calculateTimeForUnits(units);
-                      return (
-                        <div key={units} className="bg-white p-2 rounded text-center">
-                          <div className="font-semibold">{units.toLocaleString()} units</div>
-                          <div className="text-gray-600">{daysNeeded} days</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>

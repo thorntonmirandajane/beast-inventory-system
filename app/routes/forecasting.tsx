@@ -67,10 +67,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Calculate forecast data for each SKU
   const forecastData = completedSkus.map(sku => {
-    const currentInventory = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
     const forecast = forecastMap.get(sku.id);
+    const currentInGallatin = forecast?.currentInGallatin || 0;
     const forecastedQty = forecast?.quantity || 0;
-    const needToBuild = Math.max(0, forecastedQty - currentInventory);
+    const needToBuild = Math.max(0, forecastedQty - currentInGallatin);
 
     // BOM explosion - calculate raw materials needed
     const rawMaterialsNeeded: Record<string, { skuId: string; sku: string; name: string; needed: number; available: number }> = {};
@@ -151,7 +151,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       skuId: sku.id,
       sku: sku.sku,
       name: sku.name,
-      currentInventory,
+      currentInGallatin,
       forecastedQty,
       needToBuild,
       rawMaterialsNeeded: Object.values(rawMaterialsNeeded),
@@ -241,19 +241,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "update-forecast") {
     const skuId = formData.get("skuId") as string;
     const quantity = parseInt(formData.get("quantity") as string, 10);
+    const currentInGallatin = parseInt(formData.get("currentInGallatin") as string, 10);
 
     if (isNaN(quantity) || quantity < 0) {
-      return { error: "Invalid quantity" };
+      return { error: "Invalid forecasted quantity" };
+    }
+
+    if (isNaN(currentInGallatin) || currentInGallatin < 0) {
+      return { error: "Invalid current inventory quantity" };
     }
 
     // Upsert forecast
     await prisma.forecast.upsert({
       where: { skuId },
-      create: { skuId, quantity },
-      update: { quantity },
+      create: { skuId, quantity, currentInGallatin },
+      update: { quantity, currentInGallatin },
     });
 
-    await createAuditLog(user.id, "UPDATE_FORECAST", "Forecast", skuId, { quantity });
+    await createAuditLog(user.id, "UPDATE_FORECAST", "Forecast", skuId, { quantity, currentInGallatin });
 
     return { success: true, message: "Forecast updated" };
   }
@@ -320,11 +325,21 @@ export default function Forecasting() {
                   <tr key={item.skuId}>
                     <td className="font-mono text-sm">{item.sku}</td>
                     <td>{item.name}</td>
-                    <td className="text-right font-semibold">{item.currentInventory}</td>
                     <td className="text-right">
-                      <Form method="post" className="inline-flex items-center gap-2">
+                      <Form method="post" className="inline-flex items-center gap-2 justify-end">
                         <input type="hidden" name="intent" value="update-forecast" />
                         <input type="hidden" name="skuId" value={item.skuId} />
+                        <input
+                          type="number"
+                          name="currentInGallatin"
+                          className="form-input w-24 text-sm text-right"
+                          min="0"
+                          defaultValue={item.currentInGallatin}
+                          placeholder="0"
+                          required
+                        />
+                    </td>
+                    <td className="text-right">
                         <input
                           type="number"
                           name="quantity"
@@ -332,15 +347,8 @@ export default function Forecasting() {
                           min="0"
                           defaultValue={item.forecastedQty}
                           placeholder="0"
+                          required
                         />
-                        <button
-                          type="submit"
-                          className="btn btn-xs btn-secondary whitespace-nowrap"
-                          disabled={isSubmitting}
-                        >
-                          Save
-                        </button>
-                      </Form>
                     </td>
                     <td className="text-right">
                       {item.needToBuild > 0 ? (
@@ -356,7 +364,15 @@ export default function Forecasting() {
                         <span className="badge bg-orange-100 text-orange-700">⚠ Build {item.needToBuild}</span>
                       )}
                     </td>
-                    <td>
+                    <td className="text-right">
+                      <button
+                        type="submit"
+                        className="btn btn-xs btn-secondary whitespace-nowrap mr-2"
+                        disabled={isSubmitting}
+                      >
+                        Save
+                      </button>
+                      </Form>
                       {item.needToBuild > 0 && (
                         <button
                           onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}

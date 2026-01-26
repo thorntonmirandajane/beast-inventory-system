@@ -297,12 +297,13 @@ model ProcessTutorialSku {
 }
 
 model Forecast {
-  id        String   @id @default(cuid())
-  skuId     String
-  quantity  Int
-  notes     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  skuId               String
+  quantity            Int
+  currentInGallatin   Int      @default(0)
+  notes               String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@unique([skuId])
   @@index([skuId])
