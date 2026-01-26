@@ -15,6 +15,7 @@
     "db:seed": "npx tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "db:reset": "prisma migrate reset --force",
+    "db:update-categories": "npx tsx update-category-process.ts",
     "postinstall": "prisma generate"
   },
   "prisma": {
