@@ -388,44 +388,45 @@ export default function Forecasting() {
                         >
                           Save
                         </button>
-                        {item.needToBuild > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
-                            className="btn btn-xs btn-ghost flex items-center gap-1"
-                          >
-                            <svg
-                              className={`w-4 h-4 transition-transform ${expandedSku === item.skuId ? 'rotate-90' : ''}`}
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              strokeWidth={2}
-                              stroke="currentColor"
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-                            </svg>
-                            {expandedSku === item.skuId ? "Hide Details" : "View Details"}
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
+                          className="btn btn-xs btn-ghost"
+                        >
+                          {expandedSku === item.skuId ? "−" : "+"}
+                        </button>
                       </td>
                     </tr>
                   </Form>
-                  {expandedSku === item.skuId && item.needToBuild > 0 && (
+                  {expandedSku === item.skuId && (
                     <tr>
                       <td colSpan={7} className="bg-gray-50 p-4">
                         <div className="space-y-6">
-                          {/* Assembly SKUs Needed */}
-                          {item.assemblySkusNeeded.length > 0 && (
+                          <h4 className="font-semibold text-lg text-gray-900 mb-4">
+                            Bill of Materials for {item.name}
+                          </h4>
+
+                          {/* BOM Components */}
+                          {item.assemblySkusNeeded.length > 0 ? (
                             <div>
-                              <h4 className="font-semibold mb-3 text-gray-900">Assembly SKUs Required</h4>
+                              <h4 className="font-semibold mb-3 text-gray-900">Assembly Components</h4>
+                              <p className="text-sm text-gray-600 mb-3">
+                                These assembly SKUs are needed to build this product
+                                {item.needToBuild > 0 && ` (${item.needToBuild} units)`}
+                              </p>
                               <table className="data-table-sm">
                                 <thead>
                                   <tr>
                                     <th>Assembly SKU</th>
                                     <th>Name</th>
                                     <th className="text-right">Qty per Unit</th>
-                                    <th className="text-right">Total Needed</th>
-                                    <th className="text-right">Available</th>
-                                    <th className="text-right">Shortfall</th>
+                                    {item.needToBuild > 0 && (
+                                      <>
+                                        <th className="text-right">Total Needed</th>
+                                        <th className="text-right">Available</th>
+                                        <th className="text-right">Shortfall</th>
+                                      </>
+                                    )}
                                   </tr>
                                 </thead>
                                 <tbody>
@@ -436,15 +437,73 @@ export default function Forecasting() {
                                         <td className="font-mono text-sm">{assembly.sku}</td>
                                         <td>{assembly.name}</td>
                                         <td className="text-right text-gray-600">{assembly.qtyPerUnit}</td>
-                                        <td className="text-right font-semibold">{assembly.totalNeeded}</td>
-                                        <td className="text-right">{assembly.available}</td>
-                                        <td className="text-right">
-                                          {shortfall > 0 ? (
-                                            <span className="text-red-600 font-bold">-{shortfall}</span>
-                                          ) : (
-                                            <span className="text-green-600">✓</span>
-                                          )}
-                                        </td>
+                                        {item.needToBuild > 0 && (
+                                          <>
+                                            <td className="text-right font-semibold">{assembly.totalNeeded}</td>
+                                            <td className="text-right">{assembly.available}</td>
+                                            <td className="text-right">
+                                              {shortfall > 0 ? (
+                                                <span className="text-red-600 font-bold">-{shortfall}</span>
+                                              ) : (
+                                                <span className="text-green-600">✓</span>
+                                              )}
+                                            </td>
+                                          </>
+                                        )}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <div className="text-sm text-gray-600 mb-4">
+                              This product is built directly from raw materials (no assembly components).
+                            </div>
+                          )}
+
+                          {/* Raw Materials */}
+                          {item.rawMaterialsNeeded.length > 0 && (
+                            <div>
+                              <h4 className="font-semibold mb-3 text-gray-900">Raw Materials</h4>
+                              <p className="text-sm text-gray-600 mb-3">
+                                Raw materials consumed in production
+                                {item.needToBuild > 0 && ` (to build ${item.needToBuild} units)`}
+                              </p>
+                              <table className="data-table-sm">
+                                <thead>
+                                  <tr>
+                                    <th>Raw Material SKU</th>
+                                    <th>Name</th>
+                                    {item.needToBuild > 0 && (
+                                      <>
+                                        <th className="text-right">Needed</th>
+                                        <th className="text-right">Available</th>
+                                        <th className="text-right">Shortfall</th>
+                                      </>
+                                    )}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {item.rawMaterialsNeeded.map((raw) => {
+                                    const shortfall = Math.max(0, raw.needed - raw.available);
+                                    return (
+                                      <tr key={raw.skuId}>
+                                        <td className="font-mono text-sm">{raw.sku}</td>
+                                        <td>{raw.name}</td>
+                                        {item.needToBuild > 0 && (
+                                          <>
+                                            <td className="text-right font-semibold">{raw.needed}</td>
+                                            <td className="text-right">{raw.available}</td>
+                                            <td className="text-right">
+                                              {shortfall > 0 ? (
+                                                <span className="text-red-600 font-bold">-{shortfall}</span>
+                                              ) : (
+                                                <span className="text-green-600">✓</span>
+                                              )}
+                                            </td>
+                                          </>
+                                        )}
                                       </tr>
                                     );
                                   })}
@@ -453,10 +512,10 @@ export default function Forecasting() {
                             </div>
                           )}
 
-                          {/* Process Breakdown and Raw Materials */}
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* Process Time Breakdown - Only show if needToBuild > 0 */}
+                          {item.needToBuild > 0 && Object.keys(item.processTotals).length > 0 && (
                             <div>
-                              <h4 className="font-semibold mb-2">Process Breakdown</h4>
+                              <h4 className="font-semibold mb-3 text-gray-900">Process Time Required</h4>
                               <table className="data-table-sm">
                                 <thead>
                                   <tr>
@@ -476,43 +535,7 @@ export default function Forecasting() {
                                 </tbody>
                               </table>
                             </div>
-                            <div>
-                              <h4 className="font-semibold mb-2">Raw Materials Needed</h4>
-                              {item.rawMaterialsNeeded.length === 0 ? (
-                                <p className="text-sm text-gray-500">No raw materials needed</p>
-                              ) : (
-                                <table className="data-table-sm">
-                                  <thead>
-                                    <tr>
-                                      <th>SKU</th>
-                                      <th className="text-right">Needed</th>
-                                      <th className="text-right">Available</th>
-                                      <th>Status</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {item.rawMaterialsNeeded.map((raw) => {
-                                      const shortfall = Math.max(0, raw.needed - raw.available);
-                                      return (
-                                        <tr key={raw.skuId}>
-                                          <td className="font-mono text-xs">{raw.sku}</td>
-                                          <td className="text-right">{raw.needed}</td>
-                                          <td className="text-right">{raw.available}</td>
-                                          <td>
-                                            {shortfall > 0 ? (
-                                              <span className="text-xs text-red-600 font-semibold">-{shortfall}</span>
-                                            ) : (
-                                              <span className="text-xs text-green-600">✓</span>
-                                            )}
-                                          </td>
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              )}
-                            </div>
-                          </div>
+                          )}
                         </div>
                       </td>
                     </tr>
