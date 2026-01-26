@@ -132,7 +132,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       category: sku.category,
       process: sku.material, // Renamed from material to process
       raw: byState.RAW,
-      assembled: byState.ASSEMBLED + byState.COMPLETED, // Combined ASSEMBLED and COMPLETED states
+      // For COMPLETED type, show COMPLETED state. For ASSEMBLY type, show ASSEMBLED state
+      assembled: sku.type === "COMPLETED" ? byState.COMPLETED : byState.ASSEMBLED,
       inAssembly,
       onOrderPOs,
       totalOnOrder,

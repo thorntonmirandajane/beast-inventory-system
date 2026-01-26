@@ -394,8 +394,9 @@ export async function deductInventory(
 
   const totalAvailable = items.reduce((sum, i) => sum + i.quantity, 0);
 
-  // Allow negative inventory for RAW materials (states includes "RAW")
-  const allowNegative = states.includes("RAW");
+  // Allow negative inventory for RAW, ASSEMBLED, and COMPLETED states
+  // This supports incremental worker task submissions where assemblies are used before recorded
+  const allowNegative = states.includes("RAW") || states.includes("ASSEMBLED") || states.includes("COMPLETED");
 
   if (!allowNegative && totalAvailable < quantity) {
     return {
@@ -425,7 +426,7 @@ export async function deductInventory(
   }
 
   // If we still have remaining quantity to deduct and we allow negative
-  // (RAW materials), create a negative inventory item
+  // (RAW, ASSEMBLED, or COMPLETED materials), create a negative inventory item
   if (remaining > 0 && allowNegative) {
     // Find or create a negative inventory item for this SKU/state
     const negativeItem = await prisma.inventoryItem.findFirst({
@@ -447,7 +448,7 @@ export async function deductInventory(
         data: {
           skuId,
           quantity: -remaining,
-          state: states[0], // Use the first state (RAW)
+          state: states[0], // Use the first state from the states array
         },
       });
     }
@@ -661,8 +662,7 @@ export async function autoDeductRawMaterials(
     );
 
     if (!result.success) {
-      // Only treat as error for non-RAW materials
-      // RAW materials can go negative, so this shouldn't happen
+      // Deduction failed - this should rarely happen since we allow negative inventory
       errors.push(`${bomItem.componentSku.sku}: ${result.error}`);
     } else {
       deducted.push({
@@ -672,7 +672,7 @@ export async function autoDeductRawMaterials(
     }
   }
 
-  // If any deduction failed (should only be for non-RAW materials), return error
+  // If any deduction failed, return error
   if (errors.length > 0) {
     return {
       success: false,
