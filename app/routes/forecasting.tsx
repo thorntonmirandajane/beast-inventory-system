@@ -72,7 +72,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const forecastedQty = forecast?.quantity || 0;
     const needToBuild = Math.max(0, forecastedQty - currentInGallatin);
 
-    // BOM explosion - calculate raw materials needed
+    // BOM explosion - track assembly SKUs and raw materials needed
+    const assemblySkusNeeded: Record<string, { skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }> = {};
     const rawMaterialsNeeded: Record<string, { skuId: string; sku: string; name: string; needed: number; available: number }> = {};
     const processTotals: Record<string, { units: number; seconds: number }> = {};
 
@@ -104,8 +105,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             };
           }
           rawMaterialsNeeded[bomComp.componentSku.id].needed += qtyNeeded;
-        } else {
-          // If it's an assembly, explode its BOM too
+        } else if (bomComp.componentSku.type === "ASSEMBLY") {
+          // Track assembly SKU needed
+          if (!assemblySkusNeeded[bomComp.componentSku.id]) {
+            assemblySkusNeeded[bomComp.componentSku.id] = {
+              skuId: bomComp.componentSku.id,
+              sku: bomComp.componentSku.sku,
+              name: bomComp.componentSku.name,
+              type: bomComp.componentSku.type,
+              qtyPerUnit: bomComp.quantity,
+              totalNeeded: 0,
+              available,
+            };
+          }
+          assemblySkusNeeded[bomComp.componentSku.id].totalNeeded += qtyNeeded;
+
+          // Explode assembly BOM for raw materials
           for (const subComp of bomComp.componentSku.bomComponents) {
             const subQtyNeeded = subComp.quantity * qtyNeeded;
             const subAvailable = subComp.componentSku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
@@ -154,6 +169,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       currentInGallatin,
       forecastedQty,
       needToBuild,
+      assemblySkusNeeded: Object.values(assemblySkusNeeded),
       rawMaterialsNeeded: Object.values(rawMaterialsNeeded),
       processTotals,
       hasForecast: !!forecast,
@@ -376,8 +392,17 @@ export default function Forecasting() {
                           <button
                             type="button"
                             onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
-                            className="btn btn-xs btn-ghost"
+                            className="btn btn-xs btn-ghost flex items-center gap-1"
                           >
+                            <svg
+                              className={`w-4 h-4 transition-transform ${expandedSku === item.skuId ? 'rotate-90' : ''}`}
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              strokeWidth={2}
+                              stroke="currentColor"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                            </svg>
                             {expandedSku === item.skuId ? "Hide Details" : "View Details"}
                           </button>
                         )}
@@ -387,55 +412,37 @@ export default function Forecasting() {
                   {expandedSku === item.skuId && item.needToBuild > 0 && (
                     <tr>
                       <td colSpan={7} className="bg-gray-50 p-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div>
-                            <h4 className="font-semibold mb-2">Process Breakdown</h4>
-                            <table className="data-table-sm">
-                              <thead>
-                                <tr>
-                                  <th>Process</th>
-                                  <th className="text-right">Units</th>
-                                  <th className="text-right">Hours</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {Object.entries(item.processTotals).map(([process, totals]) => (
-                                  <tr key={process}>
-                                    <td>{process}</td>
-                                    <td className="text-right">{totals.units}</td>
-                                    <td className="text-right">{(totals.seconds / 3600).toFixed(1)}h</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                          <div>
-                            <h4 className="font-semibold mb-2">Raw Materials Needed</h4>
-                            {item.rawMaterialsNeeded.length === 0 ? (
-                              <p className="text-sm text-gray-500">No raw materials needed</p>
-                            ) : (
+                        <div className="space-y-6">
+                          {/* Assembly SKUs Needed */}
+                          {item.assemblySkusNeeded.length > 0 && (
+                            <div>
+                              <h4 className="font-semibold mb-3 text-gray-900">Assembly SKUs Required</h4>
                               <table className="data-table-sm">
                                 <thead>
                                   <tr>
-                                    <th>SKU</th>
-                                    <th className="text-right">Needed</th>
+                                    <th>Assembly SKU</th>
+                                    <th>Name</th>
+                                    <th className="text-right">Qty per Unit</th>
+                                    <th className="text-right">Total Needed</th>
                                     <th className="text-right">Available</th>
-                                    <th>Status</th>
+                                    <th className="text-right">Shortfall</th>
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {item.rawMaterialsNeeded.map((raw) => {
-                                    const shortfall = Math.max(0, raw.needed - raw.available);
+                                  {item.assemblySkusNeeded.map((assembly) => {
+                                    const shortfall = Math.max(0, assembly.totalNeeded - assembly.available);
                                     return (
-                                      <tr key={raw.skuId}>
-                                        <td className="font-mono text-xs">{raw.sku}</td>
-                                        <td className="text-right">{raw.needed}</td>
-                                        <td className="text-right">{raw.available}</td>
-                                        <td>
+                                      <tr key={assembly.skuId}>
+                                        <td className="font-mono text-sm">{assembly.sku}</td>
+                                        <td>{assembly.name}</td>
+                                        <td className="text-right text-gray-600">{assembly.qtyPerUnit}</td>
+                                        <td className="text-right font-semibold">{assembly.totalNeeded}</td>
+                                        <td className="text-right">{assembly.available}</td>
+                                        <td className="text-right">
                                           {shortfall > 0 ? (
-                                            <span className="text-xs text-red-600 font-semibold">-{shortfall}</span>
+                                            <span className="text-red-600 font-bold">-{shortfall}</span>
                                           ) : (
-                                            <span className="text-xs text-green-600">✓</span>
+                                            <span className="text-green-600">✓</span>
                                           )}
                                         </td>
                                       </tr>
@@ -443,7 +450,68 @@ export default function Forecasting() {
                                   })}
                                 </tbody>
                               </table>
-                            )}
+                            </div>
+                          )}
+
+                          {/* Process Breakdown and Raw Materials */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <h4 className="font-semibold mb-2">Process Breakdown</h4>
+                              <table className="data-table-sm">
+                                <thead>
+                                  <tr>
+                                    <th>Process</th>
+                                    <th className="text-right">Units</th>
+                                    <th className="text-right">Hours</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {Object.entries(item.processTotals).map(([process, totals]) => (
+                                    <tr key={process}>
+                                      <td>{process}</td>
+                                      <td className="text-right">{totals.units}</td>
+                                      <td className="text-right">{(totals.seconds / 3600).toFixed(1)}h</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            <div>
+                              <h4 className="font-semibold mb-2">Raw Materials Needed</h4>
+                              {item.rawMaterialsNeeded.length === 0 ? (
+                                <p className="text-sm text-gray-500">No raw materials needed</p>
+                              ) : (
+                                <table className="data-table-sm">
+                                  <thead>
+                                    <tr>
+                                      <th>SKU</th>
+                                      <th className="text-right">Needed</th>
+                                      <th className="text-right">Available</th>
+                                      <th>Status</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {item.rawMaterialsNeeded.map((raw) => {
+                                      const shortfall = Math.max(0, raw.needed - raw.available);
+                                      return (
+                                        <tr key={raw.skuId}>
+                                          <td className="font-mono text-xs">{raw.sku}</td>
+                                          <td className="text-right">{raw.needed}</td>
+                                          <td className="text-right">{raw.available}</td>
+                                          <td>
+                                            {shortfall > 0 ? (
+                                              <span className="text-xs text-red-600 font-semibold">-{shortfall}</span>
+                                            ) : (
+                                              <span className="text-xs text-green-600">✓</span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </td>
