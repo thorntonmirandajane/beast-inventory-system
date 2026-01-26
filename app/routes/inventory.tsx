@@ -180,8 +180,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       sku: sku.sku,
       name: sku.name,
       type: sku.type,
-      category: sku.material, // Category shows material (Aluminum, Titanium, etc.)
-      process: sku.category, // Process shows category (Tipping, Packaging, etc.)
+      category: sku.category, // Category field contains material type (Aluminum, Titanium, etc.)
+      process: sku.material, // Material field contains process (Tipped, Bladed, Stud Tested, etc.)
       raw: byState.RAW,
       // For COMPLETED type, show COMPLETED state. For ASSEMBLY type, show ASSEMBLED state
       assembled: sku.type === "COMPLETED" ? byState.COMPLETED : byState.ASSEMBLED,
