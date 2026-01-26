@@ -1002,26 +1002,40 @@ export default function SkuDetail() {
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Process Category</label>
-                  <select name="category" className="form-select" defaultValue={sku.category || ""}>
-                    <option value="">No category</option>
-                    <option value="TIPPING">Tipping</option>
-                    <option value="BLADING">Blading</option>
-                    <option value="STUD_TESTING">Stud Testing</option>
-                    <option value="COMPLETE_PACKS">Complete Packs</option>
-                  </select>
+                  <label className="form-label">Process</label>
+                  <input
+                    type="text"
+                    name="material"
+                    className="form-input"
+                    placeholder="e.g., Tipped, Bladed, Stud Tested, Completed Packs"
+                    defaultValue={sku.material || ""}
+                    list="process-options"
+                  />
+                  <datalist id="process-options">
+                    <option value="Tipped" />
+                    <option value="Bladed" />
+                    <option value="Stud Tested" />
+                    <option value="Completed Packs" />
+                  </datalist>
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Material Type</label>
-                  <select name="material" className="form-select" defaultValue={sku.material || ""}>
-                    <option value="">No material type</option>
-                    <option value="TITANIUM">Titanium</option>
-                    <option value="ALUMINUM">Aluminum</option>
-                    <option value="STEEL">Steel</option>
-                    <option value="STAINLESS">Stainless Steel</option>
-                    <option value="CARBON">Carbon</option>
-                    <option value="OTHER">Other</option>
-                  </select>
+                  <label className="form-label">Category</label>
+                  <input
+                    type="text"
+                    name="category"
+                    className="form-input"
+                    placeholder="e.g., Aluminum, Titanium (100g), Steel, TRUMP"
+                    defaultValue={sku.category || ""}
+                    list="category-options"
+                  />
+                  <datalist id="category-options">
+                    <option value="Aluminum" />
+                    <option value="Titanium (100g)" />
+                    <option value="Titanium (125g)" />
+                    <option value="Steel" />
+                    <option value="TRUMP" />
+                    <option value="PRACTICE TIPS" />
+                  </datalist>
                 </div>
                 <div className="form-group md:col-span-2">
                   <label className="form-label">Description</label>
