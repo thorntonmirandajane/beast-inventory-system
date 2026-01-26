@@ -270,6 +270,32 @@ model ProcessConfig {
   @@map("process_configs")
 }
 
+model ProcessTutorial {
+  id            String                  @id @default(cuid())
+  processName   String
+  title         String
+  description   String                  @db.Text
+  photoUrl      String?
+  isActive      Boolean                 @default(true)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  skuTutorials  ProcessTutorialSku[]
+
+  @@index([processName])
+  @@map("process_tutorials")
+}
+
+model ProcessTutorialSku {
+  id                 String           @id @default(cuid())
+  processTutorialId  String
+  skuId              String
+  tutorial           ProcessTutorial  @relation(fields: [processTutorialId], references: [id], onDelete: Cascade)
+
+  @@unique([processTutorialId, skuId])
+  @@index([skuId])
+  @@map("process_tutorial_skus")
+}
+
 model ProcessTime {
   id             String @id @default(cuid())
   skuId          String

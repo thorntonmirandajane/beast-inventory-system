@@ -91,10 +91,16 @@ export default function WorkerTaskView() {
                     <td className="font-medium">{task.processName}</td>
                     <td>
                       {task.sku ? (
-                        <div>
+                        <Link
+                          to={`/tutorials?sku=${task.sku.id}`}
+                          className="text-blue-600 hover:underline"
+                        >
                           <div className="font-mono text-sm">{task.sku.sku}</div>
                           <div className="text-xs text-gray-500">{task.sku.name}</div>
-                        </div>
+                          <div className="text-xs text-blue-500 mt-1">
+                            📚 View Tutorial
+                          </div>
+                        </Link>
                       ) : (
                         <span className="text-gray-400">—</span>
                       )}

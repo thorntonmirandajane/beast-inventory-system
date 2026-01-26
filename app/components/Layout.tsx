@@ -140,6 +140,12 @@ export function Layout({ user, children }: LayoutProps) {
                   </svg>
                   REJECTED TASKS
                 </Link>
+                <Link to="/tutorials" onClick={closeMobileMenu} className={`nav-link ${isActive("/tutorials") ? "active" : ""}`}>
+                  <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+                  </svg>
+                  TUTORIALS
+                </Link>
                 <Link to="/schedules" onClick={closeMobileMenu} className={`nav-link ${isActive("/schedules") ? "active" : ""}`}>
                   <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
@@ -172,6 +178,12 @@ export function Layout({ user, children }: LayoutProps) {
                   <path strokeLinecap="round" strokeLinejoin="round" d="M19 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zM4 19.235v-.11a6.375 6.375 0 0112.75 0v.109A12.318 12.318 0 0110.374 21c-2.331 0-4.512-.645-6.374-1.766z" />
                 </svg>
                 SUBMIT WORKER TASK
+              </Link>
+              <Link to="/process-tutorials" onClick={closeMobileMenu} className={`nav-link ${isActive("/process-tutorials") ? "active" : ""}`}>
+                <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+                </svg>
+                PROCESS TUTORIALS
               </Link>
               <Link to="/quality-control" onClick={closeMobileMenu} className={`nav-link ${isActive("/quality-control") ? "active" : ""}`}>
                 <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
