@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, Link, useSearchParams, useFetcher } from "react-router";
-import { requireUser } from "../utils/auth.server";
+import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { autoDeductRawMaterials } from "../utils/inventory.server";
