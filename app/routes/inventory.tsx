@@ -128,6 +128,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
+  // Debug: Log the inAssemblyBySkuId to verify calculation
+  const totalRawMaterialsWithInAssembly = Object.keys(inAssemblyBySkuId).length;
+  console.log(`[Inventory Loader] Calculated "In Assembly" for ${totalRawMaterialsWithInAssembly} raw materials`);
+  if (totalRawMaterialsWithInAssembly > 0) {
+    const sampleSkuIds = Object.keys(inAssemblyBySkuId).slice(0, 3);
+    console.log(`[Inventory Loader] Sample values:`, sampleSkuIds.map(id => `${id}: ${inAssemblyBySkuId[id]}`));
+  }
+
   // Calculate inventory totals for each SKU
   let inventory = skus.map((sku) => {
     const byState: Record<string, number> = {
