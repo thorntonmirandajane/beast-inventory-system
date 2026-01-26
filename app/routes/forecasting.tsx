@@ -70,6 +70,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const forecast = forecastMap.get(sku.id);
     const currentInGallatin = forecast?.currentInGallatin || 0;
     const forecastedQty = forecast?.quantity || 0;
+
+    // Calculate current completed inventory
+    const currentCompleted = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
+
     const needToBuild = Math.max(0, forecastedQty - currentInGallatin);
 
     // BOM explosion - track assembly SKUs and raw materials needed
@@ -167,10 +171,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     }
 
+    // Check if all raw materials are sufficient
+    const rawMaterialsList = Object.values(rawMaterialsNeeded);
+    const hasSufficientRawMaterials = rawMaterialsList.length > 0 && rawMaterialsList.every(raw => raw.available >= raw.needed);
+
+    // Calculate total build time in hours
+    const totalBuildSeconds = Object.values(processTotals).reduce((sum, p) => sum + p.seconds, 0);
+    const buildTimeHours = totalBuildSeconds / 3600;
+
     return {
       skuId: sku.id,
       sku: sku.sku,
       name: sku.name,
+      currentCompleted,
       currentInGallatin,
       forecastedQty,
       needToBuild,
@@ -178,6 +191,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       rawMaterialsNeeded: Object.values(rawMaterialsNeeded),
       processTotals,
       hasForecast: !!forecast,
+      hasSufficientRawMaterials,
+      buildTimeHours,
     };
   });
 
@@ -296,6 +311,7 @@ function ForecastRow({
     skuId: string;
     sku: string;
     name: string;
+    currentCompleted: number;
     currentInGallatin: number;
     forecastedQty: number;
     needToBuild: number;
@@ -317,6 +333,8 @@ function ForecastRow({
     }>;
     processTotals: Record<string, { units: number; seconds: number }>;
     hasForecast: boolean;
+    hasSufficientRawMaterials: boolean;
+    buildTimeHours: number;
   };
   expandedSku: string | null;
   setExpandedSku: (skuId: string | null) => void;
@@ -327,8 +345,21 @@ function ForecastRow({
   return (
     <React.Fragment>
       <tr>
+        <td className="text-center w-12">
+          <button
+            type="button"
+            onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
+            className="btn btn-sm btn-ghost text-lg font-bold"
+            disabled={isSubmitting}
+          >
+            {expandedSku === item.skuId ? "−" : "+"}
+          </button>
+        </td>
         <td className="font-mono text-sm">{item.sku}</td>
         <td>{item.name}</td>
+        <td className="text-right">
+          <span className="font-semibold text-gray-900">{item.currentCompleted}</span>
+        </td>
         <td className="text-right">
           <fetcher.Form method="post" className="inline">
             <input type="hidden" name="intent" value="update-forecast" />
@@ -382,20 +413,28 @@ function ForecastRow({
             <span className="badge bg-orange-100 text-orange-700">⚠ Build {item.needToBuild}</span>
           )}
         </td>
+        <td className="text-center">
+          {item.needToBuild > 0 ? (
+            item.hasSufficientRawMaterials ? (
+              <span className="text-green-600 text-xl">✓</span>
+            ) : (
+              <span className="text-red-600 text-xl">✗</span>
+            )
+          ) : (
+            <span className="text-gray-400">—</span>
+          )}
+        </td>
         <td className="text-right">
-          <button
-            type="button"
-            onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
-            className="btn btn-xs btn-ghost"
-            disabled={isSubmitting}
-          >
-            {expandedSku === item.skuId ? "−" : "+"}
-          </button>
+          {item.needToBuild > 0 && item.buildTimeHours > 0 ? (
+            <span className="font-semibold text-gray-900">{item.buildTimeHours.toFixed(1)}h</span>
+          ) : (
+            <span className="text-gray-400">—</span>
+          )}
         </td>
       </tr>
       {expandedSku === item.skuId && (
         <tr>
-          <td colSpan={7} className="bg-gray-50 p-4">
+          <td colSpan={10} className="bg-gray-50 p-4">
             <div className="space-y-6">
               <h4 className="font-semibold text-lg text-gray-900 mb-4">
                 Bill of Materials for {item.name}
@@ -559,8 +598,6 @@ export default function Forecasting() {
 
   const laborCapacitySufficient = availableLaborHours >= totalLaborHoursNeeded;
 
-  console.log('Rendering Forecasting component with forecastData length:', forecastData.length);
-
   return (
     <Layout user={user}>
       <div className="page-header">
@@ -585,13 +622,16 @@ export default function Forecasting() {
           <table className="data-table">
             <thead>
               <tr>
+                <th className="w-12"></th>
                 <th>SKU</th>
                 <th>Product Name</th>
+                <th className="text-right">Current Completed</th>
                 <th className="text-right">Current in Gallatin</th>
                 <th className="text-right">Forecasted Demand</th>
                 <th className="text-right">Need to Build</th>
                 <th>Status</th>
-                <th></th>
+                <th className="text-center">Raw Materials</th>
+                <th className="text-right">Build Time</th>
               </tr>
             </thead>
             <tbody>
