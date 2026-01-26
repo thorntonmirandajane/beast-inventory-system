@@ -666,7 +666,7 @@ export default function SkuDetail() {
                           {user.role === "ADMIN" && (
                             <td>
                               <div className="flex items-center gap-2 justify-end">
-                                <Form method="post" className="inline">
+                                <Form method="post" className="flex items-center gap-2">
                                   <input type="hidden" name="intent" value="update-bom-component" />
                                   <input type="hidden" name="bomComponentId" value={bom.id} />
                                   <input
@@ -679,18 +679,18 @@ export default function SkuDetail() {
                                   />
                                   <button
                                     type="submit"
-                                    className="btn btn-sm btn-secondary ml-2"
+                                    className="btn btn-sm btn-secondary whitespace-nowrap"
                                     disabled={isSubmitting}
                                   >
                                     Update
                                   </button>
                                 </Form>
-                                <Form method="post" className="inline">
+                                <Form method="post">
                                   <input type="hidden" name="intent" value="remove-bom-component" />
                                   <input type="hidden" name="bomComponentId" value={bom.id} />
                                   <button
                                     type="submit"
-                                    className="btn btn-sm btn-danger"
+                                    className="btn btn-sm btn-danger whitespace-nowrap"
                                     disabled={isSubmitting}
                                   >
                                     Remove
@@ -1077,23 +1077,29 @@ export default function SkuDetail() {
                   <p className="text-sm text-gray-500 mb-3">
                     Set quantity to 0 to remove a component
                   </p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-96 overflow-y-auto">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-96 overflow-y-auto border border-gray-200 rounded-lg p-3">
                     {allSkus.map((s, index) => (
                       <div
                         key={s.id}
-                        className={`flex items-center gap-2 p-2 rounded ${
-                          s.type === "RAW" ? "bg-gray-50" : "bg-blue-50"
+                        className={`flex items-center gap-3 p-3 rounded border ${
+                          s.type === "RAW"
+                            ? "bg-gray-50 border-gray-200"
+                            : "bg-blue-50 border-blue-200"
                         }`}
                       >
                         <input type="hidden" name={`components[${index}][skuId]`} value={s.id} />
-                        <div className="flex-1 min-w-0">
-                          <div className="font-mono text-sm truncate">{s.sku}</div>
-                          <div className="text-xs text-gray-500 truncate">{s.name}</div>
+                        <div className="flex-1 overflow-hidden">
+                          <div className="font-mono text-sm font-semibold text-gray-900 mb-1">
+                            {s.sku}
+                          </div>
+                          <div className="text-xs text-gray-600 line-clamp-2">
+                            {s.name}
+                          </div>
                         </div>
                         <input
                           type="number"
                           name={`components[${index}][quantity]`}
-                          className="form-input w-20 text-sm"
+                          className="form-input w-20 text-sm flex-shrink-0"
                           min="0"
                           defaultValue={currentBom.get(s.id) || 0}
                           placeholder="Qty"
