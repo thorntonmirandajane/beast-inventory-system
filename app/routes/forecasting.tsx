@@ -73,17 +73,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const needToBuild = Math.max(0, forecastedQty - currentInGallatin);
 
     // BOM explosion - track assembly SKUs and raw materials needed
+    // ALWAYS process BOM structure so we can show it even when needToBuild is 0
     const assemblySkusNeeded: Record<string, { skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }> = {};
     const rawMaterialsNeeded: Record<string, { skuId: string; sku: string; name: string; needed: number; available: number }> = {};
     const processTotals: Record<string, { units: number; seconds: number }> = {};
 
-    if (needToBuild > 0) {
-      // Process each component in the BOM
-      for (const bomComp of sku.bomComponents) {
-        const qtyNeeded = bomComp.quantity * needToBuild;
-        const available = bomComp.componentSku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
+    // Process each component in the BOM
+    for (const bomComp of sku.bomComponents) {
+      const qtyNeeded = bomComp.quantity * needToBuild;
+      const available = bomComp.componentSku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
 
-        // Track process time for this component
+      // Track process time for this component (only if needToBuild > 0)
+      if (needToBuild > 0) {
         const compProcess = bomComp.componentSku.material;
         if (compProcess && processMap.has(compProcess)) {
           if (!processTotals[compProcess]) {
@@ -92,40 +93,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           processTotals[compProcess].units += qtyNeeded;
           processTotals[compProcess].seconds += qtyNeeded * (processMap.get(compProcess)?.secondsPerUnit || 0);
         }
+      }
 
-        // If component is RAW, track shortage
-        if (bomComp.componentSku.type === "RAW") {
-          if (!rawMaterialsNeeded[bomComp.componentSku.id]) {
-            rawMaterialsNeeded[bomComp.componentSku.id] = {
-              skuId: bomComp.componentSku.id,
-              sku: bomComp.componentSku.sku,
-              name: bomComp.componentSku.name,
-              needed: 0,
-              available,
-            };
-          }
-          rawMaterialsNeeded[bomComp.componentSku.id].needed += qtyNeeded;
-        } else if (bomComp.componentSku.type === "ASSEMBLY") {
-          // Track assembly SKU needed
-          if (!assemblySkusNeeded[bomComp.componentSku.id]) {
-            assemblySkusNeeded[bomComp.componentSku.id] = {
-              skuId: bomComp.componentSku.id,
-              sku: bomComp.componentSku.sku,
-              name: bomComp.componentSku.name,
-              type: bomComp.componentSku.type,
-              qtyPerUnit: bomComp.quantity,
-              totalNeeded: 0,
-              available,
-            };
-          }
-          assemblySkusNeeded[bomComp.componentSku.id].totalNeeded += qtyNeeded;
+      // If component is RAW, track it
+      if (bomComp.componentSku.type === "RAW") {
+        if (!rawMaterialsNeeded[bomComp.componentSku.id]) {
+          rawMaterialsNeeded[bomComp.componentSku.id] = {
+            skuId: bomComp.componentSku.id,
+            sku: bomComp.componentSku.sku,
+            name: bomComp.componentSku.name,
+            needed: 0,
+            available,
+          };
+        }
+        rawMaterialsNeeded[bomComp.componentSku.id].needed += qtyNeeded;
+      } else if (bomComp.componentSku.type === "ASSEMBLY") {
+        // Track assembly SKU needed
+        if (!assemblySkusNeeded[bomComp.componentSku.id]) {
+          assemblySkusNeeded[bomComp.componentSku.id] = {
+            skuId: bomComp.componentSku.id,
+            sku: bomComp.componentSku.sku,
+            name: bomComp.componentSku.name,
+            type: bomComp.componentSku.type,
+            qtyPerUnit: bomComp.quantity,
+            totalNeeded: 0,
+            available,
+          };
+        }
+        assemblySkusNeeded[bomComp.componentSku.id].totalNeeded += qtyNeeded;
 
-          // Explode assembly BOM for raw materials
-          for (const subComp of bomComp.componentSku.bomComponents) {
-            const subQtyNeeded = subComp.quantity * qtyNeeded;
-            const subAvailable = subComp.componentSku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
+        // Explode assembly BOM for raw materials
+        for (const subComp of bomComp.componentSku.bomComponents) {
+          const subQtyNeeded = subComp.quantity * qtyNeeded;
+          const subAvailable = subComp.componentSku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
 
-            // Track process time
+          // Track process time (only if needToBuild > 0)
+          if (needToBuild > 0) {
             const subProcess = subComp.componentSku.material;
             if (subProcess && processMap.has(subProcess)) {
               if (!processTotals[subProcess]) {
@@ -134,24 +137,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               processTotals[subProcess].units += subQtyNeeded;
               processTotals[subProcess].seconds += subQtyNeeded * (processMap.get(subProcess)?.secondsPerUnit || 0);
             }
+          }
 
-            if (subComp.componentSku.type === "RAW") {
-              if (!rawMaterialsNeeded[subComp.componentSku.id]) {
-                rawMaterialsNeeded[subComp.componentSku.id] = {
-                  skuId: subComp.componentSku.id,
-                  sku: subComp.componentSku.sku,
-                  name: subComp.componentSku.name,
-                  needed: 0,
-                  available: subAvailable,
-                };
-              }
-              rawMaterialsNeeded[subComp.componentSku.id].needed += subQtyNeeded;
+          if (subComp.componentSku.type === "RAW") {
+            if (!rawMaterialsNeeded[subComp.componentSku.id]) {
+              rawMaterialsNeeded[subComp.componentSku.id] = {
+                skuId: subComp.componentSku.id,
+                sku: subComp.componentSku.sku,
+                name: subComp.componentSku.name,
+                needed: 0,
+                available: subAvailable,
+              };
             }
+            rawMaterialsNeeded[subComp.componentSku.id].needed += subQtyNeeded;
           }
         }
       }
+    }
 
-      // Track final assembly process
+    // Track final assembly process (only if needToBuild > 0)
+    if (needToBuild > 0) {
       const finalProcess = sku.material;
       if (finalProcess && processMap.has(finalProcess)) {
         if (!processTotals[finalProcess]) {
