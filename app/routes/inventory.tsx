@@ -67,38 +67,64 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Calculate "In Assembly" - how much of each component SKU is used in assembled products
+  // Calculate "In Assembly" - how much of each RAW material is locked in assembled products
+  // This needs to be RECURSIVE to account for nested sub-assemblies
   const inAssemblyBySkuId: Record<string, number> = {};
 
-  // Get all SKUs with their BOMs and assembled inventory
+  // Helper function to recursively explode BOM and accumulate raw material usage
+  async function explodeBOMForInAssembly(
+    skuId: string,
+    quantity: number,
+    accumulated: Record<string, number>
+  ): Promise<void> {
+    const sku = await prisma.sku.findUnique({
+      where: { id: skuId },
+      include: {
+        bomComponents: {
+          include: {
+            componentSku: true,
+          },
+        },
+      },
+    });
+
+    if (!sku) return;
+
+    // If this is a RAW material, add it to the accumulated map
+    if (sku.type === "RAW") {
+      if (!accumulated[skuId]) {
+        accumulated[skuId] = 0;
+      }
+      accumulated[skuId] += quantity;
+      return;
+    }
+
+    // If this is an ASSEMBLY or COMPLETED, recursively process its components
+    if (sku.type === "ASSEMBLY" || sku.type === "COMPLETED") {
+      for (const bomItem of sku.bomComponents) {
+        const requiredQty = bomItem.quantity * quantity;
+        await explodeBOMForInAssembly(bomItem.componentSkuId, requiredQty, accumulated);
+      }
+    }
+  }
+
+  // Get all SKUs with their assembled inventory
   const skusWithBoms = await prisma.sku.findMany({
     where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } },
     include: {
-      bomComponents: {
-        include: {
-          componentSku: true,
-        },
-      },
       inventoryItems: {
         where: { state: { in: ["ASSEMBLED", "COMPLETED"] } },
       },
     },
   });
 
-  // For each assembled/completed product, calculate how many components are "locked in"
+  // For each assembled/completed product, recursively calculate raw material usage
   for (const sku of skusWithBoms) {
     const assembledQty = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
 
-    // For each component in this SKU's BOM
-    for (const bomComp of sku.bomComponents) {
-      const componentSkuId = bomComp.componentSkuId;
-      const qtyPerUnit = bomComp.quantity;
-      const totalInAssembly = assembledQty * qtyPerUnit;
-
-      if (!inAssemblyBySkuId[componentSkuId]) {
-        inAssemblyBySkuId[componentSkuId] = 0;
-      }
-      inAssemblyBySkuId[componentSkuId] += totalInAssembly;
+    if (assembledQty > 0) {
+      // Recursively explode the BOM to get ALL raw materials
+      await explodeBOMForInAssembly(sku.id, assembledQty, inAssemblyBySkuId);
     }
   }
 
