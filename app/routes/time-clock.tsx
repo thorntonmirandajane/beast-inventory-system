@@ -443,6 +443,9 @@ export default function TimeClock() {
         <div className="card mb-6">
           <div className="card-header">
             <h2 className="card-title">Team Status</h2>
+            <Link to="/admin-manual-time-entry" className="btn btn-sm btn-secondary">
+              Add Manual Time Entry
+            </Link>
           </div>
           <table className="data-table">
             <thead>
