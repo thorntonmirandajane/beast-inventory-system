@@ -134,6 +134,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (totalRawMaterialsWithInAssembly > 0) {
     const sampleSkuIds = Object.keys(inAssemblyBySkuId).slice(0, 3);
     console.log(`[Inventory Loader] Sample values:`, sampleSkuIds.map(id => `${id}: ${inAssemblyBySkuId[id]}`));
+
+    // Find BLADE-2IN for debugging
+    const blade2inSku = await prisma.sku.findFirst({ where: { sku: "BLADE-2IN" } });
+    if (blade2inSku) {
+      const blade2inValue = inAssemblyBySkuId[blade2inSku.id];
+      console.log(`[DEBUG] BLADE-2IN: id=${blade2inSku.id}, inAssembly=${blade2inValue || 0}`);
+    }
   }
 
   // Calculate inventory totals for each SKU
@@ -157,6 +164,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Get in-assembly quantity (how much of this SKU is locked in assemblies)
     const inAssembly = inAssemblyBySkuId[sku.id] || 0;
+
+    // Debug: Log if there's a mismatch
+    if (sku.type === "RAW" && inAssembly > 0 && sku.sku === "BLADE-2IN") {
+      console.log(`[DEBUG] BLADE-2IN: id=${sku.id}, inAssembly=${inAssembly}`);
+    }
 
     return {
       id: sku.id,
