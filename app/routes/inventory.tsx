@@ -410,6 +410,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message };
   }
 
+  if (intent === "reset-all") {
+    // Delete all inventory items (sets everything to 0)
+    const deleteResult = await prisma.inventoryItem.deleteMany({});
+
+    await createAuditLog(
+      user.id,
+      "RESET_INVENTORY",
+      "INVENTORY",
+      null,
+      null,
+      `Reset all inventory to 0 (deleted ${deleteResult.count} inventory items)`
+    );
+
+    return {
+      success: true,
+      message: `Reset complete: All inventory set to 0 (${deleteResult.count} items deleted)`
+    };
+  }
+
   return { error: "Invalid action" };
 };
 
@@ -781,6 +800,14 @@ export default function Inventory() {
     return Array.from(values).sort();
   };
 
+  // Reset confirmation state
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const handleResetAll = () => {
+    fetcher.submit({ intent: "reset-all" }, { method: "post" });
+    setShowResetConfirm(false);
+  };
+
   return (
     <Layout user={user}>
       <div className="page-header">
@@ -846,20 +873,62 @@ export default function Inventory() {
       </form>
 
       {/* Tabs */}
-      <div className="tabs">
-        {tabs.map((tab) => (
-          <Link
-            key={tab.id}
-            to={`/inventory?type=${tab.id}${search ? `&search=${search}` : ""}`}
-            className={`tab ${typeFilter === tab.id ? "active" : ""}`}
+      <div className="flex justify-between items-center mb-6">
+        <div className="tabs">
+          {tabs.map((tab) => (
+            <Link
+              key={tab.id}
+              to={`/inventory?type=${tab.id}${search ? `&search=${search}` : ""}`}
+              className={`tab ${typeFilter === tab.id ? "active" : ""}`}
+            >
+              {tab.label}
+              <span className="ml-2 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs">
+                {tab.count}
+              </span>
+            </Link>
+          ))}
+        </div>
+
+        {/* Reset All Button (Admin Only) */}
+        {user.role === "ADMIN" && (
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            className="btn btn-error"
           >
-            {tab.label}
-            <span className="ml-2 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs">
-              {tab.count}
-            </span>
-          </Link>
-        ))}
+            🔄 Reset All to 0
+          </button>
+        )}
       </div>
+
+      {/* Reset Confirmation Modal */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md">
+            <h3 className="text-xl font-bold text-red-600 mb-4">⚠️ Reset All Inventory?</h3>
+            <p className="text-gray-700 mb-6">
+              This will set <strong>ALL inventory to 0</strong> (RAW, ASSEMBLED, and COMPLETED).
+              This action cannot be undone and is intended for testing purposes only.
+            </p>
+            <p className="text-sm text-gray-600 mb-6">
+              All inventory items will be deleted from the database.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleResetAll}
+                className="btn btn-error"
+              >
+                Yes, Reset Everything to 0
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Show Hidden Columns Button */}
       {hiddenColumns.size > 0 && (
