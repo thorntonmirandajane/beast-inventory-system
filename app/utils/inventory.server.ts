@@ -596,11 +596,54 @@ export async function executeBuild(
 // ============================================
 
 /**
+ * Recursively explode a BOM to get all raw materials needed
+ * Returns a map of SKU ID to total quantity needed
+ */
+async function explodeBOM(
+  skuId: string,
+  quantity: number,
+  accumulated: Map<string, { sku: string; quantity: number }> = new Map()
+): Promise<Map<string, { sku: string; quantity: number }>> {
+  const sku = await prisma.sku.findUnique({
+    where: { id: skuId },
+    include: {
+      bomComponents: {
+        include: {
+          componentSku: true,
+        },
+      },
+    },
+  });
+
+  if (!sku) {
+    return accumulated;
+  }
+
+  // If this is a RAW material, add it to the accumulated map
+  if (sku.type === "RAW") {
+    const existing = accumulated.get(skuId);
+    if (existing) {
+      existing.quantity += quantity;
+    } else {
+      accumulated.set(skuId, { sku: sku.sku, quantity });
+    }
+    return accumulated;
+  }
+
+  // If this is an ASSEMBLY or COMPLETED, recursively process its components
+  if (sku.type === "ASSEMBLY" || sku.type === "COMPLETED") {
+    for (const bomItem of sku.bomComponents) {
+      const requiredQty = bomItem.quantity * quantity;
+      await explodeBOM(bomItem.componentSkuId, requiredQty, accumulated);
+    }
+  }
+
+  return accumulated;
+}
+
+/**
  * Automatically deduct BOM components when assembled/completed quantity increases
- * Deducts from the appropriate state based on component type:
- * - RAW components → deduct from RAW state
- * - ASSEMBLY components → deduct from ASSEMBLED state
- * - COMPLETED components → deduct from COMPLETED state
+ * RECURSIVELY deducts all raw materials, even those in sub-assemblies
  * Called from inventory route when user edits quantity inline
  */
 export async function autoDeductRawMaterials(
@@ -612,16 +655,9 @@ export async function autoDeductRawMaterials(
     return { success: true, deducted: [] };
   }
 
-  // Get assembly's BOM components
+  // Get assembly info
   const assembly = await prisma.sku.findUnique({
     where: { id: assemblySkuId },
-    include: {
-      bomComponents: {
-        include: {
-          componentSku: true,
-        },
-      },
-    },
   });
 
   if (!assembly) {
@@ -632,43 +668,25 @@ export async function autoDeductRawMaterials(
     return { success: false, error: `SKU ${assembly.sku} is type ${assembly.type}, not ASSEMBLY or COMPLETED`, deducted: [] };
   }
 
-  if (assembly.bomComponents.length === 0) {
+  // Recursively explode the BOM to get all raw materials
+  const rawMaterialsMap = await explodeBOM(assemblySkuId, quantityChange);
+
+  if (rawMaterialsMap.size === 0) {
     return { success: false, error: `SKU ${assembly.sku} has no BOM components configured`, deducted: [] };
   }
 
   const deducted: { sku: string; quantity: number }[] = [];
   const errors: string[] = [];
 
-  // Deduct each component
-  for (const bomItem of assembly.bomComponents) {
-    const requiredQty = bomItem.quantity * quantityChange;
-
-    // Determine which state to deduct from based on component type
-    let statesToDeduct: InventoryState[];
-    if (bomItem.componentSku.type === "RAW") {
-      statesToDeduct = ["RAW"];
-    } else if (bomItem.componentSku.type === "ASSEMBLY") {
-      statesToDeduct = ["ASSEMBLED"];
-    } else if (bomItem.componentSku.type === "COMPLETED") {
-      statesToDeduct = ["COMPLETED"];
-    } else {
-      statesToDeduct = ["RAW"]; // fallback
-    }
-
-    const result = await deductInventory(
-      bomItem.componentSkuId,
-      requiredQty,
-      statesToDeduct
-    );
+  // Deduct all raw materials
+  for (const [skuId, { sku, quantity }] of rawMaterialsMap.entries()) {
+    const result = await deductInventory(skuId, quantity, ["RAW"]);
 
     if (!result.success) {
       // Deduction failed - this should rarely happen since we allow negative inventory
-      errors.push(`${bomItem.componentSku.sku}: ${result.error}`);
+      errors.push(`${sku}: ${result.error}`);
     } else {
-      deducted.push({
-        sku: bomItem.componentSku.sku,
-        quantity: requiredQty,
-      });
+      deducted.push({ sku, quantity });
     }
   }
 
