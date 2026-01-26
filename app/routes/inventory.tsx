@@ -1289,3 +1289,4 @@ export default function Inventory() {
     </Layout>
   );
 }
+// Force rebuild Mon Jan 26 10:51:17 MST 2026
