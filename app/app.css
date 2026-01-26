@@ -670,3 +670,53 @@ body {
     display: none !important;
   }
 }
+
+/* Mobile Menu */
+.mobile-header {
+  @apply fixed top-0 left-0 right-0 h-16 bg-gray-900 border-b border-gray-800 flex items-center px-4 z-50;
+  display: none;
+}
+
+.mobile-menu-toggle {
+  @apply p-2 text-white hover:bg-gray-800 rounded-lg transition-colors;
+}
+
+.mobile-logo {
+  @apply ml-4;
+}
+
+.mobile-logo img {
+  filter: brightness(0) invert(1);
+}
+
+.mobile-overlay {
+  @apply fixed inset-0 bg-black bg-opacity-50 z-30;
+  display: none;
+}
+
+/* Show mobile header and hide desktop sidebar on mobile */
+@media (max-width: 768px) {
+  .mobile-header {
+    display: flex;
+  }
+
+  .main-content {
+    @apply pt-20;
+  }
+
+  .sidebar {
+    @apply transform -translate-x-full transition-transform duration-300 ease-in-out;
+  }
+
+  .sidebar.mobile-open {
+    @apply translate-x-0;
+  }
+
+  .mobile-overlay {
+    display: block;
+  }
+
+  .with-sidebar {
+    @apply ml-0;
+  }
+}
