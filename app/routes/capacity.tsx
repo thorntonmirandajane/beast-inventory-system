@@ -212,7 +212,7 @@ export default function Capacity() {
           <h2 className="card-title">Process Times</h2>
           <p className="text-sm text-gray-500">Time per unit for each process</p>
         </div>
-          <div className="card-body">
+        <div className="card-body">
             <div className="space-y-4">
               {processConfigs.map((config) => (
                 <Form
@@ -320,7 +320,6 @@ export default function Capacity() {
                 </Form>
               </div>
             )}
-          </div>
         </div>
       </div>
 
