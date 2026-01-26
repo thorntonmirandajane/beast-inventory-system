@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, useFetcher } from "react-router";
 import React, { useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
@@ -287,6 +287,258 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return { error: "Invalid action" };
 };
 
+function ForecastRow({
+  item,
+  expandedSku,
+  setExpandedSku,
+}: {
+  item: {
+    skuId: string;
+    sku: string;
+    name: string;
+    currentInGallatin: number;
+    forecastedQty: number;
+    needToBuild: number;
+    assemblySkusNeeded: Array<{
+      skuId: string;
+      sku: string;
+      name: string;
+      type: string;
+      qtyPerUnit: number;
+      totalNeeded: number;
+      available: number;
+    }>;
+    rawMaterialsNeeded: Array<{
+      skuId: string;
+      sku: string;
+      name: string;
+      needed: number;
+      available: number;
+    }>;
+    processTotals: Record<string, { units: number; seconds: number }>;
+    hasForecast: boolean;
+  };
+  expandedSku: string | null;
+  setExpandedSku: (skuId: string | null) => void;
+}) {
+  const fetcher = useFetcher();
+  const isSubmitting = fetcher.state === "submitting";
+
+  return (
+    <React.Fragment>
+      <tr>
+        <td className="font-mono text-sm">{item.sku}</td>
+        <td>{item.name}</td>
+        <td className="text-right">
+          <fetcher.Form method="post" className="inline">
+            <input type="hidden" name="intent" value="update-forecast" />
+            <input type="hidden" name="skuId" value={item.skuId} />
+            <input
+              type="number"
+              name="currentInGallatin"
+              className="form-input w-24 text-sm text-right"
+              min="0"
+              defaultValue={item.currentInGallatin}
+              placeholder="0"
+              required
+              onBlur={(e) => {
+                const form = e.currentTarget.form;
+                if (form) fetcher.submit(form);
+              }}
+            />
+          </fetcher.Form>
+        </td>
+        <td className="text-right">
+          <fetcher.Form method="post" className="inline">
+            <input type="hidden" name="intent" value="update-forecast" />
+            <input type="hidden" name="skuId" value={item.skuId} />
+            <input type="hidden" name="currentInGallatin" value={item.currentInGallatin} />
+            <input
+              type="number"
+              name="quantity"
+              className="form-input w-24 text-sm text-right"
+              min="0"
+              defaultValue={item.forecastedQty}
+              placeholder="0"
+              required
+              onBlur={(e) => {
+                const form = e.currentTarget.form;
+                if (form) fetcher.submit(form);
+              }}
+            />
+          </fetcher.Form>
+        </td>
+        <td className="text-right">
+          {item.needToBuild > 0 ? (
+            <span className="font-bold text-orange-600">{item.needToBuild}</span>
+          ) : (
+            <span className="text-gray-400">—</span>
+          )}
+        </td>
+        <td>
+          {item.needToBuild === 0 ? (
+            <span className="badge bg-green-100 text-green-700">✓ Sufficient</span>
+          ) : (
+            <span className="badge bg-orange-100 text-orange-700">⚠ Build {item.needToBuild}</span>
+          )}
+        </td>
+        <td className="text-right">
+          <button
+            type="button"
+            onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
+            className="btn btn-xs btn-ghost"
+            disabled={isSubmitting}
+          >
+            {expandedSku === item.skuId ? "−" : "+"}
+          </button>
+        </td>
+      </tr>
+      {expandedSku === item.skuId && (
+        <tr>
+          <td colSpan={7} className="bg-gray-50 p-4">
+            <div className="space-y-6">
+              <h4 className="font-semibold text-lg text-gray-900 mb-4">
+                Bill of Materials for {item.name}
+              </h4>
+
+              {/* BOM Components */}
+              {item.assemblySkusNeeded.length > 0 ? (
+                <div>
+                  <h4 className="font-semibold mb-3 text-gray-900">Assembly Components</h4>
+                  <p className="text-sm text-gray-600 mb-3">
+                    These assembly SKUs are needed to build this product
+                    {item.needToBuild > 0 && ` (${item.needToBuild} units)`}
+                  </p>
+                  <table className="data-table-sm">
+                    <thead>
+                      <tr>
+                        <th>Assembly SKU</th>
+                        <th>Name</th>
+                        <th className="text-right">Qty per Unit</th>
+                        {item.needToBuild > 0 && (
+                          <>
+                            <th className="text-right">Total Needed</th>
+                            <th className="text-right">Available</th>
+                            <th className="text-right">Shortfall</th>
+                          </>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.assemblySkusNeeded.map((assembly) => {
+                        const shortfall = Math.max(0, assembly.totalNeeded - assembly.available);
+                        return (
+                          <tr key={assembly.skuId}>
+                            <td className="font-mono text-sm">{assembly.sku}</td>
+                            <td>{assembly.name}</td>
+                            <td className="text-right text-gray-600">{assembly.qtyPerUnit}</td>
+                            {item.needToBuild > 0 && (
+                              <>
+                                <td className="text-right font-semibold">{assembly.totalNeeded}</td>
+                                <td className="text-right">{assembly.available}</td>
+                                <td className="text-right">
+                                  {shortfall > 0 ? (
+                                    <span className="text-red-600 font-bold">-{shortfall}</span>
+                                  ) : (
+                                    <span className="text-green-600">✓</span>
+                                  )}
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-sm text-gray-600 mb-4">
+                  This product is built directly from raw materials (no assembly components).
+                </div>
+              )}
+
+              {/* Raw Materials */}
+              {item.rawMaterialsNeeded.length > 0 && (
+                <div>
+                  <h4 className="font-semibold mb-3 text-gray-900">Raw Materials</h4>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Raw materials consumed in production
+                    {item.needToBuild > 0 && ` (to build ${item.needToBuild} units)`}
+                  </p>
+                  <table className="data-table-sm">
+                    <thead>
+                      <tr>
+                        <th>Raw Material SKU</th>
+                        <th>Name</th>
+                        {item.needToBuild > 0 && (
+                          <>
+                            <th className="text-right">Needed</th>
+                            <th className="text-right">Available</th>
+                            <th className="text-right">Shortfall</th>
+                          </>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.rawMaterialsNeeded.map((raw) => {
+                        const shortfall = Math.max(0, raw.needed - raw.available);
+                        return (
+                          <tr key={raw.skuId}>
+                            <td className="font-mono text-sm">{raw.sku}</td>
+                            <td>{raw.name}</td>
+                            {item.needToBuild > 0 && (
+                              <>
+                                <td className="text-right font-semibold">{raw.needed}</td>
+                                <td className="text-right">{raw.available}</td>
+                                <td className="text-right">
+                                  {shortfall > 0 ? (
+                                    <span className="text-red-600 font-bold">-{shortfall}</span>
+                                  ) : (
+                                    <span className="text-green-600">✓</span>
+                                  )}
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Process Time Breakdown - Only show if needToBuild > 0 */}
+              {item.needToBuild > 0 && Object.keys(item.processTotals).length > 0 && (
+                <div>
+                  <h4 className="font-semibold mb-3 text-gray-900">Process Time Required</h4>
+                  <table className="data-table-sm">
+                    <thead>
+                      <tr>
+                        <th>Process</th>
+                        <th className="text-right">Units</th>
+                        <th className="text-right">Hours</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(item.processTotals).map(([process, totals]) => (
+                        <tr key={process}>
+                          <td>{process}</td>
+                          <td className="text-right">{totals.units}</td>
+                          <td className="text-right">{(totals.seconds / 3600).toFixed(1)}h</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </React.Fragment>
+  );
+}
+
 export default function Forecasting() {
   const {
     user,
@@ -306,6 +558,8 @@ export default function Forecasting() {
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
 
   const laborCapacitySufficient = availableLaborHours >= totalLaborHoursNeeded;
+
+  console.log('Rendering Forecasting component with forecastData length:', forecastData.length);
 
   return (
     <Layout user={user}>
@@ -341,212 +595,9 @@ export default function Forecasting() {
               </tr>
             </thead>
             <tbody>
-              {forecastData.map((item) => (
-                <React.Fragment key={item.skuId}>
-                  <Form method="post">
-                    <input type="hidden" name="intent" value="update-forecast" />
-                    <input type="hidden" name="skuId" value={item.skuId} />
-                    <tr>
-                      <td className="font-mono text-sm">{item.sku}</td>
-                      <td>{item.name}</td>
-                      <td className="text-right">
-                        <input
-                          type="number"
-                          name="currentInGallatin"
-                          className="form-input w-24 text-sm text-right"
-                          min="0"
-                          defaultValue={item.currentInGallatin}
-                          placeholder="0"
-                          required
-                        />
-                      </td>
-                      <td className="text-right">
-                        <input
-                          type="number"
-                          name="quantity"
-                          className="form-input w-24 text-sm text-right"
-                          min="0"
-                          defaultValue={item.forecastedQty}
-                          placeholder="0"
-                          required
-                        />
-                      </td>
-                      <td className="text-right">
-                        {item.needToBuild > 0 ? (
-                          <span className="font-bold text-orange-600">{item.needToBuild}</span>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td>
-                        {item.needToBuild === 0 ? (
-                          <span className="badge bg-green-100 text-green-700">✓ Sufficient</span>
-                        ) : (
-                          <span className="badge bg-orange-100 text-orange-700">⚠ Build {item.needToBuild}</span>
-                        )}
-                      </td>
-                      <td className="text-right">
-                        <button
-                          type="submit"
-                          className="btn btn-xs btn-secondary whitespace-nowrap mr-2"
-                          disabled={isSubmitting}
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
-                          className="btn btn-xs btn-ghost"
-                        >
-                          {expandedSku === item.skuId ? "−" : "+"}
-                        </button>
-                      </td>
-                    </tr>
-                  </Form>
-                  {expandedSku === item.skuId && (
-                    <tr>
-                      <td colSpan={7} className="bg-gray-50 p-4">
-                        <div className="space-y-6">
-                          <h4 className="font-semibold text-lg text-gray-900 mb-4">
-                            Bill of Materials for {item.name}
-                          </h4>
-
-                          {/* BOM Components */}
-                          {item.assemblySkusNeeded.length > 0 ? (
-                            <div>
-                              <h4 className="font-semibold mb-3 text-gray-900">Assembly Components</h4>
-                              <p className="text-sm text-gray-600 mb-3">
-                                These assembly SKUs are needed to build this product
-                                {item.needToBuild > 0 && ` (${item.needToBuild} units)`}
-                              </p>
-                              <table className="data-table-sm">
-                                <thead>
-                                  <tr>
-                                    <th>Assembly SKU</th>
-                                    <th>Name</th>
-                                    <th className="text-right">Qty per Unit</th>
-                                    {item.needToBuild > 0 && (
-                                      <>
-                                        <th className="text-right">Total Needed</th>
-                                        <th className="text-right">Available</th>
-                                        <th className="text-right">Shortfall</th>
-                                      </>
-                                    )}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {item.assemblySkusNeeded.map((assembly) => {
-                                    const shortfall = Math.max(0, assembly.totalNeeded - assembly.available);
-                                    return (
-                                      <tr key={assembly.skuId}>
-                                        <td className="font-mono text-sm">{assembly.sku}</td>
-                                        <td>{assembly.name}</td>
-                                        <td className="text-right text-gray-600">{assembly.qtyPerUnit}</td>
-                                        {item.needToBuild > 0 && (
-                                          <>
-                                            <td className="text-right font-semibold">{assembly.totalNeeded}</td>
-                                            <td className="text-right">{assembly.available}</td>
-                                            <td className="text-right">
-                                              {shortfall > 0 ? (
-                                                <span className="text-red-600 font-bold">-{shortfall}</span>
-                                              ) : (
-                                                <span className="text-green-600">✓</span>
-                                              )}
-                                            </td>
-                                          </>
-                                        )}
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            <div className="text-sm text-gray-600 mb-4">
-                              This product is built directly from raw materials (no assembly components).
-                            </div>
-                          )}
-
-                          {/* Raw Materials */}
-                          {item.rawMaterialsNeeded.length > 0 && (
-                            <div>
-                              <h4 className="font-semibold mb-3 text-gray-900">Raw Materials</h4>
-                              <p className="text-sm text-gray-600 mb-3">
-                                Raw materials consumed in production
-                                {item.needToBuild > 0 && ` (to build ${item.needToBuild} units)`}
-                              </p>
-                              <table className="data-table-sm">
-                                <thead>
-                                  <tr>
-                                    <th>Raw Material SKU</th>
-                                    <th>Name</th>
-                                    {item.needToBuild > 0 && (
-                                      <>
-                                        <th className="text-right">Needed</th>
-                                        <th className="text-right">Available</th>
-                                        <th className="text-right">Shortfall</th>
-                                      </>
-                                    )}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {item.rawMaterialsNeeded.map((raw) => {
-                                    const shortfall = Math.max(0, raw.needed - raw.available);
-                                    return (
-                                      <tr key={raw.skuId}>
-                                        <td className="font-mono text-sm">{raw.sku}</td>
-                                        <td>{raw.name}</td>
-                                        {item.needToBuild > 0 && (
-                                          <>
-                                            <td className="text-right font-semibold">{raw.needed}</td>
-                                            <td className="text-right">{raw.available}</td>
-                                            <td className="text-right">
-                                              {shortfall > 0 ? (
-                                                <span className="text-red-600 font-bold">-{shortfall}</span>
-                                              ) : (
-                                                <span className="text-green-600">✓</span>
-                                              )}
-                                            </td>
-                                          </>
-                                        )}
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-
-                          {/* Process Time Breakdown - Only show if needToBuild > 0 */}
-                          {item.needToBuild > 0 && Object.keys(item.processTotals).length > 0 && (
-                            <div>
-                              <h4 className="font-semibold mb-3 text-gray-900">Process Time Required</h4>
-                              <table className="data-table-sm">
-                                <thead>
-                                  <tr>
-                                    <th>Process</th>
-                                    <th className="text-right">Units</th>
-                                    <th className="text-right">Hours</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {Object.entries(item.processTotals).map(([process, totals]) => (
-                                    <tr key={process}>
-                                      <td>{process}</td>
-                                      <td className="text-right">{totals.units}</td>
-                                      <td className="text-right">{(totals.seconds / 3600).toFixed(1)}h</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              ))}
+              {forecastData.map((item) => {
+                return <ForecastRow key={item.skuId} item={item} expandedSku={expandedSku} setExpandedSku={setExpandedSku} />;
+              })}
             </tbody>
           </table>
         </div>
