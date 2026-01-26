@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
-import { useState } from "react";
+import React, { useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -337,8 +337,8 @@ export default function Forecasting() {
             </thead>
             <tbody>
               {forecastData.map((item) => (
-                <>
-                  <Form method="post" key={item.skuId}>
+                <React.Fragment key={item.skuId}>
+                  <Form method="post">
                     <input type="hidden" name="intent" value="update-forecast" />
                     <input type="hidden" name="skuId" value={item.skuId} />
                     <tr>
@@ -517,7 +517,7 @@ export default function Forecasting() {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               ))}
             </tbody>
           </table>
