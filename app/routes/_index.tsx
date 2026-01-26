@@ -61,6 +61,43 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 5,
   });
 
+  // Get forecast progress data
+  const forecasts = await prisma.forecast.findMany({
+    orderBy: { updatedAt: "desc" },
+  });
+
+  // Get current inventory for forecasted SKUs
+  const forecastProgress = await Promise.all(
+    forecasts.map(async (forecast) => {
+      const sku = await prisma.sku.findUnique({
+        where: { id: forecast.skuId },
+        select: { id: true, sku: true, name: true },
+      });
+
+      if (!sku) return null;
+
+      const currentInventory = await prisma.inventoryItem.aggregate({
+        where: {
+          skuId: forecast.skuId,
+          state: "COMPLETED",
+        },
+        _sum: { quantity: true },
+      });
+
+      const current = currentInventory._sum.quantity || 0;
+      const target = forecast.quantity;
+      const percentage = target > 0 ? Math.round((current / target) * 100) : 0;
+
+      return {
+        sku,
+        current,
+        target,
+        percentage: Math.min(percentage, 100),
+        remaining: Math.max(target - current, 0),
+      };
+    })
+  ).then((results) => results.filter((r) => r !== null));
+
   return {
     user,
     stats: {
@@ -74,11 +111,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     inventoryStats,
     topBuildable,
     recentReceiving,
+    forecastProgress,
   };
 };
 
 export default function Dashboard() {
-  const { user, stats, inventoryStats, topBuildable, recentReceiving } =
+  const { user, stats, inventoryStats, topBuildable, recentReceiving, forecastProgress } =
     useLoaderData<typeof loader>();
 
   return (
@@ -112,6 +150,73 @@ export default function Dashboard() {
           <div className="text-sm text-gray-500 mt-2">Last 7 days</div>
         </div>
       </div>
+
+      {/* Forecast Goals */}
+      {forecastProgress.length > 0 && (
+        <div className="card mb-6">
+          <div className="card-header">
+            <h2 className="card-title">Forecast Goals</h2>
+            <Link to="/forecasting" className="btn btn-sm btn-secondary">
+              Manage Forecasts
+            </Link>
+          </div>
+          <div className="card-body">
+            <div className="space-y-6">
+              {forecastProgress.map((forecast) => (
+                <div key={forecast.sku.id}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-sm text-gray-500">{forecast.sku.sku}</span>
+                        <span className="text-gray-900 font-medium">{forecast.sku.name}</span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-2xl font-bold text-gray-900">
+                        {forecast.current.toLocaleString()}
+                      </span>
+                      <span className="text-gray-500"> / {forecast.target.toLocaleString()}</span>
+                      {forecast.remaining > 0 && (
+                        <div className="text-xs text-gray-500 mt-1">
+                          {forecast.remaining.toLocaleString()} remaining
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <div className="w-full h-8 bg-gray-200 rounded-lg overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 flex items-center justify-center text-sm font-semibold ${
+                          forecast.percentage >= 100
+                            ? "bg-green-500 text-white"
+                            : forecast.percentage >= 75
+                            ? "bg-blue-500 text-white"
+                            : forecast.percentage >= 50
+                            ? "bg-yellow-500 text-white"
+                            : "bg-orange-500 text-white"
+                        }`}
+                        style={{ width: `${forecast.percentage}%` }}
+                      >
+                        {forecast.percentage > 10 && `${forecast.percentage}%`}
+                      </div>
+                    </div>
+                    {forecast.percentage <= 10 && forecast.percentage > 0 && (
+                      <div className="absolute left-2 top-1/2 -translate-y-1/2 text-sm font-semibold text-gray-700">
+                        {forecast.percentage}%
+                      </div>
+                    )}
+                  </div>
+                  {forecast.percentage >= 100 && (
+                    <div className="mt-2 text-sm text-green-600 font-medium">
+                      ✓ Goal achieved!
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Inventory Overview */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
