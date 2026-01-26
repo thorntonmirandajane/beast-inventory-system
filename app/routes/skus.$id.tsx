@@ -92,6 +92,22 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     orderBy: { name: "asc" },
   });
 
+  // Get all unique Process values (stored in material field)
+  const uniqueProcesses = await prisma.sku.findMany({
+    where: { material: { not: null }, isActive: true },
+    select: { material: true },
+    distinct: ["material"],
+    orderBy: { material: "asc" },
+  });
+
+  // Get all unique Category values
+  const uniqueCategories = await prisma.sku.findMany({
+    where: { category: { not: null }, isActive: true },
+    select: { category: true },
+    distinct: ["category"],
+    orderBy: { category: "asc" },
+  });
+
   return {
     user,
     sku,
@@ -101,6 +117,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     recentReceiving,
     allSkus,
     allManufacturers,
+    uniqueProcesses: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
+    uniqueCategories: uniqueCategories.map(c => c.category).filter(Boolean) as string[],
   };
 };
 
@@ -434,6 +452,8 @@ export default function SkuDetail() {
     recentReceiving,
     allManufacturers,
     allSkus,
+    uniqueProcesses,
+    uniqueCategories,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -707,9 +727,7 @@ export default function SkuDetail() {
                       />
                       <datalist id="component-sku-options">
                         {allSkus.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.sku} | {s.name} ({s.type})
-                          </option>
+                          <option key={s.id} value={s.id} label={`${s.sku} | ${s.name} (${s.type})`} />
                         ))}
                       </datalist>
                     </div>
@@ -1010,16 +1028,18 @@ export default function SkuDetail() {
                     type="text"
                     name="material"
                     className="form-input"
-                    placeholder="e.g., Tipped, Bladed, Stud Tested, Completed Packs"
+                    placeholder="e.g., Tipped, Bladed, Stud Tested"
                     defaultValue={sku.material || ""}
                     list="process-options"
                   />
                   <datalist id="process-options">
-                    <option value="Tipped" />
-                    <option value="Bladed" />
-                    <option value="Stud Tested" />
-                    <option value="Completed Packs" />
+                    {uniqueProcesses.map((process) => (
+                      <option key={process} value={process} />
+                    ))}
                   </datalist>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Select from existing or type a new value
+                  </p>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Category</label>
@@ -1027,18 +1047,18 @@ export default function SkuDetail() {
                     type="text"
                     name="category"
                     className="form-input"
-                    placeholder="e.g., Aluminum, Titanium (100g), Steel, TRUMP"
+                    placeholder="e.g., Aluminum, Titanium (100g)"
                     defaultValue={sku.category || ""}
                     list="category-options"
                   />
                   <datalist id="category-options">
-                    <option value="Aluminum" />
-                    <option value="Titanium (100g)" />
-                    <option value="Titanium (125g)" />
-                    <option value="Steel" />
-                    <option value="TRUMP" />
-                    <option value="PRACTICE TIPS" />
+                    {uniqueCategories.map((category) => (
+                      <option key={category} value={category} />
+                    ))}
                   </datalist>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Select from existing or type a new value
+                  </p>
                 </div>
                 <div className="form-group md:col-span-2">
                   <label className="form-label">Description</label>
