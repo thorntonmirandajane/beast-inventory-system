@@ -696,19 +696,22 @@ export default function SkuDetail() {
                       <label htmlFor="componentSkuId" className="form-label">
                         Component SKU
                       </label>
-                      <select
+                      <input
+                        type="text"
                         id="componentSkuId"
                         name="componentSkuId"
                         className="form-input"
+                        list="component-sku-options"
+                        placeholder="Type to search..."
                         required
-                      >
-                        <option value="">Select component...</option>
+                      />
+                      <datalist id="component-sku-options">
                         {allSkus.map((s) => (
                           <option key={s.id} value={s.id}>
                             {s.sku} | {s.name} ({s.type})
                           </option>
                         ))}
-                      </select>
+                      </datalist>
                     </div>
                     <div>
                       <label htmlFor="bom-quantity" className="form-label">
