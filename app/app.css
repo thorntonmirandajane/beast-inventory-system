@@ -690,7 +690,7 @@ body {
 }
 
 .mobile-overlay {
-  @apply fixed inset-0 bg-black bg-opacity-50 z-30;
+  @apply fixed inset-0 bg-black/50 z-30;
   display: none;
 }
 
