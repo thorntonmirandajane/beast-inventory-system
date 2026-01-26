@@ -184,8 +184,8 @@ export default function SkusList() {
                 <th>SKU</th>
                 <th>Name</th>
                 <th>Type</th>
+                <th>Process</th>
                 <th>Category</th>
-                <th>Material</th>
                 <th className="text-right">Inventory</th>
                 <th className="text-right">Components</th>
                 <th className="text-right">Used In</th>
@@ -209,18 +209,18 @@ export default function SkusList() {
                     </span>
                   </td>
                   <td>
-                    {sku.category ? (
-                      <span className="badge bg-purple-100 text-purple-800 text-xs">
-                        {sku.category.replace("_", " ")}
+                    {sku.material ? (
+                      <span className="badge bg-yellow-100 text-yellow-800 text-xs">
+                        {sku.material}
                       </span>
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}
                   </td>
                   <td>
-                    {sku.material ? (
-                      <span className="badge bg-yellow-100 text-yellow-800 text-xs">
-                        {sku.material}
+                    {sku.category ? (
+                      <span className="badge bg-purple-100 text-purple-800 text-xs">
+                        {sku.category.replace("_", " ")}
                       </span>
                     ) : (
                       <span className="text-gray-400">—</span>
