@@ -322,13 +322,13 @@ export default function Forecasting() {
             <tbody>
               {forecastData.map((item) => (
                 <>
-                  <tr key={item.skuId}>
-                    <td className="font-mono text-sm">{item.sku}</td>
-                    <td>{item.name}</td>
-                    <td className="text-right">
-                      <Form method="post" className="inline-flex items-center gap-2 justify-end">
-                        <input type="hidden" name="intent" value="update-forecast" />
-                        <input type="hidden" name="skuId" value={item.skuId} />
+                  <Form method="post" key={item.skuId}>
+                    <input type="hidden" name="intent" value="update-forecast" />
+                    <input type="hidden" name="skuId" value={item.skuId} />
+                    <tr>
+                      <td className="font-mono text-sm">{item.sku}</td>
+                      <td>{item.name}</td>
+                      <td className="text-right">
                         <input
                           type="number"
                           name="currentInGallatin"
@@ -338,8 +338,8 @@ export default function Forecasting() {
                           placeholder="0"
                           required
                         />
-                    </td>
-                    <td className="text-right">
+                      </td>
+                      <td className="text-right">
                         <input
                           type="number"
                           name="quantity"
@@ -349,40 +349,41 @@ export default function Forecasting() {
                           placeholder="0"
                           required
                         />
-                    </td>
-                    <td className="text-right">
-                      {item.needToBuild > 0 ? (
-                        <span className="font-bold text-orange-600">{item.needToBuild}</span>
-                      ) : (
-                        <span className="text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td>
-                      {item.needToBuild === 0 ? (
-                        <span className="badge bg-green-100 text-green-700">✓ Sufficient</span>
-                      ) : (
-                        <span className="badge bg-orange-100 text-orange-700">⚠ Build {item.needToBuild}</span>
-                      )}
-                    </td>
-                    <td className="text-right">
-                      <button
-                        type="submit"
-                        className="btn btn-xs btn-secondary whitespace-nowrap mr-2"
-                        disabled={isSubmitting}
-                      >
-                        Save
-                      </button>
-                      </Form>
-                      {item.needToBuild > 0 && (
+                      </td>
+                      <td className="text-right">
+                        {item.needToBuild > 0 ? (
+                          <span className="font-bold text-orange-600">{item.needToBuild}</span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {item.needToBuild === 0 ? (
+                          <span className="badge bg-green-100 text-green-700">✓ Sufficient</span>
+                        ) : (
+                          <span className="badge bg-orange-100 text-orange-700">⚠ Build {item.needToBuild}</span>
+                        )}
+                      </td>
+                      <td className="text-right">
                         <button
-                          onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
-                          className="btn btn-xs btn-ghost"
+                          type="submit"
+                          className="btn btn-xs btn-secondary whitespace-nowrap mr-2"
+                          disabled={isSubmitting}
                         >
-                          {expandedSku === item.skuId ? "Hide Details" : "View Details"}
+                          Save
                         </button>
-                      )}
-                    </td>
-                  </tr>
+                        {item.needToBuild > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setExpandedSku(expandedSku === item.skuId ? null : item.skuId)}
+                            className="btn btn-xs btn-ghost"
+                          >
+                            {expandedSku === item.skuId ? "Hide Details" : "View Details"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  </Form>
                   {expandedSku === item.skuId && item.needToBuild > 0 && (
                     <tr>
                       <td colSpan={7} className="bg-gray-50 p-4">
