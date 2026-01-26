@@ -296,6 +296,19 @@ model ProcessTutorialSku {
   @@map("process_tutorial_skus")
 }
 
+model Forecast {
+  id        String   @id @default(cuid())
+  skuId     String
+  quantity  Int
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([skuId])
+  @@index([skuId])
+  @@map("forecasts")
+}
+
 model ProcessTime {
   id             String @id @default(cuid())
   skuId          String

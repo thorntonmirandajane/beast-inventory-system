@@ -31,6 +31,7 @@ export default [
   route("schedules", "routes/schedules.tsx"),
   route("payroll", "routes/payroll.tsx"),
   route("capacity", "routes/capacity.tsx"),
+  route("forecasting", "routes/forecasting.tsx"),
   route("quality-control", "routes/quality-control.tsx"),
   route("admin-submit-worker-task", "routes/admin-submit-worker-task.tsx"),
   route("process-tutorials", "routes/process-tutorials.tsx"),
