@@ -139,7 +139,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const blade2inSku = await prisma.sku.findFirst({ where: { sku: "BLADE-2IN" } });
     if (blade2inSku) {
       const blade2inValue = inAssemblyBySkuId[blade2inSku.id];
-      console.log(`[DEBUG] BLADE-2IN: id=${blade2inSku.id}, inAssembly=${blade2inValue || 0}`);
+      console.log(`[DEBUG] BLADE-2IN lookup: id=${blade2inSku.id}, inAssembly=${blade2inValue || "NOT FOUND IN MAP"}`);
+      console.log(`[DEBUG] Map keys sample:`, Object.keys(inAssemblyBySkuId).slice(0, 10));
     }
   }
 
