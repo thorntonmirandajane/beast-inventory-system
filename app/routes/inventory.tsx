@@ -180,8 +180,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       sku: sku.sku,
       name: sku.name,
       type: sku.type,
-      category: sku.category,
-      process: sku.material, // Renamed from material to process
+      category: sku.material, // Category shows material (Aluminum, Titanium, etc.)
+      process: sku.category, // Process shows category (Tipping, Packaging, etc.)
       raw: byState.RAW,
       // For COMPLETED type, show COMPLETED state. For ASSEMBLY type, show ASSEMBLED state
       assembled: sku.type === "COMPLETED" ? byState.COMPLETED : byState.ASSEMBLED,
@@ -1163,7 +1163,13 @@ export default function Inventory() {
                             {item.inAssembly || 0}
                           </span>
                         ) : typeFilter === "all" ? (
-                          <span className="text-sm">{item.assembled || 0}</span>
+                          item.type === "RAW" ? (
+                            <span className={item.inAssembly > 0 ? "text-blue-600 text-sm" : "text-gray-400 text-sm"}>
+                              {item.inAssembly || 0}
+                            </span>
+                          ) : (
+                            <span className="text-sm">{item.assembled || 0}</span>
+                          )
                         ) : (
                           <EditableCell
                             skuId={item.id}
