@@ -120,7 +120,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // For each assembled/completed product, recursively calculate raw material usage
   for (const sku of skusWithBoms) {
-    const assembledQty = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
+    // Only count the appropriate state: COMPLETED for COMPLETED SKUs, ASSEMBLED for ASSEMBLY SKUs
+    const appropriateState = sku.type === "COMPLETED" ? "COMPLETED" : "ASSEMBLED";
+    const assembledQty = sku.inventoryItems
+      .filter(item => item.state === appropriateState)
+      .reduce((sum, item) => sum + item.quantity, 0);
 
     if (assembledQty > 0) {
       // Recursively explode the BOM to get ALL raw materials
@@ -956,21 +960,21 @@ export default function Inventory() {
                       </div>
                     </th>
                   )}
-                  {shouldShowColumn("category") && (
-                    <th>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("category")}>Category {sortBy === "category" && (sortDir === "asc" ? "↑" : "↓")}</span>
-                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("category"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                        </button>
-                      </div>
-                    </th>
-                  )}
                   {shouldShowColumn("process") && (
                     <th>
                       <div className="flex items-center justify-between gap-2">
                         <span className="cursor-pointer" onClick={() => handleSort("process")}>Process {sortBy === "process" && (sortDir === "asc" ? "↑" : "↓")}</span>
                         <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("process"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
+                    </th>
+                  )}
+                  {shouldShowColumn("category") && (
+                    <th>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("category")}>Category {sortBy === "category" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("category"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         </button>
                       </div>
@@ -1056,20 +1060,6 @@ export default function Inventory() {
                       </select>
                     </th>
                   )}
-                  {shouldShowColumn("category") && (
-                    <th>
-                      <select
-                        value={filters.category}
-                        onChange={(e) => setFilters({ ...filters, category: e.target.value })}
-                        className="w-full px-2 py-1 text-xs border rounded"
-                      >
-                        <option value="">All</option>
-                        {getUniqueValues("category").map((val) => (
-                          <option key={val} value={val}>{val}</option>
-                        ))}
-                      </select>
-                    </th>
-                  )}
                   {shouldShowColumn("process") && (
                     <th>
                       <select
@@ -1079,6 +1069,20 @@ export default function Inventory() {
                       >
                         <option value="">All</option>
                         {getUniqueValues("process").map((val) => (
+                          <option key={val} value={val}>{val}</option>
+                        ))}
+                      </select>
+                    </th>
+                  )}
+                  {shouldShowColumn("category") && (
+                    <th>
+                      <select
+                        value={filters.category}
+                        onChange={(e) => setFilters({ ...filters, category: e.target.value })}
+                        className="w-full px-2 py-1 text-xs border rounded"
+                      >
+                        <option value="">All</option>
+                        {getUniqueValues("category").map((val) => (
                           <option key={val} value={val}>{val}</option>
                         ))}
                       </select>
@@ -1119,9 +1123,6 @@ export default function Inventory() {
                         </span>
                       </td>
                     )}
-                    {shouldShowColumn("category") && (
-                      <td className="text-sm text-gray-600">{item.category || "—"}</td>
-                    )}
                     {shouldShowColumn("process") && (
                       <td className="text-sm text-gray-600">
                         {shouldShowNA(item, "process") ? (
@@ -1130,6 +1131,9 @@ export default function Inventory() {
                           item.process || "—"
                         )}
                       </td>
+                    )}
+                    {shouldShowColumn("category") && (
+                      <td className="text-sm text-gray-600">{item.category || "—"}</td>
                     )}
                     {shouldShowColumn("raw") && (
                       <td className="text-right">
