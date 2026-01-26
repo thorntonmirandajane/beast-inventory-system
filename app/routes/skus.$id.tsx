@@ -53,8 +53,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   // Get inventory totals by state
+  // For COMPLETED SKUs, only show COMPLETED state. For ASSEMBLY SKUs, only show ASSEMBLED state.
   const inventoryByState = sku.inventoryItems.reduce(
     (acc, item) => {
+      // Filter: For COMPLETED SKUs, ignore ASSEMBLED. For ASSEMBLY SKUs, ignore COMPLETED.
+      if (sku.type === "COMPLETED" && item.state === "ASSEMBLED") {
+        return acc;
+      }
+      if (sku.type === "ASSEMBLY" && item.state === "COMPLETED") {
+        return acc;
+      }
+
       acc[item.state] = (acc[item.state] || 0) + item.quantity;
       return acc;
     },
