@@ -247,6 +247,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     completed: await prisma.sku.count({ where: { isActive: true, type: "COMPLETED" } }),
   };
 
+  // Debug: Check what we're actually returning
+  const rawMaterialsWithInAssembly = inventory.filter(i => i.type === "RAW" && i.inAssembly > 0);
+  console.log(`[Inventory Loader] Returning ${rawMaterialsWithInAssembly.length} RAW materials with inAssembly > 0`);
+  if (rawMaterialsWithInAssembly.length > 0) {
+    console.log(`[Inventory Loader] Sample items being returned:`, rawMaterialsWithInAssembly.slice(0, 3).map(i => ({ sku: i.sku, inAssembly: i.inAssembly })));
+  }
+
   return { user, inventory, counts, typeFilter, search, sortBy, sortDir };
 };
 
