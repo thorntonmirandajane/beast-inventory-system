@@ -80,6 +80,136 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
   });
 
+  // Get activity log for this SKU
+  const activities: Array<{
+    id: string;
+    type: string;
+    description: string;
+    quantity?: number;
+    user?: string;
+    timestamp: Date;
+    metadata?: any;
+  }> = [];
+
+  // Receiving records
+  const receivingRecords = await prisma.receivingRecord.findMany({
+    where: { skuId: sku.id },
+    orderBy: { receivedAt: "desc" },
+    take: 20,
+    include: { createdBy: true },
+  });
+  receivingRecords.forEach((rec) => {
+    activities.push({
+      id: rec.id,
+      type: "RECEIVING",
+      description: `Received ${rec.quantity} units${rec.poNumber ? ` (PO #${rec.poNumber})` : ""}`,
+      quantity: rec.quantity,
+      user: rec.createdBy.name,
+      timestamp: rec.receivedAt,
+      metadata: { status: rec.status },
+    });
+  });
+
+  // Transfer records
+  const transferItems = await prisma.transferItem.findMany({
+    where: { skuId: sku.id },
+    include: {
+      transfer: {
+        include: { createdBy: true },
+      },
+    },
+    orderBy: { transfer: { shippedAt: "desc" } },
+    take: 20,
+  });
+  transferItems.forEach((item) => {
+    activities.push({
+      id: item.id,
+      type: "TRANSFER",
+      description: `Transferred ${item.quantity} units to ${item.transfer.destination}`,
+      quantity: item.quantity,
+      user: item.transfer.createdBy.name,
+      timestamp: item.transfer.shippedAt,
+      metadata: { destination: item.transfer.destination },
+    });
+  });
+
+  // Work order consumption (where this SKU was used as a component)
+  const workOrderConsumptions = await prisma.workOrderConsumption.findMany({
+    where: { skuId: sku.id },
+    include: {
+      workOrder: {
+        include: {
+          sku: true,
+          createdBy: true,
+        },
+      },
+    },
+    orderBy: { consumedAt: "desc" },
+    take: 20,
+  });
+  workOrderConsumptions.forEach((consumption) => {
+    activities.push({
+      id: consumption.id,
+      type: "CONSUMED",
+      description: `Consumed ${consumption.quantity} units to build ${consumption.workOrder.sku.sku}`,
+      quantity: consumption.quantity,
+      user: consumption.workOrder.createdBy.name,
+      timestamp: consumption.consumedAt,
+      metadata: { targetSku: consumption.workOrder.sku.sku },
+    });
+  });
+
+  // Work orders where this SKU was built
+  const workOrders = await prisma.workOrder.findMany({
+    where: { skuId: sku.id },
+    include: { createdBy: true },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+  workOrders.forEach((wo) => {
+    activities.push({
+      id: wo.id,
+      type: "BUILT",
+      description: `Built ${wo.quantityCompleted} units`,
+      quantity: wo.quantityCompleted,
+      user: wo.createdBy.name,
+      timestamp: wo.createdAt,
+      metadata: { status: wo.status },
+    });
+  });
+
+  // Worker time entries (tasks completed)
+  const timeEntryLines = await prisma.timeEntryLine.findMany({
+    where: {
+      skuId: sku.id,
+      timeEntry: { status: "APPROVED" },
+    },
+    include: {
+      timeEntry: {
+        include: { user: true },
+      },
+    },
+    orderBy: { timeEntry: { clockOutTime: "desc" } },
+    take: 20,
+  });
+  timeEntryLines.forEach((line) => {
+    activities.push({
+      id: line.id,
+      type: "TASK_COMPLETED",
+      description: `Completed ${line.quantityCompleted} units of ${line.processName}${line.adminAdjustedQuantity ? ` (adjusted to ${line.adminAdjustedQuantity})` : ""}`,
+      quantity: line.adminAdjustedQuantity ?? line.quantityCompleted,
+      user: line.timeEntry.user.name,
+      timestamp: line.timeEntry.clockOutTime!,
+      metadata: { process: line.processName, isRejected: line.isRejected },
+    });
+  });
+
+  // Sort all activities by timestamp
+  activities.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+  // Take most recent 50
+  const recentActivities = activities.slice(0, 50);
+
   // Get all SKUs for editing BOM
   const allSkus = await prisma.sku.findMany({
     where: { isActive: true, id: { not: sku.id } },
@@ -115,6 +245,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     inventoryByState,
     usedInProducts,
     recentReceiving,
+    recentActivities,
     allSkus,
     allManufacturers,
     uniqueProcesses: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
@@ -452,6 +583,7 @@ export default function SkuDetail() {
     inventoryByState,
     usedInProducts,
     recentReceiving,
+    recentActivities,
     allManufacturers,
     allSkus,
     uniqueProcesses,
@@ -944,44 +1076,120 @@ export default function SkuDetail() {
           </div>
         )}
 
-        {/* Recent Receiving */}
-        {recentReceiving.length > 0 && (
+        {/* Activity Log */}
+        {recentActivities.length > 0 && (
           <div className="card">
             <div className="card-header">
-              <h2 className="card-title">Recent Receiving</h2>
+              <h2 className="card-title">Activity Log</h2>
+              <p className="text-sm text-gray-500">Recent changes and transactions for this SKU</p>
             </div>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Quantity</th>
-                  <th>Status</th>
-                  <th>PO #</th>
-                  <th>Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentReceiving.map((rec) => (
-                  <tr key={rec.id}>
-                    <td className="font-semibold">{rec.quantity}</td>
-                    <td>
-                      <span
-                        className={`badge ${
-                          rec.status === "APPROVED"
-                            ? "status-approved"
-                            : rec.status === "REJECTED"
-                            ? "status-rejected"
-                            : "status-pending"
-                        }`}
-                      >
-                        {rec.status}
-                      </span>
-                    </td>
-                    <td>{rec.poNumber || "—"}</td>
-                    <td>{new Date(rec.receivedAt).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="card-body">
+              <div className="space-y-3 max-h-96 overflow-y-auto">
+                {recentActivities.map((activity) => {
+                  const getActivityIcon = (type: string) => {
+                    switch (type) {
+                      case "RECEIVING":
+                        return "📦";
+                      case "TRANSFER":
+                        return "🚚";
+                      case "CONSUMED":
+                        return "🔨";
+                      case "BUILT":
+                        return "🏭";
+                      case "TASK_COMPLETED":
+                        return "✅";
+                      default:
+                        return "📋";
+                    }
+                  };
+
+                  const getActivityColor = (type: string) => {
+                    switch (type) {
+                      case "RECEIVING":
+                        return "bg-blue-50 border-blue-200";
+                      case "TRANSFER":
+                        return "bg-purple-50 border-purple-200";
+                      case "CONSUMED":
+                        return "bg-orange-50 border-orange-200";
+                      case "BUILT":
+                        return "bg-green-50 border-green-200";
+                      case "TASK_COMPLETED":
+                        return "bg-teal-50 border-teal-200";
+                      default:
+                        return "bg-gray-50 border-gray-200";
+                    }
+                  };
+
+                  return (
+                    <div
+                      key={`${activity.type}-${activity.id}`}
+                      className={`p-3 rounded-lg border ${getActivityColor(activity.type)}`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start gap-3 flex-1">
+                          <span className="text-2xl">{getActivityIcon(activity.type)}</span>
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-gray-900">
+                              {activity.description}
+                            </p>
+                            <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
+                              <span>{activity.user}</span>
+                              <span>•</span>
+                              <span>
+                                {new Date(activity.timestamp).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                  hour: "numeric",
+                                  minute: "2-digit",
+                                })}
+                              </span>
+                            </div>
+                            {activity.metadata?.status && activity.type === "RECEIVING" && (
+                              <span
+                                className={`inline-block mt-2 px-2 py-0.5 text-xs rounded ${
+                                  activity.metadata.status === "APPROVED"
+                                    ? "bg-green-100 text-green-700"
+                                    : activity.metadata.status === "REJECTED"
+                                    ? "bg-red-100 text-red-700"
+                                    : "bg-yellow-100 text-yellow-700"
+                                }`}
+                              >
+                                {activity.metadata.status}
+                              </span>
+                            )}
+                            {activity.metadata?.isRejected && (
+                              <span className="inline-block mt-2 px-2 py-0.5 text-xs rounded bg-red-100 text-red-700">
+                                Rejected
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {activity.quantity !== undefined && (
+                          <div className="text-right ml-4">
+                            <span
+                              className={`font-bold text-lg ${
+                                activity.type === "TRANSFER" || activity.type === "CONSUMED"
+                                  ? "text-red-600"
+                                  : "text-green-600"
+                              }`}
+                            >
+                              {activity.type === "TRANSFER" || activity.type === "CONSUMED" ? "-" : "+"}
+                              {activity.quantity}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {recentActivities.length === 0 && (
+                <div className="text-center py-8 text-gray-500">
+                  No activity recorded for this SKU yet
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
