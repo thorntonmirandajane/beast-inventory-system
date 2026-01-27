@@ -1118,13 +1118,13 @@ export default function SkuDetail() {
         )}
 
         {/* Activity Log */}
-        {recentActivities.length > 0 && (
-          <div className="card">
-            <div className="card-header">
-              <h2 className="card-title">Activity Log</h2>
-              <p className="text-sm text-gray-500">Recent changes and transactions for this SKU</p>
-            </div>
-            <div className="card-body">
+        <div className="card">
+          <div className="card-header">
+            <h2 className="card-title">Activity Log</h2>
+            <p className="text-sm text-gray-500">Recent changes and transactions for this SKU</p>
+          </div>
+          <div className="card-body">
+            {recentActivities.length > 0 ? (
               <div className="space-y-3 max-h-96 overflow-y-auto">
                 {recentActivities.map((activity) => {
                   const getActivityIcon = (type: string) => {
@@ -1225,14 +1225,13 @@ export default function SkuDetail() {
                   );
                 })}
               </div>
-              {recentActivities.length === 0 && (
-                <div className="text-center py-8 text-gray-500">
-                  No activity recorded for this SKU yet
-                </div>
-              )}
-            </div>
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                No activity recorded for this SKU yet
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
 
       {/* Edit SKU Form */}

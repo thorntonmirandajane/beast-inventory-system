@@ -98,6 +98,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const rejectionReason = formData.get("rejectionReason") as string;
     const rejectionQuantityStr = formData.get("rejectionQuantity") as string;
     const rejectionQuantity = parseInt(rejectionQuantityStr, 10);
+    const photoUrl = formData.get("photoUrl") as string;
 
     if (!lineId || !rejectionReason || isNaN(rejectionQuantity)) {
       return { error: "Missing required fields" };
@@ -110,13 +111,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         isRejected: true,
         rejectionReason,
         rejectionQuantity,
-        adminNotes: `Rejected ${rejectionQuantity} units. Reason: ${rejectionReason}`,
+        adminNotes: `Rejected ${rejectionQuantity} units. Reason: ${rejectionReason}${photoUrl ? ` [Photo: ${photoUrl}]` : ""}`,
       },
     });
 
     await createAuditLog(user.id, "REJECT_TASK", "TimeEntryLine", lineId, {
       rejectionReason,
       rejectionQuantity,
+      photoUrl: photoUrl || null,
     });
 
     return { success: true, message: "Task rejected" };
@@ -247,6 +249,7 @@ function RejectTaskModal({
   const fetcher = useFetcher();
   const [rejectionQuantity, setRejectionQuantity] = useState(line.quantityCompleted);
   const [reason, setReason] = useState("");
+  const [photoUrl, setPhotoUrl] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -256,6 +259,7 @@ function RejectTaskModal({
         lineId: line.id,
         rejectionQuantity: rejectionQuantity.toString(),
         rejectionReason: reason,
+        photoUrl,
       },
       { method: "post" }
     );
@@ -308,6 +312,33 @@ function RejectTaskModal({
               rows={4}
             />
           </div>
+
+          <div className="form-group mb-4">
+            <label className="form-label">Photo URL (Optional)</label>
+            <input
+              type="url"
+              value={photoUrl}
+              onChange={(e) => setPhotoUrl(e.target.value)}
+              placeholder="https://example.com/photo.jpg"
+              className="form-input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Paste a link to a photo showing the quality issue (e.g., from Google Drive, Dropbox, or image hosting)
+            </p>
+          </div>
+
+          {photoUrl && (
+            <div className="mb-4 border rounded-lg p-2">
+              <img
+                src={photoUrl}
+                alt="Quality issue"
+                className="max-w-full h-auto rounded"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            </div>
+          )}
 
           <div className="flex gap-4">
             <button
