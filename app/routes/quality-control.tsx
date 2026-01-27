@@ -548,7 +548,7 @@ export default function QualityControl() {
                         {timeEntry.status === "PENDING" && !line.isRejected && (
                           <button
                             onClick={() => setRejectModalLine(line)}
-                            className="btn btn-error btn-sm"
+                            className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
                           >
                             Reject
                           </button>
