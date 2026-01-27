@@ -73,6 +73,7 @@ model Sku {
   updatedAt           DateTime          @updatedAt
   category            String?
   material            String?
+  upc                 String?
   usedInBoms          BomComponent[]    @relation("ComponentSku")
   bomComponents       BomComponent[]    @relation("ParentSku")
   inventoryItems      InventoryItem[]

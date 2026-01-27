@@ -440,62 +440,6 @@ function ForecastRow({
                 Bill of Materials for {item.name}
               </h4>
 
-              {/* BOM Components */}
-              {item.assemblySkusNeeded.length > 0 ? (
-                <div>
-                  <h4 className="font-semibold mb-3 text-gray-900">Assembly Components</h4>
-                  <p className="text-sm text-gray-600 mb-3">
-                    These assembly SKUs are needed to build this product
-                    {item.needToBuild > 0 && ` (${item.needToBuild} units)`}
-                  </p>
-                  <table className="data-table-sm">
-                    <thead>
-                      <tr>
-                        <th>Assembly SKU</th>
-                        <th>Name</th>
-                        <th className="text-right">Qty per Unit</th>
-                        {item.needToBuild > 0 && (
-                          <>
-                            <th className="text-right">Total Needed</th>
-                            <th className="text-right">Available</th>
-                            <th className="text-right">Shortfall</th>
-                          </>
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {item.assemblySkusNeeded.map((assembly) => {
-                        const shortfall = Math.max(0, assembly.totalNeeded - assembly.available);
-                        return (
-                          <tr key={assembly.skuId}>
-                            <td className="font-mono text-sm">{assembly.sku}</td>
-                            <td>{assembly.name}</td>
-                            <td className="text-right text-gray-600">{assembly.qtyPerUnit}</td>
-                            {item.needToBuild > 0 && (
-                              <>
-                                <td className="text-right font-semibold">{assembly.totalNeeded}</td>
-                                <td className="text-right">{assembly.available}</td>
-                                <td className="text-right">
-                                  {shortfall > 0 ? (
-                                    <span className="text-red-600 font-bold">-{shortfall}</span>
-                                  ) : (
-                                    <span className="text-green-600">✓</span>
-                                  )}
-                                </td>
-                              </>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="text-sm text-gray-600 mb-4">
-                  This product is built directly from raw materials (no assembly components).
-                </div>
-              )}
-
               {/* Raw Materials */}
               {item.rawMaterialsNeeded.length > 0 && (
                 <div>
@@ -513,14 +457,12 @@ function ForecastRow({
                           <>
                             <th className="text-right">Needed</th>
                             <th className="text-right">Available</th>
-                            <th className="text-right">Shortfall</th>
                           </>
                         )}
                       </tr>
                     </thead>
                     <tbody>
                       {item.rawMaterialsNeeded.map((raw) => {
-                        const shortfall = Math.max(0, raw.needed - raw.available);
                         return (
                           <tr key={raw.skuId}>
                             <td className="font-mono text-sm">{raw.sku}</td>
@@ -529,13 +471,6 @@ function ForecastRow({
                               <>
                                 <td className="text-right font-semibold">{raw.needed}</td>
                                 <td className="text-right">{raw.available}</td>
-                                <td className="text-right">
-                                  {shortfall > 0 ? (
-                                    <span className="text-red-600 font-bold">-{shortfall}</span>
-                                  ) : (
-                                    <span className="text-green-600">✓</span>
-                                  )}
-                                </td>
                               </>
                             )}
                           </tr>

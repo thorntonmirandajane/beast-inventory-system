@@ -677,11 +677,11 @@ export default function Inventory() {
     return true;
   };
 
-  // Check if a cell should show N/A
+  // Check if a cell should show N/A or special value
   const shouldShowNA = (item: any, column: string): boolean => {
-    // Process: only ASSEMBLY items have values, RAW and COMPLETED show N/A
+    // Process: only ASSEMBLY items show actual process, RAW shows N/A
     if (column === "process") {
-      return item.type !== "ASSEMBLY";
+      return item.type === "RAW";
     }
 
     // Raw materials can be in RAW state or used in assembled/completed products
@@ -1196,6 +1196,8 @@ export default function Inventory() {
                       <td className="text-sm text-gray-600">
                         {shouldShowNA(item, "process") ? (
                           <span className="text-gray-400">N/A</span>
+                        ) : item.type === "COMPLETED" ? (
+                          <span className="text-gray-700">Completed Packs</span>
                         ) : (
                           item.process || "—"
                         )}

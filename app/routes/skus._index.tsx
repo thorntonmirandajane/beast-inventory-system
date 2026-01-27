@@ -10,6 +10,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const search = url.searchParams.get("search") || "";
   const type = url.searchParams.get("type") || "all";
+  const processFilter = url.searchParams.get("process") || "";
+  const categoryFilter = url.searchParams.get("category") || "";
 
   const whereClause: any = { isActive: true };
 
@@ -20,8 +22,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ];
   }
 
-  if (type !== "all") {
+  if (type === "raw") {
+    whereClause.type = "RAW";
+  } else if (type === "finished") {
+    // Combine ASSEMBLY and COMPLETED into "finished" tab
+    whereClause.type = { in: ["ASSEMBLY", "COMPLETED"] };
+  } else if (type !== "all") {
     whereClause.type = type.toUpperCase();
+  }
+
+  if (processFilter) {
+    whereClause.material = processFilter;
+  }
+
+  if (categoryFilter) {
+    whereClause.category = categoryFilter;
   }
 
   const skus = await prisma.sku.findMany({
@@ -51,21 +66,44 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const counts = {
     all: await prisma.sku.count({ where: { isActive: true } }),
     raw: await prisma.sku.count({ where: { isActive: true, type: "RAW" } }),
-    assembly: await prisma.sku.count({ where: { isActive: true, type: "ASSEMBLY" } }),
-    completed: await prisma.sku.count({ where: { isActive: true, type: "COMPLETED" } }),
+    finished: await prisma.sku.count({ where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } } }),
   };
 
-  return { user, skus: skusWithStats, counts, currentType: type, search };
+  // Get unique processes and categories for filters
+  const uniqueProcesses = await prisma.sku.findMany({
+    where: { material: { not: null }, isActive: true },
+    select: { material: true },
+    distinct: ["material"],
+    orderBy: { material: "asc" },
+  });
+
+  const uniqueCategories = await prisma.sku.findMany({
+    where: { category: { not: null }, isActive: true },
+    select: { category: true },
+    distinct: ["category"],
+    orderBy: { category: "asc" },
+  });
+
+  return {
+    user,
+    skus: skusWithStats,
+    counts,
+    currentType: type,
+    search,
+    processFilter,
+    categoryFilter,
+    processes: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
+    categories: uniqueCategories.map(c => c.category).filter(Boolean) as string[],
+  };
 };
 
 export default function SkusList() {
-  const { user, skus, counts, currentType, search } = useLoaderData<typeof loader>();
+  const { user, skus, counts, currentType, search, processFilter, categoryFilter, processes, categories } = useLoaderData<typeof loader>();
 
   const tabs = [
     { id: "all", label: "All", count: counts.all },
     { id: "raw", label: "Raw Materials", count: counts.raw },
-    { id: "assembly", label: "Assemblies", count: counts.assembly },
-    { id: "completed", label: "Completed", count: counts.completed },
+    { id: "finished", label: "Finished Products", count: counts.finished },
   ];
 
   const getTypeColor = (type: string) => {
@@ -108,29 +146,55 @@ export default function SkusList() {
         </div>
       </div>
 
-      {/* Search */}
+      {/* Search and Filters */}
       <div className="card mb-6">
         <div className="card-body py-3">
-          <Form method="get" className="flex items-center gap-4">
+          <Form method="get" className="space-y-4">
             <input type="hidden" name="type" value={currentType} />
-            <input
-              type="text"
-              name="search"
-              className="form-input flex-1"
-              placeholder="Search by SKU or name..."
-              defaultValue={search}
-            />
-            <button type="submit" className="btn btn-primary">
-              Search
-            </button>
-            {search && (
-              <Link
-                to={`/skus?type=${currentType}`}
-                className="btn btn-secondary"
+            <div className="flex items-center gap-4">
+              <input
+                type="text"
+                name="search"
+                className="form-input flex-1"
+                placeholder="Search by SKU or name..."
+                defaultValue={search}
+              />
+              <select
+                name="process"
+                className="form-input w-48"
+                defaultValue={processFilter}
               >
-                Clear
-              </Link>
-            )}
+                <option value="">All Processes</option>
+                {processes.map((process) => (
+                  <option key={process} value={process}>
+                    {process}
+                  </option>
+                ))}
+              </select>
+              <select
+                name="category"
+                className="form-input w-48"
+                defaultValue={categoryFilter}
+              >
+                <option value="">All Categories</option>
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+              <button type="submit" className="btn btn-primary">
+                Filter
+              </button>
+              {(search || processFilter || categoryFilter) && (
+                <Link
+                  to={`/skus?type=${currentType}`}
+                  className="btn btn-secondary"
+                >
+                  Clear
+                </Link>
+              )}
+            </div>
           </Form>
         </div>
       </div>

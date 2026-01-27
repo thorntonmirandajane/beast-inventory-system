@@ -155,6 +155,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const isActive = formData.get("isActive") === "true";
     const category = formData.get("category") as string | null;
     const material = formData.get("material") as string | null;
+    const upc = formData.get("upc") as string | null;
 
     if (!name) {
       return { error: "Name is required" };
@@ -181,6 +182,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         isActive,
         category: category || null,
         material: material || null,
+        upc: upc || null,
       },
     });
 
@@ -1005,6 +1007,19 @@ export default function SkuDetail() {
                   />
                   <p className="text-sm text-gray-500 mt-1">SKU code cannot be changed</p>
                 </div>
+                {sku.type === "COMPLETED" ? (
+                  <div className="form-group">
+                    <label className="form-label">UPC Code</label>
+                    <input
+                      type="text"
+                      name="upc"
+                      className="form-input font-mono"
+                      defaultValue={sku.upc || ""}
+                      placeholder="Enter UPC code..."
+                    />
+                    <p className="text-sm text-gray-500 mt-1">Optional barcode for completed products</p>
+                  </div>
+                ) : null}
                 <div className="form-group">
                   <label className="form-label">Status</label>
                   <select name="isActive" className="form-select" defaultValue={sku.isActive.toString()}>

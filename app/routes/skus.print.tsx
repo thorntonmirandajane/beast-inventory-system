@@ -9,57 +9,86 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
   const url = new URL(request.url);
   const skuIds = url.searchParams.get("ids")?.split(",") || [];
+  const search = url.searchParams.get("search") || "";
 
-  // Get selected SKUs or all active SKUs if none selected
+  // Build where clause
+  const whereClause: any = { isActive: true };
+
+  if (skuIds.length > 0) {
+    whereClause.id = { in: skuIds };
+  }
+
+  if (search) {
+    whereClause.OR = [
+      { sku: { contains: search, mode: "insensitive" } },
+      { name: { contains: search, mode: "insensitive" } },
+    ];
+  }
+
+  // Get SKUs based on filters
   const skus = await prisma.sku.findMany({
-    where: skuIds.length > 0
-      ? { id: { in: skuIds } }
-      : { isActive: true },
+    where: whereClause,
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
-  return { user, skus };
+  return { user, skus, search };
 };
 
-function BarcodeLabel({ sku, name, id }: { sku: string; name: string; id: string }) {
-  const svgRef = useRef<SVGSVGElement>(null);
+function BarcodeLabel({ sku, name, id, type, upc }: { sku: string; name: string; id: string; type: string; upc?: string | null }) {
+  const skuSvgRef = useRef<SVGSVGElement>(null);
+  const upcSvgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
-    if (svgRef.current) {
-      JsBarcode(svgRef.current, sku.toUpperCase(), {
+    if (skuSvgRef.current) {
+      JsBarcode(skuSvgRef.current, sku.toUpperCase(), {
         format: "CODE39",
         width: 2,
-        height: 80,
-        displayValue: true,
-        fontSize: 14,
-        font: "monospace",
-        textMargin: 8,
-        margin: 10,
+        height: 60,
+        displayValue: false,
+        margin: 5,
         background: "#ffffff",
       });
     }
   }, [sku]);
 
+  useEffect(() => {
+    if (upcSvgRef.current && upc && type === "COMPLETED") {
+      JsBarcode(upcSvgRef.current, upc, {
+        format: "CODE39",
+        width: 2,
+        height: 50,
+        displayValue: false,
+        margin: 5,
+        background: "#ffffff",
+      });
+    }
+  }, [upc, type]);
+
   return (
     <div className="barcode-label">
       <div className="barcode-header">
-        <span className="barcode-title">BEAST INVENTORY</span>
+        <span className="barcode-title">{name.toUpperCase()}</span>
       </div>
       <div className="barcode-content">
-        <svg ref={svgRef}></svg>
-      </div>
-      <div className="barcode-footer">
-        <span className="barcode-name">{name.toUpperCase()}</span>
+        <div className="barcode-sku-text">{sku.toUpperCase()}</div>
+        <svg ref={skuSvgRef}></svg>
+        {type === "COMPLETED" && upc && (
+          <>
+            <svg ref={upcSvgRef}></svg>
+            <div className="barcode-upc-text">{upc}</div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
 export default function PrintBarcodes() {
-  const { user, skus } = useLoaderData<typeof loader>();
+  const { user, skus, search } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
   const [showPreview, setShowPreview] = useState(false);
+  const [searchTerm, setSearchTerm] = useState(search || "");
 
   const toggleSku = (id: string) => {
     const newSelected = new Set(selectedSkus);
@@ -102,6 +131,33 @@ export default function PrintBarcodes() {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
               <h1 className="text-2xl font-bold text-gray-900 mb-2">PRINT SKU BARCODES</h1>
               <p className="text-gray-500 mb-6">SELECT SKUS TO PRINT AS CODE39 BARCODES ON 4X6 LABELS</p>
+
+              {/* Search */}
+              <div className="mb-4">
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setSearchParams({ search: searchTerm });
+                    }
+                  }}
+                  placeholder="Search by SKU or name..."
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+                {search && (
+                  <button
+                    onClick={() => {
+                      setSearchTerm("");
+                      setSearchParams({});
+                    }}
+                    className="mt-2 text-sm text-blue-600 hover:text-blue-800"
+                  >
+                    Clear search
+                  </button>
+                )}
+              </div>
 
               {/* Selection controls */}
               <div className="flex items-center gap-4 mb-4 pb-4 border-b border-gray-200">
@@ -198,7 +254,7 @@ export default function PrintBarcodes() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {skusToShow.map((sku) => (
                     <div key={sku.id} className="border border-gray-300 rounded p-2">
-                      <BarcodeLabel sku={sku.sku} name={sku.name} id={sku.id} />
+                      <BarcodeLabel sku={sku.sku} name={sku.name} id={sku.id} type={sku.type} upc={sku.upc} />
                     </div>
                   ))}
                 </div>
@@ -212,7 +268,7 @@ export default function PrintBarcodes() {
       <div className="print-show">
         {skusToShow.map((sku, index) => (
           <div key={sku.id} className="print-page">
-            <BarcodeLabel sku={sku.sku} name={sku.name} id={sku.id} />
+            <BarcodeLabel sku={sku.sku} name={sku.name} id={sku.id} type={sku.type} upc={sku.upc} />
           </div>
         ))}
       </div>
@@ -227,29 +283,35 @@ export default function PrintBarcodes() {
           width: 100%;
           height: 100%;
           display: flex;
-          flex-direction: column;
+          flex-direction: row;
           align-items: center;
-          justify-content: center;
+          justify-content: space-between;
           padding: 16px;
           box-sizing: border-box;
+          gap: 16px;
         }
 
         .barcode-header {
-          text-align: center;
-          margin-bottom: 8px;
+          flex: 0 0 auto;
+          text-align: left;
+          max-width: 30%;
         }
 
         .barcode-title {
-          font-size: 18px;
+          font-size: 16px;
           font-weight: bold;
-          letter-spacing: 2px;
+          letter-spacing: 1px;
           color: #333;
+          word-break: break-word;
         }
 
         .barcode-content {
+          flex: 1;
           display: flex;
+          flex-direction: column;
           justify-content: center;
           align-items: center;
+          gap: 8px;
         }
 
         .barcode-content svg {
@@ -257,22 +319,25 @@ export default function PrintBarcodes() {
           height: auto;
         }
 
-        .barcode-footer {
-          text-align: center;
-          margin-top: 8px;
+        .barcode-sku-text {
+          font-size: 20px;
+          font-weight: bold;
+          font-family: monospace;
+          color: #333;
+          letter-spacing: 2px;
         }
 
-        .barcode-name {
+        .barcode-upc-text {
           font-size: 14px;
-          font-weight: 500;
-          color: #333;
-          word-break: break-word;
+          font-family: monospace;
+          color: #666;
+          letter-spacing: 1px;
         }
 
         /* Print styles */
         @media print {
           @page {
-            size: 4in 6in;
+            size: 6in 4in landscape;
             margin: 0;
           }
 
@@ -290,13 +355,14 @@ export default function PrintBarcodes() {
           }
 
           .print-page {
-            width: 4in;
-            height: 6in;
+            width: 6in;
+            height: 4in;
             page-break-after: always;
             display: flex;
             align-items: center;
             justify-content: center;
             box-sizing: border-box;
+            padding: 0.25in;
           }
 
           .print-page:last-child {
@@ -304,22 +370,40 @@ export default function PrintBarcodes() {
           }
 
           .barcode-label {
-            width: 3.5in;
-            height: 5.5in;
+            width: 5.5in;
+            height: 3.5in;
+            flex-direction: row;
+            gap: 0.5in;
+          }
+
+          .barcode-header {
+            flex: 0 0 auto;
+            max-width: 1.5in;
           }
 
           .barcode-title {
-            font-size: 24px;
+            font-size: 18px;
+            letter-spacing: 1px;
+          }
+
+          .barcode-content {
+            flex: 1;
+            gap: 0.15in;
           }
 
           .barcode-content svg {
-            width: 3in;
+            max-width: 3.5in;
             height: auto;
           }
 
-          .barcode-name {
+          .barcode-sku-text {
+            font-size: 24px;
+            letter-spacing: 3px;
+          }
+
+          .barcode-upc-text {
             font-size: 16px;
-            max-width: 3in;
+            letter-spacing: 2px;
           }
         }
       `}</style>
