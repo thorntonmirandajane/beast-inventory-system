@@ -8,10 +8,13 @@ import { calculateBuildEligibility } from "../utils/inventory.server";
 import { getUsedInProducts } from "../utils/bom.server";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  const user = await requireUser(request);
-  const { id } = params;
+  try {
+    console.log("[SKU Detail] Starting loader for ID:", params.id);
+    const user = await requireUser(request);
+    const { id } = params;
 
-  const sku = await prisma.sku.findUnique({
+    console.log("[SKU Detail] Fetching SKU...");
+    const sku = await prisma.sku.findUnique({
     where: { id },
     include: {
       bomComponents: {
@@ -43,9 +46,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("SKU not found", { status: 404 });
   }
 
+  console.log("[SKU Detail] Getting used in products...");
   // Get all products that use this SKU (recursive)
   const usedInProducts = await getUsedInProducts(id!);
 
+  console.log("[SKU Detail] Calculating build eligibility...");
   // Calculate build eligibility if this is a buildable SKU
   let buildEligibility = null;
   if (sku.type !== "RAW" && sku.bomComponents.length > 0) {
@@ -70,6 +75,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     {} as Record<string, number>
   );
 
+  console.log("[SKU Detail] Getting recent receiving...");
   // Get recent receiving records for this SKU
   const recentReceiving = await prisma.receivingRecord.findMany({
     where: { skuId: sku.id },
@@ -80,6 +86,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
   });
 
+  console.log("[SKU Detail] Building activity log...");
   // Get activity log for this SKU
   const activities: Array<{
     id: string;
@@ -91,6 +98,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     metadata?: any;
   }> = [];
 
+  console.log("[SKU Detail] Querying receiving records for activity log...");
   // Receiving records
   const receivingRecords = await prisma.receivingRecord.findMany({
     where: { skuId: sku.id },
@@ -112,6 +120,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
   });
 
+  console.log("[SKU Detail] Querying transfer items...");
   // Transfer records
   const transferItems = await prisma.transferItem.findMany({
     where: { skuId: sku.id },
@@ -136,6 +145,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
   });
 
+  console.log("[SKU Detail] Querying work order consumptions...");
   // Work order consumption (where this SKU was used as a component)
   const workOrderConsumptions = await prisma.workOrderConsumption.findMany({
     where: { skuId: sku.id },
@@ -164,6 +174,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
   });
 
+  console.log("[SKU Detail] Querying work orders...");
   // Work orders where this SKU was built
   const workOrders = await prisma.workOrder.findMany({
     where: { skuId: sku.id },
@@ -185,6 +196,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
   });
 
+  console.log("[SKU Detail] Querying time entry lines...");
   // Worker time entries (tasks completed)
   const timeEntryLines = await prisma.timeEntryLine.findMany({
     where: {
@@ -214,12 +226,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
   });
 
+  console.log("[SKU Detail] Sorting activities...");
   // Sort all activities by timestamp
   activities.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
   // Take most recent 50
   const recentActivities = activities.slice(0, 50);
 
+  console.log("[SKU Detail] Getting all SKUs and manufacturers...");
   // Get all SKUs for editing BOM
   const allSkus = await prisma.sku.findMany({
     where: { isActive: true, id: { not: sku.id } },
@@ -232,6 +246,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     orderBy: { name: "asc" },
   });
 
+  console.log("[SKU Detail] Getting unique processes and categories...");
   // Get all unique Process values (stored in material field)
   const uniqueProcesses = await prisma.sku.findMany({
     where: { material: { not: null }, isActive: true },
@@ -248,19 +263,35 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     orderBy: { category: "asc" },
   });
 
-  return {
-    user,
-    sku,
-    buildEligibility,
-    inventoryByState,
-    usedInProducts,
-    recentReceiving,
-    recentActivities,
-    allSkus,
-    allManufacturers,
-    uniqueProcesses: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
-    uniqueCategories: uniqueCategories.map(c => c.category).filter(Boolean) as string[],
-  };
+  console.log("[SKU Detail] Loader completed successfully");
+    return {
+      user,
+      sku,
+      buildEligibility,
+      inventoryByState,
+      usedInProducts,
+      recentReceiving,
+      recentActivities,
+      allSkus,
+      allManufacturers,
+      uniqueProcesses: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
+      uniqueCategories: uniqueCategories.map(c => c.category).filter(Boolean) as string[],
+    };
+  } catch (error) {
+    console.error("[SKU Detail] ERROR in loader:", error);
+    console.error("[SKU Detail] Error stack:", error instanceof Error ? error.stack : "No stack trace");
+    console.error("[SKU Detail] Error message:", error instanceof Error ? error.message : String(error));
+    throw new Response(
+      JSON.stringify({
+        error: error instanceof Error ? error.message : "Unknown error occurred",
+        stack: error instanceof Error ? error.stack : undefined
+      }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      }
+    );
+  }
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
