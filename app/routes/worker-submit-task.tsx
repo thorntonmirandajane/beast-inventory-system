@@ -88,9 +88,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { displayName: "asc" },
   });
 
-  // Get all active SKUs with category info
+  // Get all active ASSEMBLY and COMPLETED SKUs with category info
+  // Workers only work on assemblies and completed products, not raw materials
   const skus = await prisma.sku.findMany({
-    where: { isActive: true },
+    where: {
+      isActive: true,
+      type: { in: ["ASSEMBLY", "COMPLETED"] }
+    },
     select: {
       id: true,
       sku: true,

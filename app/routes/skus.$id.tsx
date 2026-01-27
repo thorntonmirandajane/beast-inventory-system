@@ -246,13 +246,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     orderBy: { name: "asc" },
   });
 
-  console.log("[SKU Detail] Getting unique processes and categories...");
-  // Get all unique Process values (stored in material field)
-  const uniqueProcesses = await prisma.sku.findMany({
-    where: { material: { not: null }, isActive: true },
-    select: { material: true },
-    distinct: ["material"],
-    orderBy: { material: "asc" },
+  console.log("[SKU Detail] Getting process configs and unique categories...");
+  // Get all active process configs for the dropdown
+  const processConfigs = await prisma.processConfig.findMany({
+    where: { isActive: true },
+    select: { displayName: true, processName: true },
+    orderBy: { displayName: "asc" },
   });
 
   // Get all unique Category values
@@ -274,7 +273,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       recentActivities,
       allSkus,
       allManufacturers,
-      uniqueProcesses: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
+      processConfigs,
       uniqueCategories: uniqueCategories.map(c => c.category).filter(Boolean) as string[],
     };
   } catch (error) {
@@ -627,7 +626,7 @@ export default function SkuDetail() {
     recentActivities,
     allManufacturers,
     allSkus,
-    uniqueProcesses,
+    processConfigs,
     uniqueCategories,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -1296,12 +1295,14 @@ export default function SkuDetail() {
                     list="process-options"
                   />
                   <datalist id="process-options">
-                    {uniqueProcesses.map((process) => (
-                      <option key={process} value={process} />
+                    {processConfigs.map((config) => (
+                      <option key={config.processName} value={config.processName}>
+                        {config.displayName}
+                      </option>
                     ))}
                   </datalist>
                   <p className="text-xs text-gray-500 mt-1">
-                    Select from existing or type a new value
+                    Select from active processes
                   </p>
                 </div>
                 <div className="form-group">
