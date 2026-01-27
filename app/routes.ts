@@ -26,6 +26,7 @@ export default [
   route("my-rejected-tasks", "routes/my-rejected-tasks.tsx"),
   route("clock-out-entry", "routes/clock-out-entry.tsx"),
   route("my-efficiency", "routes/my-efficiency.tsx"),
+  route("worker-efficiency", "routes/worker-efficiency.tsx"),
   route("task-assignments", "routes/task-assignments.tsx"),
   route("time-entry-approvals", "routes/time-entry-approvals.tsx"),
   route("users", "routes/users.tsx"),
