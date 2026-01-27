@@ -1086,45 +1086,6 @@ export default function SkuDetail() {
                 </div>
               </div>
 
-              {sku.type !== "RAW" && (
-                <div className="mb-4">
-                  <label className="form-label">Bill of Materials</label>
-                  <p className="text-sm text-gray-500 mb-3">
-                    Set quantity to 0 to remove a component
-                  </p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-96 overflow-y-auto border border-gray-200 rounded-lg p-3">
-                    {allSkus.map((s, index) => (
-                      <div
-                        key={s.id}
-                        className={`flex items-center gap-3 p-3 rounded border ${
-                          s.type === "RAW"
-                            ? "bg-gray-50 border-gray-200"
-                            : "bg-blue-50 border-blue-200"
-                        }`}
-                      >
-                        <input type="hidden" name={`components[${index}][skuId]`} value={s.id} />
-                        <div className="flex-1 overflow-hidden">
-                          <div className="font-mono text-sm font-semibold text-gray-900 mb-1">
-                            {s.sku}
-                          </div>
-                          <div className="text-xs text-gray-600 line-clamp-2">
-                            {s.name}
-                          </div>
-                        </div>
-                        <input
-                          type="number"
-                          name={`components[${index}][quantity]`}
-                          className="form-input w-20 text-sm flex-shrink-0"
-                          min="0"
-                          defaultValue={currentBom.get(s.id) || 0}
-                          placeholder="Qty"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               <div className="flex gap-3">
                 <button
                   type="submit"

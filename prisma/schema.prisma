@@ -31,6 +31,8 @@ model User {
   workerTasks            WorkerTask[]      @relation("WorkerTasks")
   approvedEntries        WorkerTimeEntry[] @relation("ApprovedEntries")
   timeEntries            WorkerTimeEntry[]
+  timeOffRequests        TimeOffRequest[]  @relation("TimeOffRequests")
+  approvedTimeOffRequests TimeOffRequest[] @relation("ApprovedTimeOffRequests")
 
   @@map("users")
 }
@@ -524,4 +526,30 @@ enum TimeEntryStatus {
 enum ScheduleType {
   RECURRING
   SPECIFIC_DATE
+}
+
+model TimeOffRequest {
+  id             String             @id @default(cuid())
+  userId         String
+  user           User               @relation("TimeOffRequests", fields: [userId], references: [id])
+  startDate      DateTime
+  endDate        DateTime
+  reason         String
+  status         TimeOffRequestStatus @default(PENDING)
+  approvedById   String?
+  approvedBy     User?              @relation("ApprovedTimeOffRequests", fields: [approvedById], references: [id])
+  approvedAt     DateTime?
+  rejectionReason String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@map("time_off_requests")
+}
+
+enum TimeOffRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }

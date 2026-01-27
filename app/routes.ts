@@ -17,6 +17,7 @@ export default [
   route("build", "routes/build.tsx"),
   route("transfers", "routes/transfers._index.tsx"),
   route("time-clock", "routes/time-clock.tsx"),
+  route("time-off-request", "routes/time-off-request.tsx"),
   route("worker-dashboard", "routes/worker-dashboard.tsx"),
   route("worker-task-view", "routes/worker-task-view.tsx"),
   route("worker-submit-task", "routes/worker-submit-task.tsx"),

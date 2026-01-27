@@ -36,15 +36,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 100,
   });
 
-  // Get transferable SKUs (ASSEMBLY or COMPLETED with available inventory)
+  // Get transferable SKUs (COMPLETED only with available inventory)
   const transferableSkus = await prisma.sku.findMany({
     where: {
       isActive: true,
-      type: { in: ["ASSEMBLY", "COMPLETED"] },
+      type: "COMPLETED",
       inventoryItems: {
         some: {
           quantity: { gt: 0 },
-          state: { in: ["ASSEMBLED", "COMPLETED"] },
+          state: "COMPLETED",
         },
       },
     },
@@ -52,7 +52,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       inventoryItems: {
         where: {
           quantity: { gt: 0 },
-          state: { in: ["ASSEMBLED", "COMPLETED"] },
+          state: "COMPLETED",
         },
       },
     },
@@ -111,15 +111,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "At least one item is required" };
     }
 
-    // Verify all items have sufficient inventory
+    // Verify all items have sufficient inventory and are COMPLETED products
     for (const item of items) {
       const sku = await prisma.sku.findUnique({ where: { id: item.skuId } });
       if (!sku) {
         return { error: `SKU not found: ${item.skuId}` };
       }
 
-      const targetState = sku.type === "COMPLETED" ? "COMPLETED" : "ASSEMBLED";
-      const available = await getAvailableQuantity(item.skuId, [targetState]);
+      // Only allow COMPLETED products to be transferred
+      if (sku.type !== "COMPLETED") {
+        return { error: `Only completed products can be transferred. ${sku.sku} is ${sku.type}` };
+      }
+
+      const available = await getAvailableQuantity(item.skuId, ["COMPLETED"]);
       if (available < item.quantity) {
         return {
           error: `Insufficient inventory for ${sku.sku}. Available: ${available}, Requested: ${item.quantity}`,
@@ -148,10 +152,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
     });
 
-    // Deduct inventory for each item
+    // Deduct inventory for each item (all are COMPLETED products)
     for (const item of transfer.items) {
-      const targetState = item.sku.type === "COMPLETED" ? "COMPLETED" : "ASSEMBLED";
-      await deductInventory(item.skuId, item.quantity, [targetState]);
+      await deductInventory(item.skuId, item.quantity, ["COMPLETED"]);
     }
 
     await createAuditLog(user.id, "CREATE_TRANSFER", "Transfer", transfer.id, {
@@ -265,8 +268,7 @@ export default function Transfers() {
                     {transferableSkus.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="text-center text-gray-500 py-8">
-                          No transferable inventory available. Build some assemblies or
-                          completed products first.
+                          No transferable inventory available. Only completed products can be transferred.
                         </td>
                       </tr>
                     ) : (

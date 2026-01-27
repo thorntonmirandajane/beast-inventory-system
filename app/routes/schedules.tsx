@@ -311,51 +311,57 @@ function CalendarView({ workers, upcomingDateSchedules, user }: { workers: any[]
         </button>
       </div>
 
-      <div className="card-body">
+      <div className="card-body overflow-x-auto">
         {/* Day headers */}
-        <div className="grid grid-cols-7 gap-2 mb-2">
+        <div className="grid grid-cols-7 gap-1 md:gap-2 mb-2 min-w-[640px]">
           {DAYS.map((day) => (
             <div key={day.id} className="text-center text-xs font-semibold text-gray-600 py-2">
-              {day.short}
+              <span className="hidden md:inline">{day.short}</span>
+              <span className="md:hidden">{day.short.substring(0, 1)}</span>
             </div>
           ))}
         </div>
 
         {/* Calendar grid */}
-        {weeks.map((week, wIdx) => (
-          <div key={wIdx} className="grid grid-cols-7 gap-2 mb-2">
-            {week.map((day, dIdx) => (
-              <div
-                key={dIdx}
-                className={`min-h-24 border rounded p-2 ${
-                  day.date
-                    ? day.schedules.length > 0
-                      ? "bg-blue-50 border-blue-300"
-                      : day.recurringSchedules.length > 0
-                      ? "bg-green-50 border-green-200"
-                      : "bg-white border-gray-200"
-                    : "bg-gray-50"
-                }`}
-              >
-                {day.date && (
-                  <>
-                    <div className="text-sm font-semibold mb-1">{day.date.getDate()}</div>
-                    {day.schedules.map((schedule, sIdx) => (
-                      <div key={sIdx} className="text-xs bg-blue-500 text-white px-1 py-0.5 rounded mb-1">
-                        📅 {schedule.user.firstName} {schedule.startTime}-{schedule.endTime}
-                      </div>
-                    ))}
-                    {day.recurringSchedules.length > 0 && day.schedules.length === 0 && (
-                      <div className="text-xs text-gray-500">
-                        {day.recurringSchedules.length} scheduled
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        ))}
+        <div className="min-w-[640px]">
+          {weeks.map((week, wIdx) => (
+            <div key={wIdx} className="grid grid-cols-7 gap-1 md:gap-2 mb-2">
+              {week.map((day, dIdx) => (
+                <div
+                  key={dIdx}
+                  className={`min-h-16 md:min-h-24 border rounded p-1 md:p-2 ${
+                    day.date
+                      ? day.schedules.length > 0
+                        ? "bg-blue-50 border-blue-300"
+                        : day.recurringSchedules.length > 0
+                        ? "bg-green-50 border-green-200"
+                        : "bg-white border-gray-200"
+                      : "bg-gray-50"
+                  }`}
+                >
+                  {day.date && (
+                    <>
+                      <div className="text-xs md:text-sm font-semibold mb-1">{day.date.getDate()}</div>
+                      {day.schedules.map((schedule, sIdx) => (
+                        <div key={sIdx} className="text-[10px] md:text-xs bg-blue-500 text-white px-1 py-0.5 rounded mb-1 truncate">
+                          <span className="hidden md:inline">📅 {schedule.user.firstName} </span>
+                          <span className="md:hidden">📅</span>
+                          {schedule.startTime}-{schedule.endTime}
+                        </div>
+                      ))}
+                      {day.recurringSchedules.length > 0 && day.schedules.length === 0 && (
+                        <div className="text-[10px] md:text-xs text-gray-500">
+                          <span className="hidden md:inline">{day.recurringSchedules.length} scheduled</span>
+                          <span className="md:hidden">{day.recurringSchedules.length}</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
 
         {/* Legend */}
         <div className="mt-4 flex gap-4 text-xs text-gray-600">
@@ -493,31 +499,36 @@ export default function Schedules() {
                 <div className="card-body">
                   {isWorkerView ? (
                     // Read-only view for workers
-                    <div className="grid grid-cols-7 gap-2">
-                      {DAYS.map((day) => {
-                        const schedule = getScheduleForDay(worker.schedules, day.id);
-                        return (
-                          <div
-                            key={day.id}
-                            className={`p-2 rounded border text-center ${
-                              schedule.isActive
-                                ? "bg-blue-50 border-blue-200"
-                                : "bg-gray-50 border-gray-200"
-                            }`}
-                          >
-                            <div className="text-xs font-semibold mb-2">{day.short}</div>
-                            {schedule.isActive ? (
-                              <div className="text-xs">
-                                <div>{schedule.startTime}</div>
-                                <div>-</div>
-                                <div>{schedule.endTime}</div>
+                    <div className="overflow-x-auto">
+                      <div className="grid grid-cols-7 gap-1 md:gap-2 min-w-[600px]">
+                        {DAYS.map((day) => {
+                          const schedule = getScheduleForDay(worker.schedules, day.id);
+                          return (
+                            <div
+                              key={day.id}
+                              className={`p-1 md:p-2 rounded border text-center ${
+                                schedule.isActive
+                                  ? "bg-blue-50 border-blue-200"
+                                  : "bg-gray-50 border-gray-200"
+                              }`}
+                            >
+                              <div className="text-[10px] md:text-xs font-semibold mb-1 md:mb-2">
+                                <span className="hidden md:inline">{day.short}</span>
+                                <span className="md:hidden">{day.short.substring(0, 1)}</span>
                               </div>
-                            ) : (
-                              <div className="text-xs text-gray-400">OFF</div>
-                            )}
-                          </div>
-                        );
-                      })}
+                              {schedule.isActive ? (
+                                <div className="text-[10px] md:text-xs">
+                                  <div>{schedule.startTime}</div>
+                                  <div>-</div>
+                                  <div>{schedule.endTime}</div>
+                                </div>
+                              ) : (
+                                <div className="text-[10px] md:text-xs text-gray-400">OFF</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ) : (
                     // Editable view for admins
@@ -525,44 +536,49 @@ export default function Schedules() {
                       <input type="hidden" name="intent" value="update-schedule" />
                       <input type="hidden" name="workerId" value={worker.id} />
 
-                      <div className="grid grid-cols-7 gap-2 mb-4">
-                        {DAYS.map((day) => {
-                          const schedule = getScheduleForDay(worker.schedules, day.id);
-                          return (
-                            <div
-                              key={day.id}
-                              className={`p-2 rounded border ${
-                                schedule.isActive
-                                  ? "bg-blue-50 border-blue-200"
-                                  : "bg-gray-50 border-gray-200"
-                              }`}
-                            >
-                              <div className="flex items-center gap-1 mb-2">
-                                <input
-                                  type="checkbox"
-                                  name={`day-${day.id}-active`}
-                                  defaultChecked={schedule.isActive}
-                                  className="w-4 h-4"
-                                />
-                                <span className="text-xs font-semibold">{day.short}</span>
+                      <div className="overflow-x-auto">
+                        <div className="grid grid-cols-7 gap-1 md:gap-2 mb-4 min-w-[600px]">
+                          {DAYS.map((day) => {
+                            const schedule = getScheduleForDay(worker.schedules, day.id);
+                            return (
+                              <div
+                                key={day.id}
+                                className={`p-1 md:p-2 rounded border ${
+                                  schedule.isActive
+                                    ? "bg-blue-50 border-blue-200"
+                                    : "bg-gray-50 border-gray-200"
+                                }`}
+                              >
+                                <div className="flex items-center gap-1 mb-1 md:mb-2">
+                                  <input
+                                    type="checkbox"
+                                    name={`day-${day.id}-active`}
+                                    defaultChecked={schedule.isActive}
+                                    className="w-3 h-3 md:w-4 md:h-4"
+                                  />
+                                  <span className="text-[10px] md:text-xs font-semibold">
+                                    <span className="hidden md:inline">{day.short}</span>
+                                    <span className="md:hidden">{day.short.substring(0, 1)}</span>
+                                  </span>
+                                </div>
+                                <div className="space-y-1">
+                                  <input
+                                    type="time"
+                                    name={`day-${day.id}-start`}
+                                    defaultValue={schedule.startTime}
+                                    className="form-input text-[10px] md:text-xs p-0.5 md:p-1 w-full"
+                                  />
+                                  <input
+                                    type="time"
+                                    name={`day-${day.id}-end`}
+                                    defaultValue={schedule.endTime}
+                                    className="form-input text-[10px] md:text-xs p-0.5 md:p-1 w-full"
+                                  />
+                                </div>
                               </div>
-                              <div className="space-y-1">
-                                <input
-                                  type="time"
-                                  name={`day-${day.id}-start`}
-                                  defaultValue={schedule.startTime}
-                                  className="form-input text-xs p-1 w-full"
-                                />
-                                <input
-                                  type="time"
-                                  name={`day-${day.id}-end`}
-                                  defaultValue={schedule.endTime}
-                                  className="form-input text-xs p-1 w-full"
-                                />
-                              </div>
-                            </div>
-                          );
-                        })}
+                            );
+                          })}
+                        </div>
                       </div>
 
                       <button
