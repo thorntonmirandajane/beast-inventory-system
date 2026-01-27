@@ -568,6 +568,61 @@ function ForecastRow({
                 Bill of Materials for {item.name}
               </h4>
 
+              {/* Assembled SKUs */}
+              {item.assemblySkusNeeded.length > 0 && (
+                <div>
+                  <h4 className="font-semibold mb-3 text-gray-900">Assembled Components</h4>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Assembled SKUs required for this product
+                    {item.needToBuild > 0 && ` (to build ${item.needToBuild} units)`}
+                  </p>
+                  <table className="data-table-sm">
+                    <thead>
+                      <tr>
+                        <th>Assembly SKU</th>
+                        <th>Name</th>
+                        <th className="text-right">Per Unit</th>
+                        {item.needToBuild > 0 && (
+                          <>
+                            <th className="text-right">Total Needed</th>
+                            <th className="text-right">Available</th>
+                            <th className="text-right">Shortfall</th>
+                          </>
+                        )}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.assemblySkusNeeded.map((assembly) => {
+                        const shortfall = Math.max(0, assembly.totalNeeded - assembly.available);
+                        return (
+                          <tr key={assembly.skuId}>
+                            <td className="font-mono text-sm">{assembly.sku}</td>
+                            <td>{assembly.name}</td>
+                            <td className="text-right text-gray-600">{assembly.qtyPerUnit}</td>
+                            {item.needToBuild > 0 && (
+                              <>
+                                <td className="text-right font-semibold">{assembly.totalNeeded}</td>
+                                <td className="text-right text-green-600">{assembly.available}</td>
+                                <td className="text-right">
+                                  {shortfall > 0 ? (
+                                    <span className="font-bold text-orange-600">{shortfall}</span>
+                                  ) : (
+                                    <span className="text-green-600">✓</span>
+                                  )}
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <p className="text-xs text-gray-500 mt-2">
+                    Note: Raw materials below are only calculated for assemblies that need to be built (shortfall)
+                  </p>
+                </div>
+              )}
+
               {/* Raw Materials */}
               {item.rawMaterialsNeeded.length > 0 && (
                 <div>
@@ -707,7 +762,121 @@ export default function Forecasting() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Save Current Forecast as Template */}
+      {user.role === "ADMIN" && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">Save Forecast as Template</h2>
+            <p className="text-sm text-gray-500">Save current forecast values to reuse later</p>
+          </div>
+          <div className="card-body">
+            <Form method="post">
+              <input type="hidden" name="intent" value="save-template" />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="form-group mb-0">
+                  <label className="form-label">Template Title *</label>
+                  <input
+                    type="text"
+                    name="title"
+                    className="form-input"
+                    placeholder="e.g., December 2025 Forecast"
+                    required
+                  />
+                </div>
+                <div className="form-group mb-0 md:col-span-2">
+                  <label className="form-label">Description (Optional)</label>
+                  <input
+                    type="text"
+                    name="description"
+                    className="form-input"
+                    placeholder="e.g., Holiday season projections"
+                  />
+                </div>
+              </div>
+              <div className="mt-4">
+                <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+                  {isSubmitting ? "Saving..." : "Save Template"}
+                </button>
+              </div>
+            </Form>
+          </div>
+        </div>
+      )}
+
+      {/* Saved Templates */}
+      {user.role === "ADMIN" && templates.length > 0 && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">Saved Templates</h2>
+            <p className="text-sm text-gray-500">Load previously saved forecast templates</p>
+          </div>
+          <div className="card-body">
+            <div className="space-y-3">
+              {templates.map((template) => (
+                <div key={template.id} className="p-4 border rounded-lg bg-gray-50">
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-lg">{template.title}</h3>
+                      {template.description && (
+                        <p className="text-sm text-gray-600 mt-1">{template.description}</p>
+                      )}
+                      <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                        <span>
+                          Created by: {template.createdBy.firstName} {template.createdBy.lastName}
+                        </span>
+                        <span>•</span>
+                        <span>
+                          {new Date(template.createdAt).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })}
+                        </span>
+                        <span>•</span>
+                        <span>{template.items.length} SKUs</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 ml-4">
+                      <Form method="post" className="inline">
+                        <input type="hidden" name="intent" value="load-template" />
+                        <input type="hidden" name="templateId" value={template.id} />
+                        <button
+                          type="submit"
+                          className="btn btn-sm btn-primary"
+                          disabled={isSubmitting}
+                        >
+                          Load
+                        </button>
+                      </Form>
+                      <Form
+                        method="post"
+                        onSubmit={(e) => {
+                          if (!confirm(`Are you sure you want to delete template "${template.title}"?`)) {
+                            e.preventDefault();
+                          }
+                        }}
+                        className="inline"
+                      >
+                        <input type="hidden" name="intent" value="delete-template" />
+                        <input type="hidden" name="templateId" value={template.id} />
+                        <button
+                          type="submit"
+                          className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
+                          disabled={isSubmitting}
+                        >
+                          Delete
+                        </button>
+                      </Form>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
         {/* Labor Capacity Analysis */}
         <div className="card">
           <div className="card-header">
@@ -834,120 +1003,6 @@ export default function Forecasting() {
           </div>
         </div>
       </div>
-
-      {/* Save Current Forecast as Template */}
-      {user.role === "ADMIN" && (
-        <div className="card mt-6">
-          <div className="card-header">
-            <h2 className="card-title">Save Forecast as Template</h2>
-            <p className="text-sm text-gray-500">Save current forecast values to reuse later</p>
-          </div>
-          <div className="card-body">
-            <Form method="post">
-              <input type="hidden" name="intent" value="save-template" />
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="form-group mb-0">
-                  <label className="form-label">Template Title *</label>
-                  <input
-                    type="text"
-                    name="title"
-                    className="form-input"
-                    placeholder="e.g., December 2025 Forecast"
-                    required
-                  />
-                </div>
-                <div className="form-group mb-0 md:col-span-2">
-                  <label className="form-label">Description (Optional)</label>
-                  <input
-                    type="text"
-                    name="description"
-                    className="form-input"
-                    placeholder="e.g., Holiday season projections"
-                  />
-                </div>
-              </div>
-              <div className="mt-4">
-                <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
-                  {isSubmitting ? "Saving..." : "Save Template"}
-                </button>
-              </div>
-            </Form>
-          </div>
-        </div>
-      )}
-
-      {/* Saved Templates */}
-      {user.role === "ADMIN" && templates.length > 0 && (
-        <div className="card mt-6">
-          <div className="card-header">
-            <h2 className="card-title">Saved Templates</h2>
-            <p className="text-sm text-gray-500">Load previously saved forecast templates</p>
-          </div>
-          <div className="card-body">
-            <div className="space-y-3">
-              {templates.map((template) => (
-                <div key={template.id} className="p-4 border rounded-lg bg-gray-50">
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="flex-1">
-                      <h3 className="font-semibold text-lg">{template.title}</h3>
-                      {template.description && (
-                        <p className="text-sm text-gray-600 mt-1">{template.description}</p>
-                      )}
-                      <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
-                        <span>
-                          Created by: {template.createdBy.firstName} {template.createdBy.lastName}
-                        </span>
-                        <span>•</span>
-                        <span>
-                          {new Date(template.createdAt).toLocaleDateString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                            year: "numeric",
-                          })}
-                        </span>
-                        <span>•</span>
-                        <span>{template.items.length} SKUs</span>
-                      </div>
-                    </div>
-                    <div className="flex gap-2 ml-4">
-                      <Form method="post" className="inline">
-                        <input type="hidden" name="intent" value="load-template" />
-                        <input type="hidden" name="templateId" value={template.id} />
-                        <button
-                          type="submit"
-                          className="btn btn-sm btn-primary"
-                          disabled={isSubmitting}
-                        >
-                          Load
-                        </button>
-                      </Form>
-                      <Form
-                        method="post"
-                        onSubmit={(e) => {
-                          if (!confirm(`Are you sure you want to delete template "${template.title}"?`)) {
-                            e.preventDefault();
-                          }
-                        }}
-                        className="inline"
-                      >
-                        <input type="hidden" name="intent" value="delete-template" />
-                        <input type="hidden" name="templateId" value={template.id} />
-                        <button
-                          type="submit"
-                          className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
-                          disabled={isSubmitting}
-                        >
-                          Delete
-                        </button>
-                      </Form>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </Layout>
   );
 }

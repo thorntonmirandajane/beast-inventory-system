@@ -284,10 +284,12 @@ function generateCalendarMonth(year: number, month: number, dateSchedules: any[]
 
 function CalendarView({ workers, upcomingDateSchedules, user }: { workers: any[]; upcomingDateSchedules: any[]; user: any }) {
   const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [selectedDay, setSelectedDay] = useState<CalendarDay | null>(null);
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();
 
   const weeks = generateCalendarMonth(year, month, upcomingDateSchedules, workers);
+  const today = new Date();
 
   const goToPreviousMonth = () => {
     setCurrentMonth(new Date(year, month - 1));
@@ -297,85 +299,440 @@ function CalendarView({ workers, upcomingDateSchedules, user }: { workers: any[]
     setCurrentMonth(new Date(year, month + 1));
   };
 
-  return (
-    <div className="card">
-      <div className="card-header flex justify-between items-center">
-        <button onClick={goToPreviousMonth} className="btn btn-ghost btn-sm">
-          ← Previous
-        </button>
-        <h3 className="card-title">
-          {currentMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
-        </h3>
-        <button onClick={goToNextMonth} className="btn btn-ghost btn-sm">
-          Next →
-        </button>
-      </div>
+  const isToday = (date: Date | null) => {
+    if (!date) return false;
+    return isSameDay(date, today);
+  };
 
-      <div className="card-body overflow-x-auto">
+  const hasSchedules = (day: CalendarDay) => {
+    return day.schedules.length > 0 || day.recurringSchedules.length > 0;
+  };
+
+  return (
+    <>
+      <div className="calendar-container">
+        {/* Header */}
+        <div className="calendar-header">
+          <button onClick={goToPreviousMonth} className="calendar-nav-btn" aria-label="Previous month">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <h3 className="calendar-title">
+            {currentMonth.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+          </h3>
+          <button onClick={goToNextMonth} className="calendar-nav-btn" aria-label="Next month">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        </div>
+
         {/* Day headers */}
-        <div className="grid grid-cols-7 gap-1 md:gap-2 mb-2 min-w-[640px]">
+        <div className="calendar-weekdays">
           {DAYS.map((day) => (
-            <div key={day.id} className="text-center text-xs font-semibold text-gray-600 py-2">
-              <span className="hidden md:inline">{day.short}</span>
-              <span className="md:hidden">{day.short.substring(0, 1)}</span>
+            <div key={day.id} className="calendar-weekday">
+              <span className="hidden sm:inline">{day.short}</span>
+              <span className="sm:hidden">{day.short.substring(0, 1)}</span>
             </div>
           ))}
         </div>
 
         {/* Calendar grid */}
-        <div className="min-w-[640px]">
+        <div className="calendar-grid">
           {weeks.map((week, wIdx) => (
-            <div key={wIdx} className="grid grid-cols-7 gap-1 md:gap-2 mb-2">
-              {week.map((day, dIdx) => (
-                <div
-                  key={dIdx}
-                  className={`min-h-16 md:min-h-24 border rounded p-1 md:p-2 ${
-                    day.date
-                      ? day.schedules.length > 0
-                        ? "bg-blue-50 border-blue-300"
-                        : day.recurringSchedules.length > 0
-                        ? "bg-green-50 border-green-200"
-                        : "bg-white border-gray-200"
-                      : "bg-gray-50"
-                  }`}
-                >
-                  {day.date && (
-                    <>
-                      <div className="text-xs md:text-sm font-semibold mb-1">{day.date.getDate()}</div>
-                      {day.schedules.map((schedule, sIdx) => (
-                        <div key={sIdx} className="text-[10px] md:text-xs bg-blue-500 text-white px-1 py-0.5 rounded mb-1 truncate">
-                          <span className="hidden md:inline">📅 {schedule.user.firstName} </span>
-                          <span className="md:hidden">📅</span>
-                          {schedule.startTime}-{schedule.endTime}
+            <div key={wIdx} className="calendar-week">
+              {week.map((day, dIdx) => {
+                const hasSched = hasSchedules(day);
+                const isTodayDate = isToday(day.date);
+
+                return (
+                  <div
+                    key={dIdx}
+                    onClick={() => day.date && hasSched ? setSelectedDay(day) : null}
+                    className={`calendar-day ${!day.date ? 'calendar-day-empty' : ''} ${
+                      isTodayDate ? 'calendar-day-today' : ''
+                    } ${hasSched ? 'calendar-day-has-schedule' : ''}`}
+                  >
+                    {day.date && (
+                      <>
+                        <div className={`calendar-day-number ${isTodayDate ? 'calendar-day-number-today' : ''}`}>
+                          {day.date.getDate()}
                         </div>
-                      ))}
-                      {day.recurringSchedules.length > 0 && day.schedules.length === 0 && (
-                        <div className="text-[10px] md:text-xs text-gray-500">
-                          <span className="hidden md:inline">{day.recurringSchedules.length} scheduled</span>
-                          <span className="md:hidden">{day.recurringSchedules.length}</span>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              ))}
+                        {/* Show dot indicators for schedules */}
+                        {hasSched && (
+                          <div className="calendar-day-indicators">
+                            {day.schedules.length > 0 && (
+                              <div className="calendar-dot calendar-dot-specific"></div>
+                            )}
+                            {day.recurringSchedules.length > 0 && day.schedules.length === 0 && (
+                              <div className="calendar-dot calendar-dot-recurring"></div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ))}
         </div>
 
         {/* Legend */}
-        <div className="mt-4 flex gap-4 text-xs text-gray-600">
-          <div className="flex items-center gap-2">
-            <span className="w-4 h-4 bg-blue-50 border border-blue-300 rounded"></span>
-            Specific Date
+        <div className="calendar-legend">
+          <div className="calendar-legend-item">
+            <div className="calendar-dot calendar-dot-specific"></div>
+            <span>Specific Date</span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="w-4 h-4 bg-green-50 border border-green-200 rounded"></span>
-            Recurring Only
+          <div className="calendar-legend-item">
+            <div className="calendar-dot calendar-dot-recurring"></div>
+            <span>Recurring</span>
           </div>
         </div>
       </div>
-    </div>
+
+      {/* Day Details Modal */}
+      {selectedDay && selectedDay.date && (
+        <div className="calendar-modal-overlay" onClick={() => setSelectedDay(null)}>
+          <div className="calendar-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="calendar-modal-header">
+              <h4 className="calendar-modal-title">
+                {selectedDay.date.toLocaleDateString("en-US", {
+                  weekday: "long",
+                  month: "long",
+                  day: "numeric"
+                })}
+              </h4>
+              <button onClick={() => setSelectedDay(null)} className="calendar-modal-close">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="calendar-modal-content">
+              {selectedDay.schedules.length > 0 && (
+                <div className="calendar-modal-section">
+                  <h5 className="calendar-modal-section-title">Specific Date Schedules</h5>
+                  {selectedDay.schedules.map((schedule, idx) => (
+                    <div key={idx} className="calendar-modal-schedule">
+                      <div className="calendar-modal-schedule-name">
+                        {schedule.user.firstName} {schedule.user.lastName}
+                      </div>
+                      <div className="calendar-modal-schedule-time">
+                        {schedule.startTime} - {schedule.endTime}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {selectedDay.recurringSchedules.length > 0 && (
+                <div className="calendar-modal-section">
+                  <h5 className="calendar-modal-section-title">Recurring Schedules</h5>
+                  {selectedDay.recurringSchedules.map((schedule, idx) => (
+                    <div key={idx} className="calendar-modal-schedule calendar-modal-schedule-recurring">
+                      <div className="calendar-modal-schedule-name">
+                        {schedule.user.firstName} {schedule.user.lastName}
+                      </div>
+                      <div className="calendar-modal-schedule-time">
+                        {schedule.startTime} - {schedule.endTime}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        .calendar-container {
+          background: white;
+          border-radius: 12px;
+          padding: 16px;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .calendar-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 20px;
+          padding: 0 8px;
+        }
+
+        .calendar-title {
+          font-size: 18px;
+          font-weight: 600;
+          color: #1f2937;
+        }
+
+        .calendar-nav-btn {
+          padding: 8px;
+          border-radius: 8px;
+          background: transparent;
+          border: none;
+          color: #4b5563;
+          cursor: pointer;
+          transition: background-color 0.2s;
+        }
+
+        .calendar-nav-btn:hover {
+          background: #f3f4f6;
+        }
+
+        .calendar-weekdays {
+          display: grid;
+          grid-template-columns: repeat(7, 1fr);
+          gap: 4px;
+          margin-bottom: 8px;
+        }
+
+        .calendar-weekday {
+          text-align: center;
+          font-size: 11px;
+          font-weight: 600;
+          color: #6b7280;
+          padding: 8px 0;
+        }
+
+        .calendar-grid {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .calendar-week {
+          display: grid;
+          grid-template-columns: repeat(7, 1fr);
+          gap: 4px;
+        }
+
+        .calendar-day {
+          aspect-ratio: 1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          border-radius: 8px;
+          background: white;
+          position: relative;
+          cursor: default;
+          transition: all 0.2s;
+        }
+
+        .calendar-day-empty {
+          background: transparent;
+        }
+
+        .calendar-day-has-schedule {
+          cursor: pointer;
+        }
+
+        .calendar-day-has-schedule:hover {
+          background: #f9fafb;
+          transform: scale(1.05);
+        }
+
+        .calendar-day-today {
+          background: #dbeafe;
+        }
+
+        .calendar-day-number {
+          font-size: 14px;
+          font-weight: 500;
+          color: #374151;
+          margin-bottom: 2px;
+        }
+
+        .calendar-day-number-today {
+          background: #3b82f6;
+          color: white;
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 600;
+        }
+
+        .calendar-day-indicators {
+          display: flex;
+          gap: 4px;
+          margin-top: 4px;
+        }
+
+        .calendar-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+        }
+
+        .calendar-dot-specific {
+          background: #3b82f6;
+        }
+
+        .calendar-dot-recurring {
+          background: #10b981;
+        }
+
+        .calendar-legend {
+          display: flex;
+          gap: 16px;
+          margin-top: 16px;
+          padding-top: 16px;
+          border-top: 1px solid #e5e7eb;
+          justify-content: center;
+        }
+
+        .calendar-legend-item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          color: #6b7280;
+        }
+
+        .calendar-modal-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.4);
+          display: flex;
+          align-items: flex-end;
+          justify-content: center;
+          z-index: 50;
+          padding: 16px;
+        }
+
+        .calendar-modal {
+          background: white;
+          border-radius: 16px 16px 0 0;
+          width: 100%;
+          max-width: 500px;
+          max-height: 80vh;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+          animation: slideUp 0.3s ease-out;
+        }
+
+        @keyframes slideUp {
+          from {
+            transform: translateY(100%);
+          }
+          to {
+            transform: translateY(0);
+          }
+        }
+
+        .calendar-modal-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 20px;
+          border-bottom: 1px solid #e5e7eb;
+        }
+
+        .calendar-modal-title {
+          font-size: 18px;
+          font-weight: 600;
+          color: #1f2937;
+        }
+
+        .calendar-modal-close {
+          padding: 4px;
+          border-radius: 8px;
+          background: transparent;
+          border: none;
+          color: #6b7280;
+          cursor: pointer;
+        }
+
+        .calendar-modal-content {
+          padding: 20px;
+          overflow-y: auto;
+        }
+
+        .calendar-modal-section {
+          margin-bottom: 20px;
+        }
+
+        .calendar-modal-section:last-child {
+          margin-bottom: 0;
+        }
+
+        .calendar-modal-section-title {
+          font-size: 14px;
+          font-weight: 600;
+          color: #6b7280;
+          margin-bottom: 12px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        .calendar-modal-schedule {
+          padding: 12px;
+          background: #f3f4f6;
+          border-radius: 8px;
+          margin-bottom: 8px;
+        }
+
+        .calendar-modal-schedule:last-child {
+          margin-bottom: 0;
+        }
+
+        .calendar-modal-schedule-recurring {
+          background: #d1fae5;
+        }
+
+        .calendar-modal-schedule-name {
+          font-size: 15px;
+          font-weight: 600;
+          color: #1f2937;
+          margin-bottom: 4px;
+        }
+
+        .calendar-modal-schedule-time {
+          font-size: 13px;
+          color: #6b7280;
+          font-weight: 500;
+        }
+
+        @media (min-width: 640px) {
+          .calendar-container {
+            padding: 24px;
+          }
+
+          .calendar-title {
+            font-size: 20px;
+          }
+
+          .calendar-weekday {
+            font-size: 12px;
+          }
+
+          .calendar-day-number {
+            font-size: 16px;
+          }
+
+          .calendar-dot {
+            width: 7px;
+            height: 7px;
+          }
+
+          .calendar-modal {
+            border-radius: 16px;
+            max-height: 70vh;
+          }
+
+          .calendar-modal-overlay {
+            align-items: center;
+          }
+        }
+      `}</style>
+    </>
   );
 }
 

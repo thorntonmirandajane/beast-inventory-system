@@ -269,51 +269,90 @@ export default function Capacity() {
           <p className="text-sm text-gray-500">Time per unit for each process</p>
         </div>
         <div className="card-body">
-            <div className="space-y-4">
-              {processConfigs.map((config) => (
-                <Form
-                  key={config.id}
-                  method="post"
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded border"
-                >
-                  <input type="hidden" name="intent" value="update-process" />
-                  <input type="hidden" name="processId" value={config.id} />
-
-                  <div className="flex-1">
-                    <div className="font-semibold">{config.displayName}</div>
-                    <div className="text-sm text-gray-500">{config.processName}</div>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        name="secondsPerUnit"
-                        defaultValue={config.secondsPerUnit}
-                        className="form-input w-20 text-center"
-                        min="1"
-                      />
-                      <span className="text-sm text-gray-500">sec/unit</span>
-                    </div>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Process Name</th>
+                  <th>Description</th>
+                  <th>Time per Unit</th>
+                  {user.role === "ADMIN" && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {processConfigs.map((config) => (
+                  <tr key={config.id}>
+                    <td>
+                      <div className="font-semibold">{config.displayName}</div>
+                      <div className="text-sm text-gray-500">{config.processName}</div>
+                    </td>
+                    <td>
+                      <div className="text-sm text-gray-600">{config.description || "—"}</div>
+                    </td>
+                    <td>
+                      <span className="font-mono font-semibold">{config.secondsPerUnit}</span>
+                      <span className="text-sm text-gray-500 ml-1">sec/unit</span>
+                    </td>
                     {user.role === "ADMIN" && (
-                      <button
-                        type="submit"
-                        className="btn btn-sm btn-secondary"
-                        disabled={isSubmitting}
-                      >
-                        Save
-                      </button>
-                    )}
-                  </div>
-                </Form>
-              ))}
+                      <td>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const displayName = prompt("Edit Display Name:", config.displayName);
+                              if (!displayName) return;
+                              const description = prompt("Edit Description (optional):", config.description || "");
+                              const secondsPerUnit = prompt("Edit Seconds Per Unit:", String(config.secondsPerUnit));
+                              if (!secondsPerUnit || isNaN(parseInt(secondsPerUnit, 10))) return;
 
-              {processConfigs.length === 0 && (
-                <div className="text-center text-gray-500 py-4">
-                  No process configurations found
-                </div>
-              )}
-            </div>
+                              const form = document.createElement("form");
+                              form.method = "post";
+                              form.innerHTML = `
+                                <input type="hidden" name="intent" value="edit-process" />
+                                <input type="hidden" name="processId" value="${config.id}" />
+                                <input type="hidden" name="displayName" value="${displayName}" />
+                                <input type="hidden" name="description" value="${description || ""}" />
+                                <input type="hidden" name="secondsPerUnit" value="${secondsPerUnit}" />
+                              `;
+                              document.body.appendChild(form);
+                              form.submit();
+                            }}
+                            className="btn btn-sm btn-secondary"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!confirm(`Are you sure you want to delete "${config.displayName}"?`)) return;
+
+                              const form = document.createElement("form");
+                              form.method = "post";
+                              form.innerHTML = `
+                                <input type="hidden" name="intent" value="delete-process" />
+                                <input type="hidden" name="processId" value="${config.id}" />
+                              `;
+                              document.body.appendChild(form);
+                              form.submit();
+                            }}
+                            className="btn btn-sm btn-error"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+
+                {processConfigs.length === 0 && (
+                  <tr>
+                    <td colSpan={user.role === "ADMIN" ? 4 : 3} className="text-center text-gray-500 py-4">
+                      No process configurations found
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
 
             {/* Create New Process */}
             {user.role === "ADMIN" && (
