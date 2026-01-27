@@ -201,31 +201,40 @@ export async function approveTimeEntry(
     await prisma.$transaction(async (tx) => {
       // Process inventory changes for each line
       for (const line of entry.lines) {
+        console.log(`[Approve] Processing line: ${line.processName}, SKU: ${line.skuId}, isRejected: ${line.isRejected}, isMisc: ${line.isMisc}`);
+
         // Skip rejected lines for inventory updates
         if (line.isRejected) {
+          console.log(`[Approve] Skipping rejected line`);
           continue;
         }
 
         // Skip MISC tasks (no inventory impact)
         if (line.isMisc || !line.skuId) {
+          console.log(`[Approve] Skipping MISC or no SKU line`);
           continue;
         }
 
         // Use admin-adjusted quantity if present, otherwise use submitted quantity
         const finalQuantity = line.adminAdjustedQuantity ?? line.quantityCompleted;
+        console.log(`[Approve] Final quantity: ${finalQuantity} (adjusted: ${line.adminAdjustedQuantity}, completed: ${line.quantityCompleted})`);
 
         if (finalQuantity === 0) {
+          console.log(`[Approve] Skipping zero quantity line`);
           continue; // Skip if fully rejected/adjusted to zero
         }
 
         const transition = PROCESS_TRANSITIONS[line.processName];
         if (!transition) {
-          console.warn(`No transition found for process: ${line.processName}`);
+          console.warn(`[Approve] No transition found for process: ${line.processName}`);
           continue;
         }
 
+        console.log(`[Approve] Transition found: consumes ${transition.consumes}, produces ${transition.produces}`);
+
         // Deduct consumed inventory
         if (transition.consumes) {
+          console.log(`[Approve] Deducting ${finalQuantity} units of ${transition.consumes} from SKU ${line.skuId}`);
           const deductResult = await deductInventory(
             line.skuId,
             finalQuantity,
@@ -233,13 +242,17 @@ export async function approveTimeEntry(
           );
 
           if (!deductResult.success) {
+            console.error(`[Approve] Deduction failed: ${deductResult.error}`);
             throw new Error(`Failed to deduct inventory: ${deductResult.error}`);
           }
+          console.log(`[Approve] Deduction successful`);
         }
 
         // Add produced inventory
         if (transition.produces) {
+          console.log(`[Approve] Adding ${finalQuantity} units of ${transition.produces} to SKU ${line.skuId}`);
           await addInventory(line.skuId, finalQuantity, transition.produces);
+          console.log(`[Approve] Addition successful`);
         }
 
         // Mark linked task as completed if any

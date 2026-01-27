@@ -153,12 +153,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "approve-entry") {
     const entryId = formData.get("entryId") as string;
 
-    const result = await approveTimeEntry(entryId);
+    console.log("[Quality Control] Approving time entry:", entryId);
+    const result = await approveTimeEntry(entryId, user.id);
 
     if (!result.success) {
+      console.error("[Quality Control] Approval failed:", result.error);
       return { error: result.error };
     }
 
+    console.log("[Quality Control] Approval successful, creating audit log");
     await createAuditLog(user.id, "APPROVE_TIME_ENTRY", "WorkerTimeEntry", entryId, {});
 
     return { success: true, message: "Time entry approved successfully" };
