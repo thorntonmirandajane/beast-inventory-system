@@ -33,6 +33,7 @@ model User {
   timeEntries            WorkerTimeEntry[]
   timeOffRequests        TimeOffRequest[]  @relation("TimeOffRequests")
   approvedTimeOffRequests TimeOffRequest[] @relation("ApprovedTimeOffRequests")
+  forecastTemplates      ForecastTemplate[]
 
   @@map("users")
 }
@@ -87,6 +88,7 @@ model Sku {
   transferItems       TransferItem[]
   workOrdersProducing WorkOrder[]       @relation("OutputSku")
   workerTasks         WorkerTask[]      @relation("TaskSku")
+  forecastTemplateItems ForecastTemplateItem[]
 
   @@map("skus")
 }
@@ -311,6 +313,34 @@ model Forecast {
   @@unique([skuId])
   @@index([skuId])
   @@map("forecasts")
+}
+
+model ForecastTemplate {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  items       ForecastTemplateItem[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([createdById])
+  @@map("forecast_templates")
+}
+
+model ForecastTemplateItem {
+  id                  String            @id @default(cuid())
+  templateId          String
+  template            ForecastTemplate  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  skuId               String
+  sku                 Sku               @relation(fields: [skuId], references: [id])
+  quantity            Int
+  currentInGallatin   Int               @default(0)
+
+  @@index([templateId])
+  @@index([skuId])
+  @@map("forecast_template_items")
 }
 
 model ProcessTime {

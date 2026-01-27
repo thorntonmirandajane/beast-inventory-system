@@ -59,6 +59,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const forecasts = await prisma.forecast.findMany();
   const forecastMap = new Map(forecasts.map(f => [f.skuId, f]));
 
+  // Get all saved forecast templates
+  const templates = await prisma.forecastTemplate.findMany({
+    include: {
+      createdBy: {
+        select: { firstName: true, lastName: true },
+      },
+      items: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
   // Get all process configs for labor calculation
   const processConfigs = await prisma.processConfig.findMany({
     where: { isActive: true },
@@ -127,13 +138,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
         assemblySkusNeeded[bomComp.componentSku.id].totalNeeded += qtyNeeded;
 
-        // Explode assembly BOM for raw materials
+        // Calculate how many assemblies we still need to build after accounting for available inventory
+        const assemblyShortfall = Math.max(0, qtyNeeded - available);
+
+        // Explode assembly BOM for raw materials (only for what we need to build)
         for (const subComp of bomComp.componentSku.bomComponents) {
-          const subQtyNeeded = subComp.quantity * qtyNeeded;
+          // Only calculate raw materials for assemblies we still need to build
+          const subQtyNeeded = subComp.quantity * assemblyShortfall;
           const subAvailable = subComp.componentSku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
 
-          // Track process time (only if needToBuild > 0)
-          if (needToBuild > 0) {
+          // Track process time (only for assemblies we need to build)
+          if (assemblyShortfall > 0 && needToBuild > 0) {
             const subProcess = subComp.componentSku.material;
             if (subProcess && processMap.has(subProcess)) {
               if (!processTotals[subProcess]) {
@@ -155,6 +170,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               };
             }
             rawMaterialsNeeded[subComp.componentSku.id].needed += subQtyNeeded;
+          }
+        }
+
+        // Also track process time for assembling the available assemblies into completed products
+        // (if we have them in inventory, we still need to do the final assembly process)
+        if (needToBuild > 0) {
+          const compProcess = bomComp.componentSku.material;
+          if (compProcess && processMap.has(compProcess)) {
+            if (!processTotals[compProcess]) {
+              processTotals[compProcess] = { units: 0, seconds: 0 };
+            }
+            // Use the full qtyNeeded (not assemblyShortfall) because we need to process all assemblies
+            processTotals[compProcess].units += qtyNeeded;
+            processTotals[compProcess].seconds += qtyNeeded * (processMap.get(compProcess)?.secondsPerUnit || 0);
           }
         }
       }
@@ -257,6 +286,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     availableLaborHours,
     totalLaborHoursNeeded,
     daysDiff,
+    templates,
   };
 };
 
@@ -298,6 +328,103 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await createAuditLog(user.id, "UPDATE_FORECAST", "Forecast", skuId, { quantity, currentInGallatin });
 
     return { success: true, message: "Forecast updated" };
+  }
+
+  if (intent === "save-template") {
+    const title = formData.get("title") as string;
+    const description = formData.get("description") as string;
+
+    if (!title || title.trim().length === 0) {
+      return { error: "Template title is required" };
+    }
+
+    // Get all current forecasts
+    const forecasts = await prisma.forecast.findMany();
+
+    if (forecasts.length === 0) {
+      return { error: "No forecasts to save. Please add forecast quantities first." };
+    }
+
+    // Create template with items
+    const template = await prisma.forecastTemplate.create({
+      data: {
+        title: title.trim(),
+        description: description?.trim() || null,
+        createdById: user.id,
+        items: {
+          create: forecasts.map(f => ({
+            skuId: f.skuId,
+            quantity: f.quantity,
+            currentInGallatin: f.currentInGallatin,
+          })),
+        },
+      },
+    });
+
+    await createAuditLog(user.id, "CREATE_FORECAST_TEMPLATE", "ForecastTemplate", template.id, {
+      title,
+      itemCount: forecasts.length,
+    });
+
+    return { success: true, message: `Template "${title}" saved successfully with ${forecasts.length} items` };
+  }
+
+  if (intent === "load-template") {
+    const templateId = formData.get("templateId") as string;
+
+    const template = await prisma.forecastTemplate.findUnique({
+      where: { id: templateId },
+      include: { items: true },
+    });
+
+    if (!template) {
+      return { error: "Template not found" };
+    }
+
+    // Update all forecasts from template
+    for (const item of template.items) {
+      await prisma.forecast.upsert({
+        where: { skuId: item.skuId },
+        create: {
+          skuId: item.skuId,
+          quantity: item.quantity,
+          currentInGallatin: item.currentInGallatin,
+        },
+        update: {
+          quantity: item.quantity,
+          currentInGallatin: item.currentInGallatin,
+        },
+      });
+    }
+
+    await createAuditLog(user.id, "LOAD_FORECAST_TEMPLATE", "ForecastTemplate", templateId, {
+      title: template.title,
+      itemCount: template.items.length,
+    });
+
+    return { success: true, message: `Template "${template.title}" loaded successfully` };
+  }
+
+  if (intent === "delete-template") {
+    const templateId = formData.get("templateId") as string;
+
+    const template = await prisma.forecastTemplate.findUnique({
+      where: { id: templateId },
+    });
+
+    if (!template) {
+      return { error: "Template not found" };
+    }
+
+    await prisma.forecastTemplate.delete({
+      where: { id: templateId },
+    });
+
+    await createAuditLog(user.id, "DELETE_FORECAST_TEMPLATE", "ForecastTemplate", templateId, {
+      title: template.title,
+    });
+
+    return { success: true, message: `Template "${template.title}" deleted successfully` };
   }
 
   return { error: "Invalid action" };
@@ -525,6 +652,7 @@ export default function Forecasting() {
     availableLaborHours,
     totalLaborHoursNeeded,
     daysDiff,
+    templates,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -706,6 +834,120 @@ export default function Forecasting() {
           </div>
         </div>
       </div>
+
+      {/* Save Current Forecast as Template */}
+      {user.role === "ADMIN" && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">Save Forecast as Template</h2>
+            <p className="text-sm text-gray-500">Save current forecast values to reuse later</p>
+          </div>
+          <div className="card-body">
+            <Form method="post">
+              <input type="hidden" name="intent" value="save-template" />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="form-group mb-0">
+                  <label className="form-label">Template Title *</label>
+                  <input
+                    type="text"
+                    name="title"
+                    className="form-input"
+                    placeholder="e.g., December 2025 Forecast"
+                    required
+                  />
+                </div>
+                <div className="form-group mb-0 md:col-span-2">
+                  <label className="form-label">Description (Optional)</label>
+                  <input
+                    type="text"
+                    name="description"
+                    className="form-input"
+                    placeholder="e.g., Holiday season projections"
+                  />
+                </div>
+              </div>
+              <div className="mt-4">
+                <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+                  {isSubmitting ? "Saving..." : "Save Template"}
+                </button>
+              </div>
+            </Form>
+          </div>
+        </div>
+      )}
+
+      {/* Saved Templates */}
+      {user.role === "ADMIN" && templates.length > 0 && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">Saved Templates</h2>
+            <p className="text-sm text-gray-500">Load previously saved forecast templates</p>
+          </div>
+          <div className="card-body">
+            <div className="space-y-3">
+              {templates.map((template) => (
+                <div key={template.id} className="p-4 border rounded-lg bg-gray-50">
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-lg">{template.title}</h3>
+                      {template.description && (
+                        <p className="text-sm text-gray-600 mt-1">{template.description}</p>
+                      )}
+                      <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                        <span>
+                          Created by: {template.createdBy.firstName} {template.createdBy.lastName}
+                        </span>
+                        <span>•</span>
+                        <span>
+                          {new Date(template.createdAt).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })}
+                        </span>
+                        <span>•</span>
+                        <span>{template.items.length} SKUs</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 ml-4">
+                      <Form method="post" className="inline">
+                        <input type="hidden" name="intent" value="load-template" />
+                        <input type="hidden" name="templateId" value={template.id} />
+                        <button
+                          type="submit"
+                          className="btn btn-sm btn-primary"
+                          disabled={isSubmitting}
+                        >
+                          Load
+                        </button>
+                      </Form>
+                      <Form
+                        method="post"
+                        onSubmit={(e) => {
+                          if (!confirm(`Are you sure you want to delete template "${template.title}"?`)) {
+                            e.preventDefault();
+                          }
+                        }}
+                        className="inline"
+                      >
+                        <input type="hidden" name="intent" value="delete-template" />
+                        <input type="hidden" name="templateId" value={template.id} />
+                        <button
+                          type="submit"
+                          className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
+                          disabled={isSubmitting}
+                        >
+                          Delete
+                        </button>
+                      </Form>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 }

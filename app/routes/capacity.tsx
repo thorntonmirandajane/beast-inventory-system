@@ -160,6 +160,62 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message: "Process time updated" };
   }
 
+  if (intent === "edit-process") {
+    const processId = formData.get("processId") as string;
+    const displayName = formData.get("displayName") as string;
+    const description = formData.get("description") as string;
+    const secondsPerUnit = parseInt(formData.get("secondsPerUnit") as string, 10);
+
+    if (!displayName || displayName.trim().length === 0) {
+      return { error: "Display name is required" };
+    }
+
+    if (!secondsPerUnit || secondsPerUnit < 1) {
+      return { error: "Seconds per unit must be at least 1" };
+    }
+
+    await prisma.processConfig.update({
+      where: { id: processId },
+      data: {
+        displayName: displayName.trim(),
+        description: description?.trim() || null,
+        secondsPerUnit,
+      },
+    });
+
+    await createAuditLog(user.id, "EDIT_PROCESS", "ProcessConfig", processId, {
+      displayName,
+      secondsPerUnit,
+    });
+
+    return { success: true, message: `Process "${displayName}" updated successfully` };
+  }
+
+  if (intent === "delete-process") {
+    const processId = formData.get("processId") as string;
+
+    const process = await prisma.processConfig.findUnique({
+      where: { id: processId },
+    });
+
+    if (!process) {
+      return { error: "Process not found" };
+    }
+
+    // Soft delete by setting isActive to false
+    await prisma.processConfig.update({
+      where: { id: processId },
+      data: { isActive: false },
+    });
+
+    await createAuditLog(user.id, "DELETE_PROCESS", "ProcessConfig", processId, {
+      processName: process.processName,
+      displayName: process.displayName,
+    });
+
+    return { success: true, message: `Process "${process.displayName}" deleted successfully` };
+  }
+
   return { error: "Invalid action" };
 };
 
