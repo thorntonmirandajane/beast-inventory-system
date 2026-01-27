@@ -152,7 +152,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     include: {
       workOrder: {
         include: {
-          sku: true,
+          outputSku: true,
           createdBy: true,
         },
       },
@@ -161,15 +161,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     take: 20,
   });
   workOrderConsumptions.forEach((consumption) => {
-    if (consumption.workOrder.createdBy && consumption.workOrder.sku) {
+    if (consumption.workOrder.createdBy && consumption.workOrder.outputSku) {
       activities.push({
         id: consumption.id,
         type: "CONSUMED",
-        description: `Consumed ${consumption.quantity} units to build ${consumption.workOrder.sku.sku}`,
+        description: `Consumed ${consumption.quantity} units to build ${consumption.workOrder.outputSku.sku}`,
         quantity: consumption.quantity,
         user: consumption.workOrder.createdBy.name,
         timestamp: consumption.consumedAt,
-        metadata: { targetSku: consumption.workOrder.sku.sku },
+        metadata: { targetSku: consumption.workOrder.outputSku.sku },
       });
     }
   });
@@ -177,7 +177,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   console.log("[SKU Detail] Querying work orders...");
   // Work orders where this SKU was built
   const workOrders = await prisma.workOrder.findMany({
-    where: { skuId: sku.id },
+    where: { outputSkuId: sku.id },
     include: { createdBy: true },
     orderBy: { createdAt: "desc" },
     take: 20,
