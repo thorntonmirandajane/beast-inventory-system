@@ -74,7 +74,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Calculate current completed inventory
     const currentCompleted = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
 
-    const needToBuild = Math.max(0, forecastedQty - currentInGallatin);
+    // Need to Build = Demand - (Current Completed + Current in Gallatin)
+    const needToBuild = Math.max(0, forecastedQty - (currentCompleted + currentInGallatin));
 
     // BOM explosion - track assembly SKUs and raw materials needed
     // ALWAYS process BOM structure so we can show it even when needToBuild is 0
