@@ -53,6 +53,9 @@ function BarcodeLabel({ sku, name, id, type, upc }: { sku: string; name: string;
     }
   }, [sku, upc, type]);
 
+  // Determine which barcode value is being displayed
+  const displayedBarcodeValue = (type === "COMPLETED" && upc) ? upc : sku.toUpperCase();
+
   return (
     <div className="barcode-label">
       <div className="barcode-sku-row">
@@ -60,6 +63,9 @@ function BarcodeLabel({ sku, name, id, type, upc }: { sku: string; name: string;
       </div>
       <div className="barcode-row">
         <svg ref={barcodeSvgRef}></svg>
+      </div>
+      <div className="barcode-code-row">
+        <span className="barcode-code-text">{displayedBarcodeValue}</span>
       </div>
       <div className="barcode-name-row">
         <span className="barcode-name-text">{name.toUpperCase()}</span>
@@ -304,6 +310,19 @@ export default function PrintBarcodes() {
           height: auto;
         }
 
+        .barcode-code-row {
+          text-align: center;
+          width: 100%;
+        }
+
+        .barcode-code-text {
+          font-size: 13px;
+          font-family: monospace;
+          font-weight: 500;
+          color: #555;
+          letter-spacing: 1px;
+        }
+
         .barcode-name-row {
           text-align: center;
           width: 100%;
@@ -379,7 +398,16 @@ export default function PrintBarcodes() {
 
           .barcode-row svg {
             max-width: 3.2in;
-            max-height: 3in;
+            max-height: 2.5in;
+          }
+
+          .barcode-code-row {
+            flex: 0 0 auto;
+          }
+
+          .barcode-code-text {
+            font-size: 15px;
+            letter-spacing: 1.5px;
           }
 
           .barcode-name-row {
