@@ -99,15 +99,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     include: { createdBy: true },
   });
   receivingRecords.forEach((rec) => {
-    activities.push({
-      id: rec.id,
-      type: "RECEIVING",
-      description: `Received ${rec.quantity} units${rec.poNumber ? ` (PO #${rec.poNumber})` : ""}`,
-      quantity: rec.quantity,
-      user: rec.createdBy.name,
-      timestamp: rec.receivedAt,
-      metadata: { status: rec.status },
-    });
+    if (rec.createdBy) {
+      activities.push({
+        id: rec.id,
+        type: "RECEIVING",
+        description: `Received ${rec.quantity} units${rec.poNumber ? ` (PO #${rec.poNumber})` : ""}`,
+        quantity: rec.quantity,
+        user: rec.createdBy.name,
+        timestamp: rec.receivedAt,
+        metadata: { status: rec.status },
+      });
+    }
   });
 
   // Transfer records
@@ -118,19 +120,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         include: { createdBy: true },
       },
     },
-    orderBy: { transfer: { shippedAt: "desc" } },
     take: 20,
   });
   transferItems.forEach((item) => {
-    activities.push({
-      id: item.id,
-      type: "TRANSFER",
-      description: `Transferred ${item.quantity} units to ${item.transfer.destination}`,
-      quantity: item.quantity,
-      user: item.transfer.createdBy.name,
-      timestamp: item.transfer.shippedAt,
-      metadata: { destination: item.transfer.destination },
-    });
+    if (item.transfer.createdBy) {
+      activities.push({
+        id: item.id,
+        type: "TRANSFER",
+        description: `Transferred ${item.quantity} units to ${item.transfer.destination}`,
+        quantity: item.quantity,
+        user: item.transfer.createdBy.name,
+        timestamp: item.transfer.shippedAt,
+        metadata: { destination: item.transfer.destination },
+      });
+    }
   });
 
   // Work order consumption (where this SKU was used as a component)
@@ -148,15 +151,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     take: 20,
   });
   workOrderConsumptions.forEach((consumption) => {
-    activities.push({
-      id: consumption.id,
-      type: "CONSUMED",
-      description: `Consumed ${consumption.quantity} units to build ${consumption.workOrder.sku.sku}`,
-      quantity: consumption.quantity,
-      user: consumption.workOrder.createdBy.name,
-      timestamp: consumption.consumedAt,
-      metadata: { targetSku: consumption.workOrder.sku.sku },
-    });
+    if (consumption.workOrder.createdBy && consumption.workOrder.sku) {
+      activities.push({
+        id: consumption.id,
+        type: "CONSUMED",
+        description: `Consumed ${consumption.quantity} units to build ${consumption.workOrder.sku.sku}`,
+        quantity: consumption.quantity,
+        user: consumption.workOrder.createdBy.name,
+        timestamp: consumption.consumedAt,
+        metadata: { targetSku: consumption.workOrder.sku.sku },
+      });
+    }
   });
 
   // Work orders where this SKU was built
@@ -167,15 +172,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     take: 20,
   });
   workOrders.forEach((wo) => {
-    activities.push({
-      id: wo.id,
-      type: "BUILT",
-      description: `Built ${wo.quantityCompleted} units`,
-      quantity: wo.quantityCompleted,
-      user: wo.createdBy.name,
-      timestamp: wo.createdAt,
-      metadata: { status: wo.status },
-    });
+    if (wo.createdBy) {
+      activities.push({
+        id: wo.id,
+        type: "BUILT",
+        description: `Built ${wo.quantityCompleted} units`,
+        quantity: wo.quantityCompleted,
+        user: wo.createdBy.name,
+        timestamp: wo.createdAt,
+        metadata: { status: wo.status },
+      });
+    }
   });
 
   // Worker time entries (tasks completed)
@@ -189,19 +196,22 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         include: { user: true },
       },
     },
-    orderBy: { timeEntry: { clockOutTime: "desc" } },
+    orderBy: { createdAt: "desc" },
     take: 20,
   });
   timeEntryLines.forEach((line) => {
-    activities.push({
-      id: line.id,
-      type: "TASK_COMPLETED",
-      description: `Completed ${line.quantityCompleted} units of ${line.processName}${line.adminAdjustedQuantity ? ` (adjusted to ${line.adminAdjustedQuantity})` : ""}`,
-      quantity: line.adminAdjustedQuantity ?? line.quantityCompleted,
-      user: line.timeEntry.user.name,
-      timestamp: line.timeEntry.clockOutTime!,
-      metadata: { process: line.processName, isRejected: line.isRejected },
-    });
+    // Only add if clockOutTime and user exist
+    if (line.timeEntry.clockOutTime && line.timeEntry.user) {
+      activities.push({
+        id: line.id,
+        type: "TASK_COMPLETED",
+        description: `Completed ${line.quantityCompleted} units of ${line.processName}${line.adminAdjustedQuantity ? ` (adjusted to ${line.adminAdjustedQuantity})` : ""}`,
+        quantity: line.adminAdjustedQuantity ?? line.quantityCompleted,
+        user: line.timeEntry.user.name,
+        timestamp: line.timeEntry.clockOutTime,
+        metadata: { process: line.processName, isRejected: line.isRejected },
+      });
+    }
   });
 
   // Sort all activities by timestamp
