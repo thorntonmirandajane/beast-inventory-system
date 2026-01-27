@@ -13,6 +13,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { processName: "asc" },
   });
 
+  // Get all SKUs for process assignment
+  const allSkus = await prisma.sku.findMany({
+    where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } },
+    select: { id: true, sku: true, name: true, type: true, category: true },
+    orderBy: [{ type: "asc" }, { sku: "asc" }],
+  });
+
   // Get active workers with their schedules
   const workers = await prisma.user.findMany({
     where: { isActive: true },
@@ -65,6 +72,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     user,
     processConfigs,
+    allSkus,
     workers: workersWithHours,
     totalWeeklyHours,
     scheduledWorkers,
@@ -162,9 +170,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "edit-process") {
     const processId = formData.get("processId") as string;
+    const processName = formData.get("processName") as string;
     const displayName = formData.get("displayName") as string;
     const description = formData.get("description") as string;
     const secondsPerUnit = parseInt(formData.get("secondsPerUnit") as string, 10);
+    const selectedSkuIds = formData.getAll("skuIds") as string[];
+
+    if (!processName || processName.trim().length === 0) {
+      return { error: "Process name is required" };
+    }
 
     if (!displayName || displayName.trim().length === 0) {
       return { error: "Display name is required" };
@@ -174,21 +188,50 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "Seconds per unit must be at least 1" };
     }
 
+    // Check if processName is being changed and if new name already exists
+    const existingProcess = await prisma.processConfig.findUnique({
+      where: { id: processId },
+    });
+
+    if (existingProcess && processName !== existingProcess.processName) {
+      const duplicate = await prisma.processConfig.findUnique({
+        where: { processName },
+      });
+      if (duplicate) {
+        return { error: `Process name "${processName}" already exists` };
+      }
+    }
+
     await prisma.processConfig.update({
       where: { id: processId },
       data: {
+        processName: processName.trim().toUpperCase(),
         displayName: displayName.trim(),
         description: description?.trim() || null,
         secondsPerUnit,
       },
     });
 
+    // Update SKU categories to match this process
+    if (selectedSkuIds.length > 0) {
+      await prisma.sku.updateMany({
+        where: {
+          id: { in: selectedSkuIds },
+        },
+        data: {
+          category: displayName.trim(),
+        },
+      });
+    }
+
     await createAuditLog(user.id, "EDIT_PROCESS", "ProcessConfig", processId, {
+      processName,
       displayName,
       secondsPerUnit,
+      skuCount: selectedSkuIds.length,
     });
 
-    return { success: true, message: `Process "${displayName}" updated successfully` };
+    return { success: true, message: `Process "${displayName}" updated successfully with ${selectedSkuIds.length} SKUs` };
   }
 
   if (intent === "delete-process") {
@@ -223,6 +266,7 @@ export default function Capacity() {
   const {
     user,
     processConfigs,
+    allSkus,
     workers,
     totalWeeklyHours,
     scheduledWorkers,
@@ -231,6 +275,9 @@ export default function Capacity() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+
+  const [editingProcess, setEditingProcess] = useState<any | null>(null);
+  const [selectedSkuIds, setSelectedSkuIds] = useState<Set<string>>(new Set());
 
   return (
     <Layout user={user}>
@@ -298,46 +345,26 @@ export default function Capacity() {
                           <button
                             type="button"
                             onClick={() => {
-                              const displayName = prompt("Edit Display Name:", config.displayName);
-                              if (!displayName) return;
-                              const description = prompt("Edit Description (optional):", config.description || "");
-                              const secondsPerUnit = prompt("Edit Seconds Per Unit:", String(config.secondsPerUnit));
-                              if (!secondsPerUnit || isNaN(parseInt(secondsPerUnit, 10))) return;
-
-                              const form = document.createElement("form");
-                              form.method = "post";
-                              form.innerHTML = `
-                                <input type="hidden" name="intent" value="edit-process" />
-                                <input type="hidden" name="processId" value="${config.id}" />
-                                <input type="hidden" name="displayName" value="${displayName}" />
-                                <input type="hidden" name="description" value="${description || ""}" />
-                                <input type="hidden" name="secondsPerUnit" value="${secondsPerUnit}" />
-                              `;
-                              document.body.appendChild(form);
-                              form.submit();
+                              // Get SKUs that have this process as their category
+                              const skusForProcess = allSkus.filter(s => s.category === config.displayName);
+                              setSelectedSkuIds(new Set(skusForProcess.map(s => s.id)));
+                              setEditingProcess(config);
                             }}
                             className="btn btn-sm btn-secondary"
                           >
                             Edit
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!confirm(`Are you sure you want to delete "${config.displayName}"?`)) return;
-
-                              const form = document.createElement("form");
-                              form.method = "post";
-                              form.innerHTML = `
-                                <input type="hidden" name="intent" value="delete-process" />
-                                <input type="hidden" name="processId" value="${config.id}" />
-                              `;
-                              document.body.appendChild(form);
-                              form.submit();
-                            }}
-                            className="btn btn-sm btn-error"
-                          >
-                            Delete
-                          </button>
+                          <Form method="post" className="inline" onSubmit={(e) => {
+                            if (!confirm(`Are you sure you want to delete "${config.displayName}"?`)) {
+                              e.preventDefault();
+                            }
+                          }}>
+                            <input type="hidden" name="intent" value="delete-process" />
+                            <input type="hidden" name="processId" value={config.id} />
+                            <button type="submit" className="btn btn-sm btn-error">
+                              Delete
+                            </button>
+                          </Form>
                         </div>
                       </td>
                     )}
@@ -436,6 +463,153 @@ export default function Capacity() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Process Modal */}
+      {editingProcess && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b">
+              <div className="flex justify-between items-center">
+                <h3 className="text-xl font-bold">Edit Process</h3>
+                <button
+                  onClick={() => {
+                    setEditingProcess(null);
+                    setSelectedSkuIds(new Set());
+                  }}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <Form method="post" className="p-6">
+              <input type="hidden" name="intent" value="edit-process" />
+              <input type="hidden" name="processId" value={editingProcess.id} />
+
+              <div className="space-y-4">
+                <div className="form-group">
+                  <label className="form-label">Process Name *</label>
+                  <input
+                    type="text"
+                    name="processName"
+                    defaultValue={editingProcess.processName}
+                    className="form-input"
+                    required
+                    placeholder="e.g., TIPPING, BLADING"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Internal name used in code (UPPERCASE with underscores)
+                  </p>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Display Name *</label>
+                  <input
+                    type="text"
+                    name="displayName"
+                    defaultValue={editingProcess.displayName}
+                    className="form-input"
+                    required
+                    placeholder="e.g., Tipping, Blading"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    User-friendly name shown in the interface
+                  </p>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Description</label>
+                  <textarea
+                    name="description"
+                    defaultValue={editingProcess.description || ""}
+                    className="form-input"
+                    rows={3}
+                    placeholder="Describe what this process involves..."
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Seconds Per Unit *</label>
+                  <input
+                    type="number"
+                    name="secondsPerUnit"
+                    defaultValue={editingProcess.secondsPerUnit}
+                    className="form-input"
+                    required
+                    min="1"
+                    step="1"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Average time to complete one unit
+                  </p>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">SKUs in This Process</label>
+                  <p className="text-sm text-gray-600 mb-3">
+                    Select which SKUs are processed in this step. Selected SKUs will have their category updated to match this process.
+                  </p>
+                  <div className="border rounded-lg max-h-64 overflow-y-auto p-3 space-y-2">
+                    {allSkus.map((sku) => (
+                      <label key={sku.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded cursor-pointer">
+                        <input
+                          type="checkbox"
+                          name="skuIds"
+                          value={sku.id}
+                          checked={selectedSkuIds.has(sku.id)}
+                          onChange={(e) => {
+                            const newSet = new Set(selectedSkuIds);
+                            if (e.target.checked) {
+                              newSet.add(sku.id);
+                            } else {
+                              newSet.delete(sku.id);
+                            }
+                            setSelectedSkuIds(newSet);
+                          }}
+                          className="form-checkbox"
+                        />
+                        <div className="flex-1">
+                          <div className="font-mono text-sm font-semibold">{sku.sku}</div>
+                          <div className="text-sm text-gray-600">{sku.name}</div>
+                          <div className="text-xs text-gray-500">
+                            {sku.type} {sku.category && `• Current: ${sku.category}`}
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    {selectedSkuIds.size} SKU{selectedSkuIds.size !== 1 ? 's' : ''} selected
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6 pt-4 border-t">
+                <button
+                  type="submit"
+                  className="btn btn-primary flex-1"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? "Saving..." : "Save Changes"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingProcess(null);
+                    setSelectedSkuIds(new Set());
+                  }}
+                  className="btn btn-ghost"
+                >
+                  Cancel
+                </button>
+              </div>
+            </Form>
           </div>
         </div>
       )}

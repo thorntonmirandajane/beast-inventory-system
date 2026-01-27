@@ -738,6 +738,12 @@ export default function Forecasting() {
           <p className="text-sm text-gray-500">Enter forecasted demand for each completed SKU</p>
         </div>
         <div className="card-body">
+          <div className="alert alert-info mb-4">
+            <svg className="w-5 h-5 inline mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <strong>Auto-Save Enabled:</strong> Forecast values are automatically saved when you move to the next field. Changes are saved instantly.
+          </div>
           <table className="data-table">
             <thead>
               <tr>
