@@ -103,7 +103,7 @@ export default function SkusList() {
   const tabs = [
     { id: "all", label: "All", count: counts.all },
     { id: "raw", label: "Raw Materials", count: counts.raw },
-    { id: "finished", label: "Finished Products", count: counts.finished },
+    { id: "finished", label: "Assembled", count: counts.finished },
   ];
 
   const getTypeColor = (type: string) => {
@@ -148,52 +148,54 @@ export default function SkusList() {
 
       {/* Search and Filters */}
       <div className="card mb-6">
-        <div className="card-body py-3">
-          <Form method="get" className="space-y-4">
+        <div className="card-body">
+          <Form method="get">
             <input type="hidden" name="type" value={currentType} />
-            <div className="flex items-center gap-4">
+            <div className="flex flex-col gap-4">
               <input
                 type="text"
                 name="search"
-                className="form-input flex-1"
+                className="form-input text-base py-3 px-4"
                 placeholder="Search by SKU or name..."
                 defaultValue={search}
               />
-              <select
-                name="process"
-                className="form-input w-48"
-                defaultValue={processFilter}
-              >
-                <option value="">All Processes</option>
-                {processes.map((process) => (
-                  <option key={process} value={process}>
-                    {process}
-                  </option>
-                ))}
-              </select>
-              <select
-                name="category"
-                className="form-input w-48"
-                defaultValue={categoryFilter}
-              >
-                <option value="">All Categories</option>
-                {categories.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-              </select>
-              <button type="submit" className="btn btn-primary">
-                Filter
-              </button>
-              {(search || processFilter || categoryFilter) && (
-                <Link
-                  to={`/skus?type=${currentType}`}
-                  className="btn btn-secondary"
+              <div className="flex items-center gap-4">
+                <select
+                  name="process"
+                  className="form-input flex-1"
+                  defaultValue={processFilter}
                 >
-                  Clear
-                </Link>
-              )}
+                  <option value="">All Processes</option>
+                  {processes.map((process) => (
+                    <option key={process} value={process}>
+                      {process}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  name="category"
+                  className="form-input flex-1"
+                  defaultValue={categoryFilter}
+                >
+                  <option value="">All Categories</option>
+                  {categories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+                <button type="submit" className="btn btn-primary">
+                  Filter
+                </button>
+                {(search || processFilter || categoryFilter) && (
+                  <Link
+                    to={`/skus?type=${currentType}`}
+                    className="btn btn-secondary"
+                  >
+                    Clear
+                  </Link>
+                )}
+              </div>
             </div>
           </Form>
         </div>

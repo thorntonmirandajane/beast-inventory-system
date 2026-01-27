@@ -35,49 +35,34 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 function BarcodeLabel({ sku, name, id, type, upc }: { sku: string; name: string; id: string; type: string; upc?: string | null }) {
-  const skuSvgRef = useRef<SVGSVGElement>(null);
-  const upcSvgRef = useRef<SVGSVGElement>(null);
+  const barcodeSvgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
-    if (skuSvgRef.current) {
-      JsBarcode(skuSvgRef.current, sku.toUpperCase(), {
+    if (barcodeSvgRef.current) {
+      // For completed products with UPC, use UPC. Otherwise use SKU
+      const barcodeValue = (type === "COMPLETED" && upc) ? upc : sku.toUpperCase();
+
+      JsBarcode(barcodeSvgRef.current, barcodeValue, {
         format: "CODE39",
         width: 2,
-        height: 60,
+        height: 80,
         displayValue: false,
-        margin: 5,
+        margin: 10,
         background: "#ffffff",
       });
     }
-  }, [sku]);
-
-  useEffect(() => {
-    if (upcSvgRef.current && upc && type === "COMPLETED") {
-      JsBarcode(upcSvgRef.current, upc, {
-        format: "CODE39",
-        width: 2,
-        height: 50,
-        displayValue: false,
-        margin: 5,
-        background: "#ffffff",
-      });
-    }
-  }, [upc, type]);
+  }, [sku, upc, type]);
 
   return (
     <div className="barcode-label">
-      <div className="barcode-header">
-        <span className="barcode-title">{name.toUpperCase()}</span>
+      <div className="barcode-sku-row">
+        <span className="barcode-sku-text">{sku.toUpperCase()}</span>
       </div>
-      <div className="barcode-content">
-        <div className="barcode-sku-text">{sku.toUpperCase()}</div>
-        <svg ref={skuSvgRef}></svg>
-        {type === "COMPLETED" && upc && (
-          <>
-            <svg ref={upcSvgRef}></svg>
-            <div className="barcode-upc-text">{upc}</div>
-          </>
-        )}
+      <div className="barcode-row">
+        <svg ref={barcodeSvgRef}></svg>
+      </div>
+      <div className="barcode-name-row">
+        <span className="barcode-name-text">{name.toUpperCase()}</span>
       </div>
     </div>
   );
@@ -283,61 +268,60 @@ export default function PrintBarcodes() {
           width: 100%;
           height: 100%;
           display: flex;
-          flex-direction: row;
+          flex-direction: column;
           align-items: center;
-          justify-content: space-between;
+          justify-content: center;
           padding: 16px;
           box-sizing: border-box;
-          gap: 16px;
+          gap: 12px;
         }
 
-        .barcode-header {
-          flex: 0 0 auto;
-          text-align: left;
-          max-width: 30%;
-        }
-
-        .barcode-title {
-          font-size: 16px;
-          font-weight: bold;
-          letter-spacing: 1px;
-          color: #333;
-          word-break: break-word;
-        }
-
-        .barcode-content {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .barcode-content svg {
-          max-width: 100%;
-          height: auto;
+        .barcode-sku-row {
+          text-align: center;
+          width: 100%;
         }
 
         .barcode-sku-text {
-          font-size: 20px;
+          font-size: 18px;
           font-weight: bold;
           font-family: monospace;
           color: #333;
           letter-spacing: 2px;
+          word-wrap: break-word;
+          display: inline-block;
+          max-width: 100%;
         }
 
-        .barcode-upc-text {
+        .barcode-row {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          width: 100%;
+        }
+
+        .barcode-row svg {
+          max-width: 100%;
+          height: auto;
+        }
+
+        .barcode-name-row {
+          text-align: center;
+          width: 100%;
+        }
+
+        .barcode-name-text {
           font-size: 14px;
-          font-family: monospace;
-          color: #666;
-          letter-spacing: 1px;
+          font-weight: 600;
+          color: #333;
+          word-wrap: break-word;
+          display: inline-block;
+          max-width: 100%;
         }
 
         /* Print styles */
         @media print {
           @page {
-            size: 6in 4in landscape;
+            size: 4in 6in;
             margin: 0;
           }
 
@@ -355,14 +339,14 @@ export default function PrintBarcodes() {
           }
 
           .print-page {
-            width: 6in;
-            height: 4in;
+            width: 4in;
+            height: 6in;
             page-break-after: always;
             display: flex;
             align-items: center;
             justify-content: center;
             box-sizing: border-box;
-            padding: 0.25in;
+            padding: 0.3in;
           }
 
           .print-page:last-child {
@@ -370,40 +354,41 @@ export default function PrintBarcodes() {
           }
 
           .barcode-label {
-            width: 5.5in;
-            height: 3.5in;
-            flex-direction: row;
-            gap: 0.5in;
+            width: 3.4in;
+            height: 5.4in;
+            flex-direction: column;
+            gap: 0.2in;
           }
 
-          .barcode-header {
+          .barcode-sku-row {
             flex: 0 0 auto;
-            max-width: 1.5in;
-          }
-
-          .barcode-title {
-            font-size: 18px;
-            letter-spacing: 1px;
-          }
-
-          .barcode-content {
-            flex: 1;
-            gap: 0.15in;
-          }
-
-          .barcode-content svg {
-            max-width: 3.5in;
-            height: auto;
           }
 
           .barcode-sku-text {
-            font-size: 24px;
-            letter-spacing: 3px;
+            font-size: 22px;
+            letter-spacing: 2px;
+            line-height: 1.2;
           }
 
-          .barcode-upc-text {
+          .barcode-row {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+
+          .barcode-row svg {
+            max-width: 3.2in;
+            max-height: 3in;
+          }
+
+          .barcode-name-row {
+            flex: 0 0 auto;
+          }
+
+          .barcode-name-text {
             font-size: 16px;
-            letter-spacing: 2px;
+            line-height: 1.3;
           }
         }
       `}</style>
