@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "prisma generate && react-router build",
-    "dev": "react-router dev",
-    "start": "react-router-serve ./build/server/index.js",
+    "dev": "node --env-file=.env node_modules/.bin/react-router dev",
+    "start": "node server.js",
     "typecheck": "react-router typegen && tsc",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
