@@ -7,7 +7,7 @@ import prisma from "../db.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
 
-  // Get all rejected time entries for this worker
+  // Get all rejected time entries for this worker (full entry rejections)
   const rejectedEntries = await prisma.workerTimeEntry.findMany({
     where: {
       userId: user.id,
@@ -28,11 +28,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { approvedAt: "desc" },
   });
 
-  return { user, rejectedEntries };
+  // Get individual rejected tasks (task-level rejections from quality control)
+  const rejectedTasks = await prisma.timeEntryLine.findMany({
+    where: {
+      timeEntry: { userId: user.id },
+      isRejected: true,
+    },
+    include: {
+      sku: {
+        select: { sku: true, name: true },
+      },
+      timeEntry: {
+        select: {
+          clockInTime: true,
+          clockOutTime: true,
+          actualMinutes: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+
+  return { user, rejectedEntries, rejectedTasks };
 };
 
 export default function MyRejectedTasks() {
-  const { user, rejectedEntries } = useLoaderData<typeof loader>();
+  const { user, rejectedEntries, rejectedTasks } = useLoaderData<typeof loader>();
 
   const formatTime = (date: Date | string) => {
     return new Date(date).toLocaleTimeString([], {
@@ -58,7 +80,102 @@ export default function MyRejectedTasks() {
         <p className="page-subtitle">View tasks that were rejected by management</p>
       </div>
 
-      {rejectedEntries.length === 0 ? (
+      {/* Individual Rejected Tasks (from Quality Control) */}
+      {rejectedTasks.length > 0 && (
+        <div className="card mb-6">
+          <div className="card-header bg-yellow-50">
+            <h2 className="card-title text-yellow-900">Rejected Individual Tasks</h2>
+            <p className="text-sm text-yellow-700 mt-1">
+              These specific tasks were rejected during quality control review
+            </p>
+          </div>
+          <div className="card-body">
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Process</th>
+                    <th>SKU</th>
+                    <th className="text-right">Rejected Qty</th>
+                    <th>Reason</th>
+                    <th>Photo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rejectedTasks.map((task) => {
+                    // Extract photo URL from adminNotes if it contains [Photo: url]
+                    const photoMatch = task.adminNotes?.match(/\[Photo: (https?:\/\/[^\]]+)\]/);
+                    const photoUrl = photoMatch ? photoMatch[1] : null;
+
+                    return (
+                      <tr key={task.id} className="hover:bg-red-50">
+                        <td className="text-sm">
+                          {formatDate(task.timeEntry.clockInTime)}
+                        </td>
+                        <td className="font-medium">
+                          {task.processName.replace(/_/g, " ")}
+                        </td>
+                        <td>
+                          {task.sku ? (
+                            <div>
+                              <span className="font-mono text-sm">{task.sku.sku}</span>
+                              <span className="text-xs text-gray-500 block">
+                                {task.sku.name}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-gray-400">Miscellaneous</span>
+                          )}
+                        </td>
+                        <td className="text-right">
+                          <span className="font-semibold text-red-600">
+                            {task.rejectionQuantity}
+                          </span>
+                          <span className="text-xs text-gray-500 ml-1">
+                            / {task.quantityCompleted}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="max-w-xs">
+                            <p className="text-sm text-red-800">{task.rejectionReason}</p>
+                            {task.adminNotes && (
+                              <p className="text-xs text-gray-500 mt-1">
+                                {task.adminNotes.replace(/\[Photo:.*?\]/, '').trim()}
+                              </p>
+                            )}
+                          </div>
+                        </td>
+                        <td>
+                          {photoUrl ? (
+                            <a
+                              href={photoUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block"
+                            >
+                              <img
+                                src={photoUrl}
+                                alt="Quality issue"
+                                className="h-16 w-16 object-cover rounded border border-gray-300 hover:border-blue-500 cursor-pointer"
+                              />
+                            </a>
+                          ) : (
+                            <span className="text-xs text-gray-400">No photo</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full Entry Rejections (legacy system) */}
+      {rejectedEntries.length === 0 && rejectedTasks.length === 0 ? (
         <div className="card">
           <div className="card-body">
             <div className="text-center text-gray-500 py-8">
@@ -80,8 +197,9 @@ export default function MyRejectedTasks() {
             </div>
           </div>
         </div>
-      ) : (
+      ) : rejectedEntries.length > 0 ? (
         <div className="space-y-6">
+          <h2 className="text-lg font-semibold text-gray-900">Full Time Entry Rejections</h2>
           {rejectedEntries.map((entry) => (
             <div key={entry.id} className="card border-l-4 border-red-500">
               <div className="card-body">
@@ -184,7 +302,7 @@ export default function MyRejectedTasks() {
             </div>
           ))}
         </div>
-      )}
+      ) : null}
     </Layout>
   );
 }
