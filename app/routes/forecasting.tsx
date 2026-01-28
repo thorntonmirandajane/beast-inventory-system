@@ -305,6 +305,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
+  if (intent === "bulk-update-forecasts") {
+    // Get all COMPLETED SKUs
+    const completedSkus = await prisma.sku.findMany({
+      where: { isActive: true, type: "COMPLETED" },
+      select: { id: true },
+    });
+
+    let updatedCount = 0;
+
+    for (const sku of completedSkus) {
+      const forecastedQtyStr = formData.get(`forecastedQty_${sku.id}`) as string;
+      const currentInGallatinStr = formData.get(`currentInGallatin_${sku.id}`) as string;
+
+      if (forecastedQtyStr && currentInGallatinStr) {
+        const quantity = parseInt(forecastedQtyStr, 10);
+        const currentInGallatin = parseInt(currentInGallatinStr, 10);
+
+        if (!isNaN(quantity) && !isNaN(currentInGallatin) && quantity >= 0 && currentInGallatin >= 0) {
+          await prisma.forecast.upsert({
+            where: { skuId: sku.id },
+            create: { skuId: sku.id, quantity, currentInGallatin },
+            update: { quantity, currentInGallatin },
+          });
+          updatedCount++;
+        }
+      }
+    }
+
+    await createAuditLog(user.id, "BULK_UPDATE_FORECASTS", "Forecast", "", {
+      updatedCount,
+    });
+
+    return { success: true, message: `Updated ${updatedCount} forecast(s) successfully` };
+  }
+
   if (intent === "update-forecast") {
     const skuId = formData.get("skuId") as string;
     const quantity = parseInt(formData.get("quantity") as string, 10);
@@ -489,43 +524,26 @@ function ForecastRow({
           <span className="font-semibold text-gray-900">{item.currentCompleted}</span>
         </td>
         <td className="text-right">
-          <fetcher.Form method="post" className="inline">
-            <input type="hidden" name="intent" value="update-forecast" />
-            <input type="hidden" name="skuId" value={item.skuId} />
-            <input
-              type="number"
-              name="currentInGallatin"
-              className="form-input w-24 text-sm text-right"
-              min="0"
-              defaultValue={item.currentInGallatin}
-              placeholder="0"
-              required
-              onBlur={(e) => {
-                const form = e.currentTarget.form;
-                if (form) fetcher.submit(form);
-              }}
-            />
-          </fetcher.Form>
+          <input
+            type="number"
+            name={`currentInGallatin_${item.skuId}`}
+            className="form-input w-24 text-sm text-right"
+            min="0"
+            defaultValue={item.currentInGallatin}
+            placeholder="0"
+            required
+          />
         </td>
         <td className="text-right">
-          <fetcher.Form method="post" className="inline">
-            <input type="hidden" name="intent" value="update-forecast" />
-            <input type="hidden" name="skuId" value={item.skuId} />
-            <input type="hidden" name="currentInGallatin" value={item.currentInGallatin} />
-            <input
-              type="number"
-              name="quantity"
-              className="form-input w-24 text-sm text-right"
-              min="0"
-              defaultValue={item.forecastedQty}
-              placeholder="0"
-              required
-              onBlur={(e) => {
-                const form = e.currentTarget.form;
-                if (form) fetcher.submit(form);
-              }}
-            />
-          </fetcher.Form>
+          <input
+            type="number"
+            name={`forecastedQty_${item.skuId}`}
+            className="form-input w-24 text-sm text-right"
+            min="0"
+            defaultValue={item.forecastedQty}
+            placeholder="0"
+            required
+          />
         </td>
         <td className="text-right">
           {item.needToBuild > 0 ? (
@@ -738,13 +756,9 @@ export default function Forecasting() {
           <p className="text-sm text-gray-500">Enter forecasted demand for each completed SKU</p>
         </div>
         <div className="card-body">
-          <div className="alert alert-info mb-4">
-            <svg className="w-5 h-5 inline mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <strong>Auto-Save Enabled:</strong> Forecast values are automatically saved when you move to the next field. Changes are saved instantly.
-          </div>
-          <table className="data-table">
+          <Form method="post">
+            <input type="hidden" name="intent" value="bulk-update-forecasts" />
+            <table className="data-table">
             <thead>
               <tr>
                 <th className="w-12"></th>
@@ -765,6 +779,12 @@ export default function Forecasting() {
               })}
             </tbody>
           </table>
+          <div className="mt-4 pt-4 border-t flex justify-end">
+            <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+              {isSubmitting ? "Saving..." : "Save Changes"}
+            </button>
+          </div>
+        </Form>
         </div>
       </div>
 
