@@ -24,63 +24,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw new Response("Unauthorized", { status: 403 });
   }
 
-  // Check if user is clocked in
-  const lastEvent = await prisma.clockEvent.findFirst({
-    where: { userId: user.id },
-    orderBy: { timestamp: "desc" },
-  });
-
-  const isClockedIn =
-    lastEvent?.type === "CLOCK_IN" || lastEvent?.type === "BREAK_END";
-  const isOnBreak = lastEvent?.type === "BREAK_START";
-
-  if (!isClockedIn || isOnBreak) {
-    return redirect("/time-clock");
-  }
-
-  // Get today's clock-in time to find active time entry
+  // Get today's date for task history
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const clockInEvent = await prisma.clockEvent.findFirst({
+  // Get today's tasks (if any) - these are tasks submitted today
+  // Workers can now submit tasks without being clocked in
+  const todaysTasks = await prisma.timeEntryLine.findMany({
     where: {
-      userId: user.id,
-      type: "CLOCK_IN",
-      timestamp: { gte: today },
-    },
-    orderBy: { timestamp: "desc" },
-  });
-
-  // Get or create draft time entry
-  let timeEntry = null;
-  if (clockInEvent) {
-    timeEntry = await prisma.workerTimeEntry.findUnique({
-      where: { clockInEventId: clockInEvent.id },
-      include: {
-        lines: {
-          include: { sku: true },
-          orderBy: { createdAt: "desc" },
-        },
+      timeEntry: {
+        userId: user.id,
+        createdAt: { gte: today },
       },
-    });
-
-    if (!timeEntry) {
-      timeEntry = await prisma.workerTimeEntry.create({
-        data: {
-          userId: user.id,
-          clockInEventId: clockInEvent.id,
-          clockInTime: clockInEvent.timestamp,
-          status: "DRAFT",
-        },
-        include: {
-          lines: {
-            include: { sku: true },
-            orderBy: { createdAt: "desc" },
-          },
-        },
-      });
-    }
-  }
+    },
+    include: { sku: true },
+    orderBy: { createdAt: "desc" },
+  });
 
   // Get all active processes from ProcessConfig
   const processes = await prisma.processConfig.findMany({
@@ -119,7 +78,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { priority: "desc" },
   });
 
-  return { user, timeEntry, processes, skus, assignedTasks };
+  return { user, todaysTasks, processes, skus, assignedTasks };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -145,36 +104,62 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "No tasks to submit" };
     }
 
-    // Find today's time entry
+    // Find or create today's time entry
+    // Workers can now submit tasks without being clocked in
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
 
+    // Try to find today's clock-in event first
     const clockInEvent = await prisma.clockEvent.findFirst({
       where: {
         userId: user.id,
         type: "CLOCK_IN",
-        timestamp: { gte: today },
+        timestamp: { gte: today, lt: tomorrow },
       },
       orderBy: { timestamp: "desc" },
     });
 
-    if (!clockInEvent) {
-      return { error: "No active clock-in found" };
-    }
+    let timeEntry;
 
-    let timeEntry = await prisma.workerTimeEntry.findUnique({
-      where: { clockInEventId: clockInEvent.id },
-    });
+    if (clockInEvent) {
+      // If there's a clock-in today, use/create time entry linked to it
+      timeEntry = await prisma.workerTimeEntry.findUnique({
+        where: { clockInEventId: clockInEvent.id },
+      });
 
-    if (!timeEntry) {
-      timeEntry = await prisma.workerTimeEntry.create({
-        data: {
+      if (!timeEntry) {
+        timeEntry = await prisma.workerTimeEntry.create({
+          data: {
+            userId: user.id,
+            clockInEventId: clockInEvent.id,
+            clockInTime: clockInEvent.timestamp,
+            status: "DRAFT",
+          },
+        });
+      }
+    } else {
+      // No clock-in today, find or create a standalone time entry for today
+      timeEntry = await prisma.workerTimeEntry.findFirst({
+        where: {
           userId: user.id,
-          clockInEventId: clockInEvent.id,
-          clockInTime: clockInEvent.timestamp,
-          status: "DRAFT",
+          createdAt: { gte: today, lt: tomorrow },
+          clockInEventId: null, // Standalone entry
         },
       });
+
+      if (!timeEntry) {
+        // Create standalone time entry for tasks submitted without clocking in
+        timeEntry = await prisma.workerTimeEntry.create({
+          data: {
+            userId: user.id,
+            clockInTime: new Date(), // Use current time
+            status: "DRAFT",
+            // Note: clockInEventId is null for standalone entries
+          },
+        });
+      }
     }
 
     // Create all TimeEntryLine records
@@ -210,7 +195,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "No task specified" };
     }
 
-    // Verify this line belongs to the user's current time entry
+    // Verify this line belongs to the user
     const line = await prisma.timeEntryLine.findUnique({
       where: { id: lineId },
       include: { timeEntry: true },
@@ -218,6 +203,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     if (!line || line.timeEntry.userId !== user.id) {
       return { error: "Unauthorized" };
+    }
+
+    // Only allow deletion if time entry is still in DRAFT status
+    if (line.timeEntry.status !== "DRAFT") {
+      return { error: "Cannot delete tasks from submitted time entries" };
     }
 
     await prisma.timeEntryLine.delete({
@@ -231,7 +221,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function WorkerSubmitTask() {
-  const { user, timeEntry, processes, skus, assignedTasks } =
+  const { user, todaysTasks, processes, skus, assignedTasks } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -588,14 +578,14 @@ export default function WorkerSubmitTask() {
       )}
 
       {/* Previously submitted tasks today */}
-      {timeEntry && timeEntry.lines.length > 0 && (
+      {todaysTasks && todaysTasks.length > 0 && (
         <div className="card mt-6">
           <div className="card-header">
             <h2 className="card-title">Previously Submitted Tasks Today</h2>
           </div>
           <div className="card-body">
             <div className="space-y-3">
-              {timeEntry.lines.map((line) => (
+              {todaysTasks.map((line) => (
                 <div
                   key={line.id}
                   className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"

@@ -172,11 +172,24 @@ export default function ProcessTutorials() {
   const [selectedSkus, setSelectedSkus] = useState<string[]>([]);
   const [editingTutorial, setEditingTutorial] = useState<any>(null);
   const [photoUrl, setPhotoUrl] = useState("");
+  const [skuSearchQuery, setSkuSearchQuery] = useState("");
 
-  // Filter SKUs by selected process
-  const filteredSkus = selectedProcess
-    ? allSkus.filter(sku => sku.material === selectedProcess)
-    : allSkus;
+  // Filter SKUs by selected process and search query
+  const filteredSkus = allSkus.filter(sku => {
+    // First filter by selected process
+    if (selectedProcess && sku.material !== selectedProcess) {
+      return false;
+    }
+    // Then filter by search query
+    if (skuSearchQuery) {
+      const query = skuSearchQuery.toLowerCase();
+      return (
+        sku.sku.toLowerCase().includes(query) ||
+        (sku.name && sku.name.toLowerCase().includes(query))
+      );
+    }
+    return true;
+  });
 
   // Group tutorials by process
   const tutorialsByProcess = tutorials.reduce((acc, tutorial) => {
@@ -209,6 +222,7 @@ export default function ProcessTutorials() {
     setSelectedProcess("");
     setSelectedSkus([]);
     setPhotoUrl("");
+    setSkuSearchQuery("");
   };
 
   return (
@@ -312,37 +326,63 @@ export default function ProcessTutorials() {
 
                 <div className="form-group">
                   <label className="form-label">
-                    Select SKUs * ({selectedSkus.length} selected)
+                    SKUs in This Process * ({selectedSkus.length} selected)
                   </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    Select which SKUs are processed in this step. Selected SKUs will have their category updated to match this process.
+                  </p>
+
+                  {/* Search input */}
+                  {selectedProcess && (
+                    <div className="mb-2">
+                      <input
+                        type="text"
+                        placeholder="Search by SKU code or name..."
+                        value={skuSearchQuery}
+                        onChange={(e) => setSkuSearchQuery(e.target.value)}
+                        className="form-input text-sm"
+                      />
+                    </div>
+                  )}
+
                   <div className="border rounded-lg p-3 max-h-64 overflow-y-auto space-y-2">
                     {filteredSkus.length === 0 ? (
                       <p className="text-sm text-gray-500 text-center py-4">
-                        {selectedProcess
-                          ? "No SKUs found for this process"
-                          : "Select a process first"}
+                        {!selectedProcess
+                          ? "Select a process first"
+                          : skuSearchQuery
+                          ? "No SKUs match your search"
+                          : "No SKUs found for this process"}
                       </p>
                     ) : (
-                      filteredSkus.map(sku => (
-                        <label
-                          key={sku.id}
-                          className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            name="skuIds"
-                            value={sku.id}
-                            checked={selectedSkus.includes(sku.id)}
-                            onChange={() => handleSkuToggle(sku.id)}
-                            className="form-checkbox"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="font-mono text-sm truncate">{sku.sku}</div>
-                            <div className="text-xs text-gray-500 truncate">
-                              {sku.name}
-                            </div>
+                      <>
+                        {skuSearchQuery && (
+                          <div className="text-xs text-gray-500 pb-2 border-b">
+                            Showing {filteredSkus.length} SKU{filteredSkus.length !== 1 ? 's' : ''}
                           </div>
-                        </label>
-                      ))
+                        )}
+                        {filteredSkus.map(sku => (
+                          <label
+                            key={sku.id}
+                            className="flex items-center gap-2 p-2 hover:bg-gray-50 rounded cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              name="skuIds"
+                              value={sku.id}
+                              checked={selectedSkus.includes(sku.id)}
+                              onChange={() => handleSkuToggle(sku.id)}
+                              className="form-checkbox"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="font-mono text-sm truncate">{sku.sku}</div>
+                              <div className="text-xs text-gray-500 truncate">
+                                {sku.name}
+                              </div>
+                            </div>
+                          </label>
+                        ))}
+                      </>
                     )}
                   </div>
                 </div>
