@@ -47,8 +47,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { displayName: "asc" },
   });
 
-  // Get all active ASSEMBLY and COMPLETED SKUs with category info
-  // Workers only work on assemblies and completed products, not raw materials
+  // Get all active SKUs with their categories
+  // We'll filter by process on the client side based on category matching
   const skus = await prisma.sku.findMany({
     where: {
       isActive: true,
@@ -245,31 +245,9 @@ export default function WorkerSubmitTask() {
     : skus.filter(sku => {
         if (!selectedProcessConfig) return false;
 
-        // Filter SKUs based on process type
-        const processName = selectedProcessConfig.processName;
-
-        let matchesProcess = false;
-
-        // TIPPING: Works with ASSEMBLY items (creates assembled tips from raw materials)
-        if (processName === "TIPPING") {
-          matchesProcess = sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads" || sku.category === "Tips");
-        }
-        // BLADING: Works with ASSEMBLY items that can have blades added
-        else if (processName === "BLADING") {
-          matchesProcess = sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads");
-        }
-        // STUD_TESTING: Works with raw studs
-        else if (processName === "STUD_TESTING") {
-          matchesProcess = sku.category === "Studs";
-        }
-        // COMPLETE_PACKS: Works with COMPLETED (packaged) products
-        else if (processName === "COMPLETE_PACKS") {
-          matchesProcess = sku.type === "COMPLETED";
-        }
-        // Default: show all SKUs for other processes
-        else {
-          matchesProcess = true;
-        }
+        // Filter SKUs based on category matching the process displayName
+        // SKUs are assigned to processes via their category field on the Capacity page
+        const matchesProcess = sku.category === selectedProcessConfig.displayName;
 
         // If doesn't match process, exclude it
         if (!matchesProcess) return false;
