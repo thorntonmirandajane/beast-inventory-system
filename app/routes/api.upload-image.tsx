@@ -1,5 +1,4 @@
 import type { ActionFunctionArgs } from "react-router";
-import { json } from "react-router";
 import { requireUser } from "../utils/auth.server";
 import { uploadImage } from "../utils/cloudinary.server";
 
@@ -12,16 +11,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const folder = formData.get("folder") as string || "general";
 
     if (!imageBase64) {
-      return json({ error: "No image provided" }, { status: 400 });
+      return Response.json({ error: "No image provided" }, { status: 400 });
     }
 
     // Upload to Cloudinary
     const { url, publicId } = await uploadImage(imageBase64, folder);
 
-    return json({ url, publicId, success: true });
+    return Response.json({ url, publicId, success: true });
   } catch (error) {
     console.error("Image upload error:", error);
-    return json(
+    return Response.json(
       { error: error instanceof Error ? error.message : "Failed to upload image" },
       { status: 500 }
     );
