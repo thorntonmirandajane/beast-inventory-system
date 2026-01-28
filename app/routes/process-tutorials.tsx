@@ -3,6 +3,7 @@ import { useLoaderData, useActionData, Link, Form, useNavigation } from "react-r
 import { redirect } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
+import { ImageUpload } from "../components/ImageUpload";
 import prisma from "../db.server";
 import { useState } from "react";
 
@@ -170,6 +171,7 @@ export default function ProcessTutorials() {
   const [selectedProcess, setSelectedProcess] = useState("");
   const [selectedSkus, setSelectedSkus] = useState<string[]>([]);
   const [editingTutorial, setEditingTutorial] = useState<any>(null);
+  const [photoUrl, setPhotoUrl] = useState("");
 
   // Filter SKUs by selected process
   const filteredSkus = selectedProcess
@@ -196,6 +198,7 @@ export default function ProcessTutorials() {
   const startEdit = (tutorial: any) => {
     setEditingTutorial(tutorial);
     setSelectedProcess(tutorial.processName);
+    setPhotoUrl(tutorial.photoUrl || "");
     // Get SKU IDs from tutorial
     const skuIds = tutorial.skuTutorials.map((st: any) => st.skuId);
     setSelectedSkus(skuIds);
@@ -205,6 +208,7 @@ export default function ProcessTutorials() {
     setEditingTutorial(null);
     setSelectedProcess("");
     setSelectedSkus([]);
+    setPhotoUrl("");
   };
 
   return (
@@ -296,17 +300,14 @@ export default function ProcessTutorials() {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Photo URL (optional)</label>
-                  <input
-                    type="url"
-                    name="photoUrl"
-                    className="form-input"
-                    placeholder="https://example.com/image.jpg"
-                    defaultValue={editingTutorial?.photoUrl || ""}
+                  <ImageUpload
+                    currentImageUrl={editingTutorial?.photoUrl || photoUrl}
+                    onImageUploaded={(url) => setPhotoUrl(url)}
+                    folder="tutorials"
+                    label="Process Photo (Optional)"
+                    helpText="Upload a photo showing the process steps"
                   />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Upload images to a service like Imgur and paste the URL here
-                  </p>
+                  <input type="hidden" name="photoUrl" value={photoUrl || editingTutorial?.photoUrl || ""} />
                 </div>
 
                 <div className="form-group">

@@ -2,6 +2,7 @@ import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, useNavigation, Link, useFetcher } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
+import { ImageUpload } from "../components/ImageUpload";
 import prisma from "../db.server";
 import { approveTimeEntry } from "../utils/productivity.server";
 import { useState } from "react";
@@ -317,31 +318,14 @@ function RejectTaskModal({
           </div>
 
           <div className="form-group mb-4">
-            <label className="form-label">Photo URL (Optional)</label>
-            <input
-              type="url"
-              value={photoUrl}
-              onChange={(e) => setPhotoUrl(e.target.value)}
-              placeholder="https://example.com/photo.jpg"
-              className="form-input"
+            <ImageUpload
+              currentImageUrl={photoUrl}
+              onImageUploaded={(url) => setPhotoUrl(url)}
+              folder="quality-control"
+              label="Quality Issue Photo (Optional)"
+              helpText="Upload a photo showing the quality issue"
             />
-            <p className="text-xs text-gray-500 mt-1">
-              Paste a link to a photo showing the quality issue (e.g., from Google Drive, Dropbox, or image hosting)
-            </p>
           </div>
-
-          {photoUrl && (
-            <div className="mb-4 border rounded-lg p-2">
-              <img
-                src={photoUrl}
-                alt="Quality issue"
-                className="max-w-full h-auto rounded"
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                }}
-              />
-            </div>
-          )}
 
           <div className="flex gap-4">
             <button
