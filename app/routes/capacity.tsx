@@ -279,6 +279,19 @@ export default function Capacity() {
 
   const [editingProcess, setEditingProcess] = useState<any | null>(null);
   const [selectedSkuIds, setSelectedSkuIds] = useState<Set<string>>(new Set());
+  const [skuSearchQuery, setSkuSearchQuery] = useState("");
+
+  // Filter SKUs based on search query
+  const filteredSkus = allSkus.filter(sku => {
+    if (!skuSearchQuery) return true;
+
+    const query = skuSearchQuery.toLowerCase();
+    return (
+      sku.sku.toLowerCase().includes(query) ||
+      (sku.name && sku.name.toLowerCase().includes(query)) ||
+      (sku.category && sku.category.toLowerCase().includes(query))
+    );
+  });
 
   return (
     <Layout user={user}>
@@ -552,12 +565,33 @@ export default function Capacity() {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">SKUs in This Process</label>
+                  <label className="form-label">SKUs in This Process ({selectedSkuIds.size} selected)</label>
                   <p className="text-sm text-gray-600 mb-3">
                     Select which SKUs are processed in this step. Selected SKUs will have their category updated to match this process.
                   </p>
+
+                  {/* Search input */}
+                  <input
+                    type="text"
+                    placeholder="Search by SKU code, name, or category..."
+                    value={skuSearchQuery}
+                    onChange={(e) => setSkuSearchQuery(e.target.value)}
+                    className="form-input text-sm mb-3"
+                  />
+
                   <div className="border rounded-lg max-h-64 overflow-y-auto p-3 space-y-2">
-                    {allSkus.map((sku) => (
+                    {filteredSkus.length === 0 ? (
+                      <p className="text-sm text-gray-500 text-center py-4">
+                        No SKUs match your search
+                      </p>
+                    ) : (
+                      <>
+                        {skuSearchQuery && (
+                          <div className="text-xs text-gray-500 pb-2 mb-2 border-b">
+                            Showing {filteredSkus.length} SKU{filteredSkus.length !== 1 ? 's' : ''}
+                          </div>
+                        )}
+                        {filteredSkus.map((sku) => (
                       <label key={sku.id} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded cursor-pointer">
                         <input
                           type="checkbox"
@@ -583,11 +617,10 @@ export default function Capacity() {
                           </div>
                         </div>
                       </label>
-                    ))}
+                        ))}
+                      </>
+                    )}
                   </div>
-                  <p className="text-xs text-gray-500 mt-2">
-                    {selectedSkuIds.size} SKU{selectedSkuIds.size !== 1 ? 's' : ''} selected
-                  </p>
                 </div>
               </div>
 
@@ -604,6 +637,7 @@ export default function Capacity() {
                   onClick={() => {
                     setEditingProcess(null);
                     setSelectedSkuIds(new Set());
+                    setSkuSearchQuery("");
                   }}
                   className="btn btn-ghost"
                 >
