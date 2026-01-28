@@ -41,4 +41,5 @@ export default [
   route("tutorials", "routes/tutorials.tsx"),
   route("audit-log", "routes/audit-log.tsx"),
   route("notifications", "routes/notifications.tsx"),
+  route("api/upload-image", "routes/api.upload-image.tsx"),
 ] satisfies RouteConfig;
