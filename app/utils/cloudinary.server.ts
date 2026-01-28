@@ -19,26 +19,38 @@ export async function uploadImage(
   folder: string = "beast-inventory"
 ): Promise<{ url: string; publicId: string }> {
   try {
-    const result = await cloudinary.uploader.upload(
-      typeof file === "string" ? file : `data:image/jpeg;base64,${file.toString("base64")}`,
-      {
-        folder: `beast-inventory/${folder}`,
-        resource_type: "image",
-        transformation: [
-          { width: 1200, height: 1200, crop: "limit" }, // Max size
-          { quality: "auto" }, // Auto quality
-          { fetch_format: "auto" }, // Auto format (WebP if supported)
-        ],
-      }
-    );
+    console.log("[Cloudinary] Starting upload to folder:", folder);
+    console.log("[Cloudinary] Config check:", {
+      hasCloudName: !!process.env.CLOUDINARY_CLOUD_NAME,
+      hasApiKey: !!process.env.CLOUDINARY_API_KEY,
+      hasApiSecret: !!process.env.CLOUDINARY_API_SECRET,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    });
+
+    const fileToUpload = typeof file === "string" ? file : `data:image/jpeg;base64,${file.toString("base64")}`;
+    console.log("[Cloudinary] File type:", typeof file);
+    console.log("[Cloudinary] File is base64 string:", typeof file === "string" && file.startsWith("data:"));
+
+    const result = await cloudinary.uploader.upload(fileToUpload, {
+      folder: `beast-inventory/${folder}`,
+      resource_type: "image",
+      transformation: [
+        { width: 1200, height: 1200, crop: "limit" }, // Max size
+        { quality: "auto" }, // Auto quality
+        { fetch_format: "auto" }, // Auto format (WebP if supported)
+      ],
+    });
+
+    console.log("[Cloudinary] Upload successful:", result.secure_url);
 
     return {
       url: result.secure_url,
       publicId: result.public_id,
     };
   } catch (error) {
-    console.error("Cloudinary upload error:", error);
-    throw new Error("Failed to upload image to Cloudinary");
+    console.error("[Cloudinary] Upload error details:", error);
+    console.error("[Cloudinary] Error message:", error instanceof Error ? error.message : String(error));
+    throw new Error(`Failed to upload image to Cloudinary: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
 }
 

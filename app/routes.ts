@@ -42,4 +42,5 @@ export default [
   route("audit-log", "routes/audit-log.tsx"),
   route("notifications", "routes/notifications.tsx"),
   route("api/upload-image", "routes/api.upload-image.tsx"),
+  route("api/test-cloudinary", "routes/api.test-cloudinary.tsx"),
 ] satisfies RouteConfig;
