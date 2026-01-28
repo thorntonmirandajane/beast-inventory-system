@@ -234,6 +234,7 @@ export default function WorkerSubmitTask() {
   const [selectedSku, setSelectedSku] = useState("");
   const [quantity, setQuantity] = useState<number>(0);
   const [miscDescription, setMiscDescription] = useState("");
+  const [skuSearchQuery, setSkuSearchQuery] = useState("");
 
   // Filter SKUs based on selected process
   const selectedProcessConfig = processes.find(p => p.processName === selectedProcess);
@@ -247,27 +248,41 @@ export default function WorkerSubmitTask() {
         // Filter SKUs based on process type
         const processName = selectedProcessConfig.processName;
 
+        let matchesProcess = false;
+
         // TIPPING: Works with ASSEMBLY items (creates assembled tips from raw materials)
         if (processName === "TIPPING") {
-          return sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads" || sku.category === "Tips");
+          matchesProcess = sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads" || sku.category === "Tips");
         }
-
         // BLADING: Works with ASSEMBLY items that can have blades added
-        if (processName === "BLADING") {
-          return sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads");
+        else if (processName === "BLADING") {
+          matchesProcess = sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads");
         }
-
         // STUD_TESTING: Works with raw studs
-        if (processName === "STUD_TESTING") {
-          return sku.category === "Studs";
+        else if (processName === "STUD_TESTING") {
+          matchesProcess = sku.category === "Studs";
         }
-
         // COMPLETE_PACKS: Works with COMPLETED (packaged) products
-        if (processName === "COMPLETE_PACKS") {
-          return sku.type === "COMPLETED";
+        else if (processName === "COMPLETE_PACKS") {
+          matchesProcess = sku.type === "COMPLETED";
+        }
+        // Default: show all SKUs for other processes
+        else {
+          matchesProcess = true;
         }
 
-        // Default: show all SKUs for other processes
+        // If doesn't match process, exclude it
+        if (!matchesProcess) return false;
+
+        // Then apply search filter
+        if (skuSearchQuery) {
+          const query = skuSearchQuery.toLowerCase();
+          return (
+            sku.sku.toLowerCase().includes(query) ||
+            (sku.name && sku.name.toLowerCase().includes(query))
+          );
+        }
+
         return true;
       });
 
@@ -314,6 +329,7 @@ export default function WorkerSubmitTask() {
     setQuantity(0);
     setMiscDescription("");
     setSelectedSku("");
+    setSkuSearchQuery("");
   };
 
   const handleDeletePending = (taskId: string) => {
@@ -411,6 +427,18 @@ export default function WorkerSubmitTask() {
                   <label htmlFor="skuId" className="form-label">
                     SKU {selectedProcess && `(${selectedProcessConfig?.displayName})`}
                   </label>
+
+                  {/* Search input */}
+                  {selectedProcess && !isMiscTask && (
+                    <input
+                      type="text"
+                      placeholder="Search by SKU code or name..."
+                      value={skuSearchQuery}
+                      onChange={(e) => setSkuSearchQuery(e.target.value)}
+                      className="form-input text-sm mb-2"
+                    />
+                  )}
+
                   <select
                     id="skuId"
                     value={selectedSku}
@@ -429,7 +457,14 @@ export default function WorkerSubmitTask() {
                   </select>
                   {selectedProcess && !isMiscTask && filteredSkus.length === 0 && (
                     <p className="text-sm text-yellow-600 mt-1">
-                      No SKUs found for this process type
+                      {skuSearchQuery
+                        ? "No SKUs match your search"
+                        : "No SKUs found for this process type"}
+                    </p>
+                  )}
+                  {selectedProcess && !isMiscTask && skuSearchQuery && filteredSkus.length > 0 && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Showing {filteredSkus.length} SKU{filteredSkus.length !== 1 ? 's' : ''}
                     </p>
                   )}
                 </div>
