@@ -757,6 +757,75 @@ async function main() {
   console.log(`   Completed Units: ${completedCount}`);
   console.log(`   BOM Relationships: ${bomCount}`);
 
+  // ============================================
+  // SET PROCESS ORDERS
+  // ============================================
+  console.log("\n📋 Setting process orders...");
+
+  const processOrders: Record<string, number> = {
+    "TI-100-TIPPED-FERRULE": 1,
+    "TI-2IN-100G-BLADED-FERRULE": 2,
+    "TI-2IN-100G-BEAST": 3,
+    "TI-3PACK-100g-2.0in": 4,
+    "TI-23IN-100G-BLADED-FERRULE": 5,
+    "TI-23IN-100G-BEAST": 6,
+    "TI-3PACK-100g-2.3in": 7,
+    "TI-TIPPED-FERRULE": 8,
+    "TI-2IN-BLADED-FERRULE": 9,
+    "TI-2IN-125G-BEAST": 10,
+    "TI-2PACK-125g-2.0in": 11,
+    "TI-3PACK-125g-2.0in": 12,
+    "TI-23IN-BLADED-FERRULE": 13,
+    "TI-23IN-125G-BEAST": 14,
+    "TI-3PACK-125g-2.3in": 15,
+    "TIPPED-FERRULE": 16,
+    "23IN-BLADED-FERRULE": 17,
+    "23IN-100G-BEAST": 18,
+    "2PACK-100g-2.3in": 19,
+    "3PACK-100g-2.3in": 20,
+    "23IN-125G-BEAST": 21,
+    "2PACK-125g-2.3in": 22,
+    "3PACK-125g-2.3in": 23,
+    "D6-23IN-100G-BEAST": 24,
+    "D6-3PACK-100g-2.3in": 25,
+    "D6-23IN-125G-BEAST": 26,
+    "D6-3PACK-125g-2.3in": 27,
+    "2IN-BLADED-FERRULE": 28,
+    "2IN-100G-BEAST": 29,
+    "2PACK-100g-2.0in": 30,
+    "3PACK-100g-2.0in": 31,
+    "2IN-125G-BEAST": 32,
+    "2PACK-125g-2.0in": 33,
+    "3PACK-125g-2.0in": 34,
+    "D6-2IN-100G-BEAST": 35,
+    "D6-3PACK-100g-2.0in": 36,
+    "D6-2IN-125G-BEAST": 37,
+    "D6-3PACK-125g-2.0in": 38,
+    "ST-TIPPED-FERRULE": 39,
+    "ST-2IN-BLADED-FERRULE": 40,
+    "ST-2IN-150G-BEAST": 41,
+    "3PACK-150g-2.0in": 42,
+    "TR-TIPPED-FERRULE": 43,
+    "TR-2IN-BLADED-FERRULE": 44,
+    "TR-2IN-100G-BEAST": 45,
+    "TR-2IN-125G-BEAST": 47,
+    "TR-23IN-BLADED-FERRULE": 49,
+    "TR-23IN-100G-BEAST": 50,
+    "TR-23IN-125G-BEAST": 52,
+    "3PACK-PT-100G": 54,
+    "3PACK-PT-125G": 55,
+  };
+
+  let processOrderCount = 0;
+  for (const [skuCode, order] of Object.entries(processOrders)) {
+    const result = await prisma.sku.updateMany({
+      where: { sku: skuCode },
+      data: { processOrder: order },
+    });
+    if (result.count > 0) processOrderCount++;
+  }
+  console.log(`✅ Set process orders for ${processOrderCount} SKUs`);
+
   console.log("\n🎉 Seed completed successfully!");
 }
 
