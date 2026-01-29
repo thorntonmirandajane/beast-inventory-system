@@ -11,7 +11,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Get process configurations
   const processConfigs = await prisma.processConfig.findMany({
     where: { isActive: true },
-    orderBy: { processName: "asc" },
+    orderBy: [
+      { processOrder: "asc" },
+      { displayName: "asc" },
+    ],
   });
 
   // Get all SKUs for process assignment
@@ -109,6 +112,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "create-process") {
     const displayName = formData.get("displayName") as string;
+    const processOrderStr = formData.get("processOrder") as string;
+    const processOrder = processOrderStr ? parseInt(processOrderStr, 10) : null;
     const secondsPerUnit = parseInt(formData.get("secondsPerUnit") as string, 10);
     const description = formData.get("description") as string;
 
@@ -142,6 +147,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: {
         processName,
         displayName,
+        processOrder,
         description: description || null,
         secondsPerUnit: secondsPerUnit || 0,
         isActive: true,
@@ -151,6 +157,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await createAuditLog(user.id, "CREATE_PROCESS", "ProcessConfig", process.id, {
       processName,
       displayName,
+      processOrder,
       secondsPerUnit,
     });
 
@@ -185,6 +192,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const processId = formData.get("processId") as string;
     const processName = formData.get("processName") as string;
     const displayName = formData.get("displayName") as string;
+    const processOrderStr = formData.get("processOrder") as string;
+    const processOrder = processOrderStr ? parseInt(processOrderStr, 10) : null;
     const description = formData.get("description") as string;
     const secondsPerUnit = parseInt(formData.get("secondsPerUnit") as string, 10);
     const selectedSkuIds = formData.getAll("skuIds") as string[];
@@ -220,6 +229,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: {
         processName: processName.trim().toUpperCase(),
         displayName: displayName.trim(),
+        processOrder,
         description: description?.trim() || null,
         secondsPerUnit,
       },
@@ -394,47 +404,59 @@ export default function Capacity() {
             <table className="data-table">
               <thead>
                 <tr>
+                  <th>Order</th>
                   <th>Process Name</th>
+                  <th>SKUs Assigned</th>
                   <th>Description</th>
                   <th>Time per Unit</th>
                   {user.role === "ADMIN" && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
-                {processConfigs.map((config) => (
-                  <tr key={config.id}>
-                    <td>
-                      <div className="font-semibold">{config.displayName}</div>
-                      <div className="text-sm text-gray-500">{config.processName}</div>
-                    </td>
-                    <td>
-                      <div className="text-sm text-gray-600">{config.description || "—"}</div>
-                    </td>
-                    <td>
-                      {config.secondsPerUnit > 0 ? (
-                        <>
-                          <span className="font-mono font-semibold">{config.secondsPerUnit}</span>
-                          <span className="text-sm text-gray-500 ml-1">sec/unit</span>
-                        </>
-                      ) : (
-                        <span className="badge bg-yellow-100 text-yellow-800">Unassigned</span>
-                      )}
-                    </td>
-                    {user.role === "ADMIN" && (
+                {processConfigs.map((config) => {
+                  const skusForProcess = allSkus.filter(s => s.category === config.displayName);
+                  return (
+                    <tr key={config.id}>
                       <td>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              // Get SKUs that have this process as their category
-                              const skusForProcess = allSkus.filter(s => s.category === config.displayName);
-                              setSelectedSkuIds(new Set(skusForProcess.map(s => s.id)));
-                              setEditingProcess(config);
-                            }}
-                            className="btn btn-sm btn-secondary"
-                          >
-                            Edit
-                          </button>
+                        <span className="text-gray-600 font-mono text-sm">
+                          {config.processOrder ?? "—"}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="font-semibold">{config.displayName}</div>
+                      </td>
+                      <td>
+                        <span className="font-semibold text-blue-600">
+                          {skusForProcess.length}
+                        </span>
+                        <span className="text-sm text-gray-500 ml-1">SKU{skusForProcess.length !== 1 ? 's' : ''}</span>
+                      </td>
+                      <td>
+                        <div className="text-sm text-gray-600">{config.description || "—"}</div>
+                      </td>
+                      <td>
+                        {config.secondsPerUnit > 0 ? (
+                          <>
+                            <span className="font-mono font-semibold">{config.secondsPerUnit}</span>
+                            <span className="text-sm text-gray-500 ml-1">sec/unit</span>
+                          </>
+                        ) : (
+                          <span className="badge bg-yellow-100 text-yellow-800">Unassigned</span>
+                        )}
+                      </td>
+                      {user.role === "ADMIN" && (
+                        <td>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedSkuIds(new Set(skusForProcess.map(s => s.id)));
+                                setEditingProcess(config);
+                              }}
+                              className="btn btn-sm btn-secondary"
+                            >
+                              Edit
+                            </button>
                           <Form method="post" className="inline" onSubmit={(e) => {
                             if (!confirm(`Are you sure you want to delete "${config.displayName}"?`)) {
                               e.preventDefault();
@@ -449,12 +471,13 @@ export default function Capacity() {
                         </div>
                       </td>
                     )}
-                  </tr>
-                ))}
+                    </tr>
+                  );
+                })}
 
                 {processConfigs.length === 0 && (
                   <tr>
-                    <td colSpan={user.role === "ADMIN" ? 4 : 3} className="text-center text-gray-500 py-4">
+                    <td colSpan={user.role === "ADMIN" ? 6 : 5} className="text-center text-gray-500 py-4">
                       No process configurations found
                     </td>
                   </tr>
@@ -469,18 +492,33 @@ export default function Capacity() {
                 <Form method="post">
                   <input type="hidden" name="intent" value="create-process" />
 
-                  <div className="grid grid-cols-2 gap-4 mb-4">
+                  <div className="grid grid-cols-3 gap-4 mb-4">
+                    <div className="form-group mb-0">
+                      <label className="form-label">Process Order</label>
+                      <input
+                        type="number"
+                        name="processOrder"
+                        min="1"
+                        step="1"
+                        placeholder="e.g., 1, 2, 3..."
+                        className="form-input"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Order in production workflow
+                      </p>
+                    </div>
+
                     <div className="form-group mb-0">
                       <label className="form-label">Display Name *</label>
                       <input
                         type="text"
                         name="displayName"
                         required
-                        placeholder="e.g., Packaging"
+                        placeholder="e.g., Tipping"
                         className="form-input"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        Process name will be auto-generated (e.g., PACKAGING)
+                        User-friendly process name
                       </p>
                     </div>
 
@@ -491,11 +529,11 @@ export default function Capacity() {
                         name="secondsPerUnit"
                         min="1"
                         step="1"
-                        placeholder="120 (optional - leave blank for 'Unassigned')"
+                        placeholder="120"
                         className="form-input"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        Average time to complete one unit (optional)
+                        Time to complete one unit
                       </p>
                     </div>
                   </div>
@@ -652,6 +690,41 @@ export default function Capacity() {
               <input type="hidden" name="processId" value={editingProcess.id} />
 
               <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="form-group">
+                    <label className="form-label">Process Order</label>
+                    <input
+                      type="number"
+                      name="processOrder"
+                      defaultValue={editingProcess.processOrder || ""}
+                      className="form-input"
+                      min="1"
+                      step="1"
+                      placeholder="e.g., 1, 2, 3..."
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Order in production workflow
+                    </p>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Seconds Per Unit *</label>
+                    <input
+                      type="number"
+                      name="secondsPerUnit"
+                      defaultValue={editingProcess.secondsPerUnit}
+                      className="form-input"
+                      required
+                      min="1"
+                      step="1"
+                      placeholder="120"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Time to complete one unit
+                    </p>
+                  </div>
+                </div>
+
                 <div className="form-group">
                   <label className="form-label">Process Name *</label>
                   <input
@@ -691,22 +764,6 @@ export default function Capacity() {
                     rows={3}
                     placeholder="Describe what this process involves..."
                   />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Seconds Per Unit *</label>
-                  <input
-                    type="number"
-                    name="secondsPerUnit"
-                    defaultValue={editingProcess.secondsPerUnit}
-                    className="form-input"
-                    required
-                    min="1"
-                    step="1"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Average time to complete one unit
-                  </p>
                 </div>
 
                 <div className="form-group">

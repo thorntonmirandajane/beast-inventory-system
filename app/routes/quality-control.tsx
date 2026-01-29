@@ -33,7 +33,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
     });
 
-    return { user, timeEntry, tab, entryId };
+    // Get process configs for display names
+    const processConfigs = await prisma.processConfig.findMany({
+      where: { isActive: true },
+      select: { processName: true, displayName: true },
+    });
+
+    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs };
   }
 
   // List view
@@ -81,7 +87,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
   }
 
-  return { user, timeEntries, tab, entryId: null, timeEntry: null };
+  // Get process configs for display names
+  const processConfigs = await prisma.processConfig.findMany({
+    where: { isActive: true },
+    select: { processName: true, displayName: true },
+  });
+
+  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -276,7 +288,7 @@ function RejectTaskModal({
         <h3 className="text-lg font-bold mb-4">Reject Task</h3>
         <div className="mb-4 text-sm">
           <p>
-            <strong>Process:</strong> {line.processName}
+            <strong>Process:</strong> {getProcessDisplay(line.processName)}
           </p>
           {line.sku && (
             <p>
@@ -346,11 +358,19 @@ function RejectTaskModal({
 }
 
 export default function QualityControl() {
-  const { user, timeEntries, timeEntry, tab, entryId } = useLoaderData<typeof loader>();
+  const { user, timeEntries, timeEntry, tab, entryId, processConfigs } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const [rejectModalLine, setRejectModalLine] = useState<any>(null);
+
+  const getProcessDisplay = (processName: string) => {
+    if (!processConfigs) return processName.replace(/_/g, " ");
+    return (
+      processConfigs.find((p) => p.processName === processName)?.displayName ||
+      processName.replace(/_/g, " ")
+    );
+  };
 
   const formatDate = (date: Date | string) => {
     return new Date(date).toLocaleDateString("en-US", {
@@ -482,7 +502,7 @@ export default function QualityControl() {
                   {timeEntry.lines.map((line) => (
                     <tr key={line.id} className={line.isRejected ? "bg-red-50" : ""}>
                       <td className="font-medium">
-                        {line.processName.replace(/_/g, " ")}
+                        {getProcessDisplay(line.processName)}
                       </td>
                       <td>
                         {line.isMisc ? (
@@ -555,7 +575,7 @@ export default function QualityControl() {
                       line.adminNotes && (
                         <div key={line.id} className="p-3 bg-yellow-50 border border-yellow-200 rounded mb-2">
                           <strong>
-                            {line.processName} - {line.sku?.sku || "MISC"}:
+                            {getProcessDisplay(line.processName)} - {line.sku?.sku || "MISC"}:
                           </strong>
                           <p className="text-sm mt-1">{line.adminNotes}</p>
                         </div>

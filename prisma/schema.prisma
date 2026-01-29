@@ -264,6 +264,7 @@ model ProcessConfig {
   id             String          @id @default(cuid())
   processName    String          @unique
   displayName    String
+  processOrder   Int?
   description    String?
   secondsPerUnit Int
   isActive       Boolean         @default(true)

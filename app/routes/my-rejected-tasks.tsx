@@ -50,11 +50,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 50,
   });
 
-  return { user, rejectedEntries, rejectedTasks };
+  // Get process configs for display names
+  const processConfigs = await prisma.processConfig.findMany({
+    where: { isActive: true },
+    select: { processName: true, displayName: true },
+  });
+
+  return { user, rejectedEntries, rejectedTasks, processConfigs };
 };
 
 export default function MyRejectedTasks() {
-  const { user, rejectedEntries, rejectedTasks } = useLoaderData<typeof loader>();
+  const { user, rejectedEntries, rejectedTasks, processConfigs } = useLoaderData<typeof loader>();
+
+  const getProcessDisplay = (processName: string) => {
+    return (
+      processConfigs.find((p) => p.processName === processName)?.displayName ||
+      processName.replace(/_/g, " ")
+    );
+  };
 
   const formatTime = (date: Date | string) => {
     return new Date(date).toLocaleTimeString([], {
@@ -114,7 +127,7 @@ export default function MyRejectedTasks() {
                           {formatDate(task.timeEntry.clockInTime)}
                         </td>
                         <td className="font-medium">
-                          {task.processName.replace(/_/g, " ")}
+                          {getProcessDisplay(task.processName)}
                         </td>
                         <td>
                           {task.sku ? (
@@ -264,7 +277,7 @@ export default function MyRejectedTasks() {
                         {entry.lines.map((line) => (
                           <tr key={line.id}>
                             <td className="font-medium">
-                              {line.processName.replace(/_/g, " ")}
+                              {getProcessDisplay(line.processName)}
                             </td>
                             <td>
                               {line.sku ? (
