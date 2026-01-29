@@ -44,10 +44,10 @@ function BarcodeLabel({ sku, name, id, type, upc }: { sku: string; name: string;
 
       JsBarcode(barcodeSvgRef.current, barcodeValue, {
         format: "CODE39",
-        width: 2,
-        height: 80,
+        width: 3,
+        height: 100,
         displayValue: false,
-        margin: 10,
+        margin: 5,
         background: "#ffffff",
       });
     }
@@ -368,7 +368,8 @@ export default function PrintBarcodes() {
             align-items: center;
             justify-content: center;
             box-sizing: border-box;
-            padding: 0.3in;
+            padding: 0;
+            overflow: hidden;
           }
 
           .print-page:last-child {
@@ -376,12 +377,13 @@ export default function PrintBarcodes() {
           }
 
           .barcode-label {
-            width: 3.4in;
-            height: 5.4in;
+            width: 5.8in;
+            height: 3.8in;
             flex-direction: column;
-            gap: 0.2in;
+            gap: 0.15in;
             transform: rotate(90deg);
             transform-origin: center center;
+            padding: 0.2in;
           }
 
           .barcode-sku-row {
@@ -389,9 +391,10 @@ export default function PrintBarcodes() {
           }
 
           .barcode-sku-text {
-            font-size: 22px;
+            font-size: 28px;
             letter-spacing: 2px;
-            line-height: 1.2;
+            line-height: 1.1;
+            font-weight: bold;
           }
 
           .barcode-row {
@@ -399,11 +402,13 @@ export default function PrintBarcodes() {
             display: flex;
             align-items: center;
             justify-content: center;
+            min-height: 0;
           }
 
           .barcode-row svg {
-            max-width: 3.2in;
-            max-height: 2.5in;
+            max-width: 5.2in;
+            max-height: 2in;
+            width: 100%;
           }
 
           .barcode-code-row {
@@ -411,8 +416,9 @@ export default function PrintBarcodes() {
           }
 
           .barcode-code-text {
-            font-size: 15px;
+            font-size: 18px;
             letter-spacing: 1.5px;
+            font-weight: 600;
           }
 
           .barcode-name-row {
@@ -420,8 +426,9 @@ export default function PrintBarcodes() {
           }
 
           .barcode-name-text {
-            font-size: 16px;
-            line-height: 1.3;
+            font-size: 20px;
+            line-height: 1.2;
+            font-weight: 600;
           }
         }
       `}</style>
