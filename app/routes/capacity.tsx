@@ -34,10 +34,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Get process configurations
   const processConfigs = await prisma.processConfig.findMany({
     where: { isActive: true },
-    orderBy: [
-      { processOrder: "asc" },
-      { displayName: "asc" },
-    ],
+    orderBy: { displayName: "asc" },
   });
 
   // Get all SKUs for process assignment
