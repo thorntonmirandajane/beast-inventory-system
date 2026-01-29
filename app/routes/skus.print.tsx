@@ -67,9 +67,12 @@ function BarcodeLabel({ sku, name, id, type, upc }: { sku: string; name: string;
       <div className="barcode-code-row">
         <span className="barcode-code-text">{displayedBarcodeValue}</span>
       </div>
-      <div className="barcode-name-row">
-        <span className="barcode-name-text">{name.toUpperCase()}</span>
-      </div>
+      {/* Only show name for non-COMPLETED products */}
+      {type !== "COMPLETED" && (
+        <div className="barcode-name-row">
+          <span className="barcode-name-text">{name.toUpperCase()}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -240,7 +243,7 @@ export default function PrintBarcodes() {
                   </button>
                 </div>
                 <p className="text-sm text-gray-500 mb-4">
-                  EACH LABEL IS SIZED FOR 4" X 6" THERMAL LABELS
+                  EACH LABEL IS SIZED FOR 6" X 4" THERMAL LABELS (LANDSCAPE)
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {skusToShow.map((sku) => (
@@ -340,7 +343,7 @@ export default function PrintBarcodes() {
         /* Print styles */
         @media print {
           @page {
-            size: 4in 6in;
+            size: 6in 4in landscape;
             margin: 0;
           }
 
@@ -358,8 +361,8 @@ export default function PrintBarcodes() {
           }
 
           .print-page {
-            width: 4in;
-            height: 6in;
+            width: 6in;
+            height: 4in;
             page-break-after: always;
             display: flex;
             align-items: center;
@@ -373,8 +376,8 @@ export default function PrintBarcodes() {
           }
 
           .barcode-label {
-            width: 3.4in;
-            height: 5.4in;
+            width: 5.4in;
+            height: 3.4in;
             flex-direction: column;
             gap: 0.2in;
           }
@@ -397,8 +400,8 @@ export default function PrintBarcodes() {
           }
 
           .barcode-row svg {
-            max-width: 3.2in;
-            max-height: 2.5in;
+            max-width: 5in;
+            max-height: 2in;
           }
 
           .barcode-code-row {
