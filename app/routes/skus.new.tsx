@@ -15,7 +15,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
-  return { user, allSkus };
+  // Get all active process configurations
+  const activeProcesses = await prisma.processConfig.findMany({
+    where: { isActive: true },
+    select: { processName: true, displayName: true },
+    orderBy: { displayName: "asc" },
+  });
+
+  // Get all unique categories from existing SKUs
+  const uniqueCategories = await prisma.sku.findMany({
+    where: { category: { not: null }, isActive: true },
+    select: { category: true },
+    distinct: ["category"],
+    orderBy: { category: "asc" },
+  });
+
+  const categories = uniqueCategories.map(s => s.category).filter((c): c is string => c !== null);
+
+  return { user, allSkus, activeProcesses, categories };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -82,7 +99,7 @@ interface SelectedComponent {
 }
 
 export default function NewSku() {
-  const { user, allSkus } = useLoaderData<typeof loader>();
+  const { user, allSkus, activeProcesses, categories } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -212,10 +229,11 @@ export default function NewSku() {
                 <label className="form-label">Process</label>
                 <select name="material" className="form-select">
                   <option value="">No process</option>
-                  <option value="TIPPING">Tipping</option>
-                  <option value="BLADING">Blading</option>
-                  <option value="STUD_TESTING">Stud Testing</option>
-                  <option value="COMPLETE_PACKS">Complete Packs</option>
+                  {activeProcesses.map((process) => (
+                    <option key={process.processName} value={process.processName}>
+                      {process.displayName}
+                    </option>
+                  ))}
                 </select>
                 <p className="text-sm text-gray-500 mt-1">
                   Which process step this SKU is used in
@@ -225,12 +243,11 @@ export default function NewSku() {
                 <label className="form-label">Category</label>
                 <select name="category" className="form-select">
                   <option value="">No category</option>
-                  <option value="Tips">Tips</option>
-                  <option value="Blades">Blades</option>
-                  <option value="Studs">Studs</option>
-                  <option value="Packs">Packs</option>
-                  <option value="Ferrules">Ferrules</option>
-                  <option value="Accessories">Accessories</option>
+                  {categories.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
                 </select>
                 <p className="text-sm text-gray-500 mt-1">
                   Product category for organization (e.g., Tips, Blades, etc.)
