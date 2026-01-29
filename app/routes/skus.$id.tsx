@@ -1408,23 +1408,20 @@ export default function SkuDetail() {
                 </div>
                 <div className="form-group">
                   <label className="form-label">Process</label>
-                  <input
-                    type="text"
+                  <select
                     name="material"
-                    className="form-input"
-                    placeholder="e.g., Tipped, Bladed, Stud Tested"
+                    className="form-select"
                     defaultValue={sku.material || ""}
-                    list="process-options"
-                  />
-                  <datalist id="process-options">
+                  >
+                    <option value="">No process</option>
                     {processConfigs.map((config) => (
                       <option key={config.processName} value={config.processName}>
                         {config.displayName}
                       </option>
                     ))}
-                  </datalist>
+                  </select>
                   <p className="text-xs text-gray-500 mt-1">
-                    Select from active processes
+                    Select the process this SKU goes through
                   </p>
                 </div>
                 <div className="form-group">
