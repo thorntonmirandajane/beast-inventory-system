@@ -243,7 +243,7 @@ export default function PrintBarcodes() {
                   </button>
                 </div>
                 <p className="text-sm text-gray-500 mb-4">
-                  EACH LABEL IS SIZED FOR 6" X 4" THERMAL LABELS (LANDSCAPE)
+                  EACH LABEL IS SIZED FOR 4" X 6" THERMAL LABELS
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {skusToShow.map((sku) => (
@@ -343,7 +343,7 @@ export default function PrintBarcodes() {
         /* Print styles */
         @media print {
           @page {
-            size: 6in 4in landscape;
+            size: 4in 6in;
             margin: 0;
           }
 
@@ -361,8 +361,8 @@ export default function PrintBarcodes() {
           }
 
           .print-page {
-            width: 6in;
-            height: 4in;
+            width: 4in;
+            height: 6in;
             page-break-after: always;
             display: flex;
             align-items: center;
@@ -376,10 +376,12 @@ export default function PrintBarcodes() {
           }
 
           .barcode-label {
-            width: 5.4in;
-            height: 3.4in;
+            width: 3.4in;
+            height: 5.4in;
             flex-direction: column;
             gap: 0.2in;
+            transform: rotate(90deg);
+            transform-origin: center center;
           }
 
           .barcode-sku-row {
@@ -400,8 +402,8 @@ export default function PrintBarcodes() {
           }
 
           .barcode-row svg {
-            max-width: 5in;
-            max-height: 2in;
+            max-width: 3.2in;
+            max-height: 2.5in;
           }
 
           .barcode-code-row {
