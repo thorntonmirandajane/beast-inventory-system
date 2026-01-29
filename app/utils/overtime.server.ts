@@ -1,4 +1,4 @@
-import { ClockEvent } from "@prisma/client";
+import type { ClockEvent } from "@prisma/client";
 
 export interface WeeklyHours {
   weekStart: Date;
