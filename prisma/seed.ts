@@ -758,6 +758,32 @@ async function main() {
   console.log(`   BOM Relationships: ${bomCount}`);
 
   // ============================================
+  // CREATE PROCESS CONFIGURATIONS
+  // ============================================
+  console.log("\n⚙️ Creating process configurations...");
+
+  const processConfigs = [
+    { processName: "TIPPING", displayName: "Tipping", description: "Tip installation process", secondsPerUnit: 30, processOrder: 1 },
+    { processName: "BLADING", displayName: "Blading", description: "Blade installation process", secondsPerUnit: 45, processOrder: 2 },
+    { processName: "STUD_TESTING", displayName: "Stud Testing", description: "Stud test and quality check", secondsPerUnit: 60, processOrder: 3 },
+    { processName: "COMPLETE_PACKS", displayName: "Complete Packs", description: "Final packaging process", secondsPerUnit: 90, processOrder: 4 },
+  ];
+
+  for (const config of processConfigs) {
+    await prisma.processConfig.upsert({
+      where: { processName: config.processName },
+      update: {
+        displayName: config.displayName,
+        description: config.description,
+        secondsPerUnit: config.secondsPerUnit,
+        processOrder: config.processOrder,
+      },
+      create: config,
+    });
+  }
+  console.log(`✅ Created/updated ${processConfigs.length} process configurations`);
+
+  // ============================================
   // SET PROCESS AND CATEGORY VALUES
   // ============================================
   console.log("\n📋 Setting process and category values...");
