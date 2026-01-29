@@ -241,30 +241,38 @@ export default function WorkerSubmitTask() {
   const selectedProcessConfig = processes.find(p => p.processName === selectedProcess);
   const isMiscTask = selectedProcess === "MISC";
 
+  // Helper to match SKU material to process displayName
+  // SKU material: "Bladed", "Tipped", "Stud Tested", "Completed Packs"
+  // Process displayName: "Blading", "Tipping", "Stud Testing", "Complete Packs"
+  const matchesProcessType = (material: string | null, displayName: string): boolean => {
+    if (!material) return false;
+    const matLower = material.toLowerCase().trim();
+    const procLower = displayName.toLowerCase().trim();
+
+    // Direct match
+    if (matLower === procLower) return true;
+
+    // "bladed" -> "blading", "tipped" -> "tipping"
+    if (matLower.replace(/ed$/, 'ing') === procLower) return true;
+
+    // "stud tested" -> "stud testing"
+    if (matLower.replace(/ed$/, 'ing') === procLower) return true;
+
+    // "completed packs" -> "complete packs"
+    if (matLower.replace('completed', 'complete') === procLower) return true;
+
+    return false;
+  };
+
   const filteredSkus = isMiscTask
     ? []
     : skus.filter(sku => {
         if (!selectedProcessConfig) return false;
 
-        // Match SKU material field to process
-        // Material field can be: "Tipped", "Bladed", "Stud Tested", "Completed Packs"
-        // ProcessName can be: "TIPPING", "BLADING", "STUD_TESTING", "COMPLETE_PACKS"
-        let matchesProcess = false;
-
-        if (sku.material) {
-          const materialLower = sku.material.toLowerCase().replace(/\s+/g, '_');
-          const processLower = selectedProcessConfig.processName.toLowerCase();
-
-          // Check if material matches process
-          // "tipped" -> "tipping", "bladed" -> "blading", "stud_tested" -> "stud_testing"
-          // "completed_packs" -> "complete_packs"
-          matchesProcess = materialLower === processLower ||
-                          materialLower.replace(/_/g, '').replace('ed', 'ing') === processLower.replace(/_/g, '') ||
-                          materialLower.replace('completed', 'complete') === processLower;
+        // Match SKU material field to process displayName
+        if (!matchesProcessType(sku.material, selectedProcessConfig.displayName)) {
+          return false;
         }
-
-        // If doesn't match process, exclude it
-        if (!matchesProcess) return false;
 
         // Then apply search filter
         if (skuSearchQuery) {

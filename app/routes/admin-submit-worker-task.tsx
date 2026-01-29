@@ -53,6 +53,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       sku: true,
       name: true,
       category: true,
+      material: true,
       type: true,
     },
     orderBy: [{ type: "asc" }, { sku: "asc" }],
@@ -181,25 +182,24 @@ export default function AdminSubmitWorkerTask() {
     : skus.filter(sku => {
         if (!selectedProcessConfig) return false;
 
-        const processName = selectedProcessConfig.processName;
+        // Match SKU material field to process displayName
+        // SKU material: "Bladed", "Tipped", "Stud Tested", "Completed Packs"
+        // Process displayName: "Blading", "Tipping", "Stud Testing", "Complete Packs"
+        if (!sku.material) return false;
 
-        if (processName === "TIPPING") {
-          return sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads" || sku.category === "Tips");
-        }
+        const matLower = sku.material.toLowerCase().trim();
+        const procLower = selectedProcessConfig.displayName.toLowerCase().trim();
 
-        if (processName === "BLADING") {
-          return sku.type === "ASSEMBLY" && (sku.category === "Ferrules" || sku.category === "Broadheads");
-        }
+        // Direct match
+        if (matLower === procLower) return true;
 
-        if (processName === "STUD_TESTING") {
-          return sku.category === "Studs";
-        }
+        // "bladed" -> "blading", "tipped" -> "tipping", "stud tested" -> "stud testing"
+        if (matLower.replace(/ed$/, 'ing') === procLower) return true;
 
-        if (processName === "COMPLETE_PACKS") {
-          return sku.type === "COMPLETED";
-        }
+        // "completed packs" -> "complete packs"
+        if (matLower.replace('completed', 'complete') === procLower) return true;
 
-        return true;
+        return false;
       });
 
   const handleAddTask = () => {
