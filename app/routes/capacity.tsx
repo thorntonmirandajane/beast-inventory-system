@@ -5,6 +5,29 @@ import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 
+// Helper to match SKU material field to process config
+// SKU material: "Tipped", "Bladed", "Stud Tested", "Completed Packs"
+// Process displayName: "Tipping", "Blading", "Stud Testing", "Complete Packs"
+function matchesProcess(skuMaterial: string | null, processDisplayName: string): boolean {
+  if (!skuMaterial) return false;
+  const materialLower = skuMaterial.toLowerCase().replace(/\s+/g, ' ');
+  const processLower = processDisplayName.toLowerCase().replace(/\s+/g, ' ');
+
+  // Direct match
+  if (materialLower === processLower) return true;
+
+  // "Tipped" -> "Tipping", "Bladed" -> "Blading"
+  if (materialLower.replace(/ed$/, 'ing') === processLower) return true;
+
+  // "Stud Tested" -> "Stud Testing"
+  if (materialLower.replace(/ed$/, 'ing') === processLower) return true;
+
+  // "Completed Packs" -> "Complete Packs"
+  if (materialLower.replace('completed', 'complete') === processLower) return true;
+
+  return false;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
 
@@ -20,7 +43,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Get all SKUs for process assignment
   const allSkus = await prisma.sku.findMany({
     where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } },
-    select: { id: true, sku: true, name: true, type: true, category: true },
+    select: { id: true, sku: true, name: true, type: true, category: true, material: true },
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
@@ -414,7 +437,7 @@ export default function Capacity() {
               </thead>
               <tbody>
                 {processConfigs.map((config) => {
-                  const skusForProcess = allSkus.filter(s => s.category === config.displayName);
+                  const skusForProcess = allSkus.filter(s => matchesProcess(s.material, config.displayName));
                   return (
                     <tr key={config.id}>
                       <td>

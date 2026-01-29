@@ -176,7 +176,7 @@ export default function SkusList() {
                   className="form-input flex-1"
                   defaultValue={processFilter}
                 >
-                  <option value="">All Materials</option>
+                  <option value="">All Processes</option>
                   {processes.map((process) => (
                     <option key={process} value={process}>
                       {process}
@@ -262,7 +262,7 @@ export default function SkusList() {
                 <th>SKU</th>
                 <th>Name</th>
                 <th>Type</th>
-                <th>Material</th>
+                <th>Process</th>
                 <th>Category</th>
                 <th className="text-right">Inventory</th>
                 <th className="text-right">Components</th>

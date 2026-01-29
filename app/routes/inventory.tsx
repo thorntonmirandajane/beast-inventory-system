@@ -185,7 +185,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       name: sku.name,
       type: sku.type,
       category: sku.category, // Category field contains material type (Aluminum, Titanium, etc.)
-      process: sku.material, // Material field contains material type (Titanium, Aluminum, Steel, etc.)
+      process: sku.material, // Material field contains process type (Tipped, Bladed, Stud Tested, etc.)
       processOrder: sku.processOrder,
       raw: byState.RAW,
       // For COMPLETED type, show COMPLETED state. For ASSEMBLY type, show ASSEMBLED state
@@ -967,7 +967,7 @@ export default function Inventory() {
                     </svg>
                     <span className="capitalize">
                       {column === "inAssembly" ? "In Completed Package" :
-                       column === "process" ? "Material" : column}
+                       column === "process" ? "Process" : column}
                     </span>
                   </button>
                 ))}
@@ -1051,7 +1051,7 @@ export default function Inventory() {
                   {shouldShowColumn("process") && (
                     <th>
                       <div className="flex items-center justify-between gap-2">
-                        <span className="cursor-pointer" onClick={() => handleSort("process")}>Material {sortBy === "process" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <span className="cursor-pointer" onClick={() => handleSort("process")}>Process {sortBy === "process" && (sortDir === "asc" ? "↑" : "↓")}</span>
                         <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("process"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         </button>
