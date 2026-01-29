@@ -31,7 +31,7 @@ export default function MyEfficiency() {
   const formatTime = (minutes: number) => {
     const hours = Math.floor(minutes / 60);
     const mins = Math.round(minutes % 60);
-    return \`\${hours}h \${mins}m\`;
+    return `${hours}h ${mins}m`;
   };
 
   const getEfficiencyColor = (efficiency: number) => {
@@ -57,9 +57,9 @@ export default function MyEfficiency() {
       <div className="stats-grid mb-6">
         <div className="stat-card">
           <div className="stat-label">30-Day Efficiency</div>
-          <div className={\`stat-value \${getEfficiencyColor(efficiencyStats.overallEfficiency)}\`}>
+          <div className={`stat-value ${getEfficiencyColor(efficiencyStats.overallEfficiency)}`}>
             {efficiencyStats.overallEfficiency > 0
-              ? \`\${efficiencyStats.overallEfficiency.toFixed(0)}%\`
+              ? `${efficiencyStats.overallEfficiency.toFixed(0)}%`
               : "N/A"}
           </div>
           <div className="text-sm text-gray-500 mt-2">
@@ -69,9 +69,9 @@ export default function MyEfficiency() {
 
         <div className="stat-card">
           <div className="stat-label">7-Day Efficiency</div>
-          <div className={\`stat-value \${getEfficiencyColor(weekStats.overallEfficiency)}\`}>
+          <div className={`stat-value ${getEfficiencyColor(weekStats.overallEfficiency)}`}>
             {weekStats.overallEfficiency > 0
-              ? \`\${weekStats.overallEfficiency.toFixed(0)}%\`
+              ? `${weekStats.overallEfficiency.toFixed(0)}%`
               : "N/A"}
           </div>
           <div className="text-sm text-gray-500 mt-2">
@@ -202,9 +202,9 @@ export default function MyEfficiency() {
                       </td>
                       <td className="text-right">
                         <span
-                          className={\`badge \${getEfficiencyBadge(entry.efficiency || 0)}\`}
+                          className={`badge ${getEfficiencyBadge(entry.efficiency || 0)}`}
                         >
-                          {entry.efficiency ? \`\${entry.efficiency.toFixed(0)}%\` : "—"}
+                          {entry.efficiency ? `${entry.efficiency.toFixed(0)}%` : "—"}
                         </span>
                       </td>
                       <td className="text-right text-sm text-gray-600">
