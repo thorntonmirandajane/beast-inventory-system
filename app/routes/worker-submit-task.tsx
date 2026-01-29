@@ -255,10 +255,12 @@ export default function WorkerSubmitTask() {
           const materialLower = sku.material.toLowerCase().replace(/\s+/g, '_');
           const processLower = selectedProcessConfig.processName.toLowerCase();
 
-          // Check if material matches process (e.g., "tipped" matches "tipping", "stud_tested" matches "stud_testing")
+          // Check if material matches process
+          // "tipped" -> "tipping", "bladed" -> "blading", "stud_tested" -> "stud_testing"
+          // "completed_packs" -> "complete_packs"
           matchesProcess = materialLower === processLower ||
-                          materialLower.replace('ed', 'ing') === processLower ||
-                          materialLower === processLower.replace('_', ' ');
+                          materialLower.replace(/_/g, '').replace('ed', 'ing') === processLower.replace(/_/g, '') ||
+                          materialLower.replace('completed', 'complete') === processLower;
         }
 
         // If doesn't match process, exclude it
