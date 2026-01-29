@@ -209,31 +209,31 @@ export default function NewSku() {
                 />
               </div>
               <div className="form-group">
-                <label className="form-label">Process Category</label>
-                <select name="category" className="form-select">
-                  <option value="">No category</option>
+                <label className="form-label">Process</label>
+                <select name="material" className="form-select">
+                  <option value="">No process</option>
                   <option value="TIPPING">Tipping</option>
                   <option value="BLADING">Blading</option>
                   <option value="STUD_TESTING">Stud Testing</option>
                   <option value="COMPLETE_PACKS">Complete Packs</option>
                 </select>
                 <p className="text-sm text-gray-500 mt-1">
-                  Which process step this SKU belongs to
+                  Which process step this SKU is used in
                 </p>
               </div>
               <div className="form-group">
-                <label className="form-label">Material Type</label>
-                <select name="material" className="form-select">
-                  <option value="">No material type</option>
-                  <option value="TITANIUM">Titanium</option>
-                  <option value="ALUMINUM">Aluminum</option>
-                  <option value="STEEL">Steel</option>
-                  <option value="STAINLESS">Stainless Steel</option>
-                  <option value="CARBON">Carbon</option>
-                  <option value="OTHER">Other</option>
+                <label className="form-label">Category</label>
+                <select name="category" className="form-select">
+                  <option value="">No category</option>
+                  <option value="Tips">Tips</option>
+                  <option value="Blades">Blades</option>
+                  <option value="Studs">Studs</option>
+                  <option value="Packs">Packs</option>
+                  <option value="Ferrules">Ferrules</option>
+                  <option value="Accessories">Accessories</option>
                 </select>
                 <p className="text-sm text-gray-500 mt-1">
-                  Primary material for this SKU
+                  Product category for organization (e.g., Tips, Blades, etc.)
                 </p>
               </div>
               <div className="form-group md:col-span-2">

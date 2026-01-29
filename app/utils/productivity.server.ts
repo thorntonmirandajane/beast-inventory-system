@@ -215,9 +215,11 @@ export async function approveTimeEntry(
           continue;
         }
 
-        // Use admin-adjusted quantity if present, otherwise use submitted quantity
-        const finalQuantity = line.adminAdjustedQuantity ?? line.quantityCompleted;
-        console.log(`[Approve] Final quantity: ${finalQuantity} (adjusted: ${line.adminAdjustedQuantity}, completed: ${line.quantityCompleted})`);
+        // Calculate final quantity: (admin adjusted OR submitted) minus rejected
+        const baseQuantity = line.adminAdjustedQuantity ?? line.quantityCompleted;
+        const rejectedQuantity = line.rejectionQuantity ?? 0;
+        const finalQuantity = baseQuantity - rejectedQuantity;
+        console.log(`[Approve] Final quantity: ${finalQuantity} (base: ${baseQuantity}, rejected: ${rejectedQuantity})`);
 
         if (finalQuantity === 0) {
           console.log(`[Approve] Skipping zero quantity line`);

@@ -70,6 +70,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     );
   }
 
+  // Get unique categories for management
+  const uniqueCategories = await prisma.sku.findMany({
+    where: { category: { not: null }, isActive: true },
+    select: { category: true },
+    distinct: ["category"],
+    orderBy: { category: "asc" },
+  });
+
+  const categories = uniqueCategories.map(c => c.category).filter(Boolean) as string[];
+
   return {
     user,
     processConfigs,
@@ -78,6 +88,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     totalWeeklyHours,
     scheduledWorkers,
     categoryInventory,
+    categories,
   };
 };
 
@@ -112,8 +123,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "Display name is required" };
     }
 
-    if (!secondsPerUnit || secondsPerUnit < 1) {
-      return { error: "Seconds per unit must be at least 1" };
+    // secondsPerUnit is now optional - can be 0 or null for "Unassigned"
+    if (secondsPerUnit && secondsPerUnit < 1) {
+      return { error: "Seconds per unit must be at least 1 if provided" };
     }
 
     // Check for duplicates
@@ -125,13 +137,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: `Process "${processName}" already exists` };
     }
 
-    // Create process
+    // Create process (secondsPerUnit defaults to 0 if not provided)
     const process = await prisma.processConfig.create({
       data: {
         processName,
         displayName,
         description: description || null,
-        secondsPerUnit,
+        secondsPerUnit: secondsPerUnit || 0,
         isActive: true,
       },
     });
@@ -260,6 +272,54 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message: `Process "${process.displayName}" deleted successfully` };
   }
 
+  if (intent === "rename-category") {
+    const oldName = formData.get("oldName") as string;
+    const newName = formData.get("newName") as string;
+
+    if (!oldName || !newName) {
+      return { error: "Both old and new category names are required" };
+    }
+
+    if (oldName === newName) {
+      return { error: "New category name must be different" };
+    }
+
+    // Update all SKUs with this category
+    const result = await prisma.sku.updateMany({
+      where: { category: oldName },
+      data: { category: newName },
+    });
+
+    await createAuditLog(user.id, "RENAME_CATEGORY", "Sku", "", {
+      oldName,
+      newName,
+      skuCount: result.count,
+    });
+
+    return { success: true, message: `Category renamed from "${oldName}" to "${newName}" (${result.count} SKUs updated)` };
+  }
+
+  if (intent === "delete-category") {
+    const categoryName = formData.get("categoryName") as string;
+
+    if (!categoryName) {
+      return { error: "Category name is required" };
+    }
+
+    // Remove category from all SKUs (set to null)
+    const result = await prisma.sku.updateMany({
+      where: { category: categoryName },
+      data: { category: null },
+    });
+
+    await createAuditLog(user.id, "DELETE_CATEGORY", "Sku", "", {
+      categoryName,
+      skuCount: result.count,
+    });
+
+    return { success: true, message: `Category "${categoryName}" deleted (${result.count} SKUs now uncategorized)` };
+  }
+
   return { error: "Invalid action" };
 };
 
@@ -272,6 +332,7 @@ export default function Capacity() {
     totalWeeklyHours,
     scheduledWorkers,
     categoryInventory,
+    categories,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -350,8 +411,14 @@ export default function Capacity() {
                       <div className="text-sm text-gray-600">{config.description || "—"}</div>
                     </td>
                     <td>
-                      <span className="font-mono font-semibold">{config.secondsPerUnit}</span>
-                      <span className="text-sm text-gray-500 ml-1">sec/unit</span>
+                      {config.secondsPerUnit > 0 ? (
+                        <>
+                          <span className="font-mono font-semibold">{config.secondsPerUnit}</span>
+                          <span className="text-sm text-gray-500 ml-1">sec/unit</span>
+                        </>
+                      ) : (
+                        <span className="badge bg-yellow-100 text-yellow-800">Unassigned</span>
+                      )}
                     </td>
                     {user.role === "ADMIN" && (
                       <td>
@@ -418,18 +485,17 @@ export default function Capacity() {
                     </div>
 
                     <div className="form-group mb-0">
-                      <label className="form-label">Seconds Per Unit *</label>
+                      <label className="form-label">Seconds Per Unit</label>
                       <input
                         type="number"
                         name="secondsPerUnit"
-                        required
                         min="1"
                         step="1"
-                        placeholder="120"
+                        placeholder="120 (optional - leave blank for 'Unassigned')"
                         className="form-input"
                       />
                       <p className="text-xs text-gray-500 mt-1">
-                        Average time to complete one unit
+                        Average time to complete one unit (optional)
                       </p>
                     </div>
                   </div>
@@ -476,6 +542,85 @@ export default function Capacity() {
                   <div className="text-sm text-gray-500">{data.skuCount} SKUs</div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Category Management */}
+      {user.role === "ADMIN" && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">Category Management</h2>
+            <p className="text-sm text-gray-500">Manage SKU categories for organization</p>
+          </div>
+          <div className="card-body">
+            {categories.length === 0 ? (
+              <div className="text-center text-gray-500 py-8">
+                <p>No categories defined yet</p>
+                <p className="text-sm mt-2">Categories are created automatically when you assign them to SKUs</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {categories.map((category) => {
+                  const skuCount = Object.values(allSkus).filter(s => s.category === category).length;
+                  return (
+                    <div key={category} className="flex items-center justify-between p-4 bg-gray-50 rounded border">
+                      <div className="flex-1">
+                        <div className="font-semibold">{category}</div>
+                        <div className="text-sm text-gray-500">{skuCount} SKU{skuCount !== 1 ? 's' : ''}</div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newName = prompt(`Rename category "${category}" to:`, category);
+                            if (newName && newName.trim() !== "" && newName !== category) {
+                              const form = document.createElement('form');
+                              form.method = 'POST';
+                              form.innerHTML = `
+                                <input type="hidden" name="intent" value="rename-category" />
+                                <input type="hidden" name="oldName" value="${category}" />
+                                <input type="hidden" name="newName" value="${newName.trim()}" />
+                              `;
+                              document.body.appendChild(form);
+                              form.submit();
+                            }
+                          }}
+                          className="btn btn-sm btn-secondary"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm(`Delete category "${category}"? This will remove the category from ${skuCount} SKU${skuCount !== 1 ? 's' : ''}.`)) {
+                              const form = document.createElement('form');
+                              form.method = 'POST';
+                              form.innerHTML = `
+                                <input type="hidden" name="intent" value="delete-category" />
+                                <input type="hidden" name="categoryName" value="${category}" />
+                              `;
+                              document.body.appendChild(form);
+                              form.submit();
+                            }
+                          }}
+                          className="btn btn-sm btn-error"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="mt-6 pt-6 border-t">
+              <p className="text-sm text-gray-600 mb-2">
+                <strong>Note:</strong> Categories are automatically created when you assign them to SKUs during SKU creation or editing.
+                You can rename or delete existing categories here.
+              </p>
             </div>
           </div>
         </div>
