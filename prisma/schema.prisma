@@ -77,6 +77,7 @@ model Sku {
   category            String?
   material            String?
   upc                 String?
+  processOrder        Int?
   usedInBoms          BomComponent[]    @relation("ComponentSku")
   bomComponents       BomComponent[]    @relation("ParentSku")
   inventoryItems      InventoryItem[]
@@ -265,7 +266,6 @@ model ProcessConfig {
   id             String          @id @default(cuid())
   processName    String          @unique
   displayName    String
-  processOrder   Int?
   description    String?
   secondsPerUnit Int
   isActive       Boolean         @default(true)

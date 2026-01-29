@@ -336,6 +336,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const category = formData.get("category") as string | null;
     const material = formData.get("material") as string | null;
     const upc = formData.get("upc") as string | null;
+    const processOrderStr = formData.get("processOrder") as string | null;
+    const processOrder = processOrderStr ? parseInt(processOrderStr, 10) : null;
 
     if (!name) {
       return { error: "Name is required" };
@@ -363,6 +365,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         category: category || null,
         material: material || null,
         upc: upc || null,
+        processOrder: processOrder,
       },
     });
 
@@ -808,6 +811,7 @@ export default function SkuDetail() {
                 <table className="data-table mb-4">
                   <thead>
                     <tr>
+                      <th>Order</th>
                       <th>Component SKU</th>
                       <th>Name</th>
                       <th className="text-right">Qty Needed</th>
@@ -816,24 +820,37 @@ export default function SkuDetail() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sku.bomComponents.map((bom) => {
-                      const available = bom.componentSku.inventoryItems.reduce(
-                        (sum, item) => sum + item.quantity,
-                        0
-                      );
-                      return (
-                        <tr key={bom.id}>
-                          <td>
-                            <Link
-                              to={`/skus/${bom.componentSku.id}`}
-                              className="font-mono text-sm text-blue-600 hover:underline"
-                            >
-                              {bom.componentSku.sku}
-                            </Link>
-                          </td>
-                          <td className="max-w-xs truncate text-sm">
-                            {bom.componentSku.name}
-                          </td>
+                    {sku.bomComponents
+                      .sort((a, b) => {
+                        // Sort by processOrder (nulls last), then by SKU
+                        const orderA = a.componentSku.processOrder ?? 999999;
+                        const orderB = b.componentSku.processOrder ?? 999999;
+                        if (orderA !== orderB) return orderA - orderB;
+                        return a.componentSku.sku.localeCompare(b.componentSku.sku);
+                      })
+                      .map((bom) => {
+                        const available = bom.componentSku.inventoryItems.reduce(
+                          (sum, item) => sum + item.quantity,
+                          0
+                        );
+                        return (
+                          <tr key={bom.id}>
+                            <td>
+                              <span className="text-gray-600 font-mono text-sm">
+                                {bom.componentSku.processOrder ?? "—"}
+                              </span>
+                            </td>
+                            <td>
+                              <Link
+                                to={`/skus/${bom.componentSku.id}`}
+                                className="font-mono text-sm text-blue-600 hover:underline"
+                              >
+                                {bom.componentSku.sku}
+                              </Link>
+                            </td>
+                            <td className="max-w-xs truncate text-sm">
+                              {bom.componentSku.name}
+                            </td>
                           <td className="text-right font-semibold">{bom.quantity}</td>
                           <td
                             className={`text-right font-semibold ${
@@ -1441,6 +1458,21 @@ export default function SkuDetail() {
                   </datalist>
                   <p className="text-xs text-gray-500 mt-1">
                     Select from existing or type a new value
+                  </p>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Process Order</label>
+                  <input
+                    type="number"
+                    name="processOrder"
+                    className="form-input"
+                    placeholder="e.g., 1, 2, 3..."
+                    defaultValue={sku.processOrder || ""}
+                    min="1"
+                    step="1"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Workflow sequence number for this SKU
                   </p>
                 </div>
                 <div className="form-group md:col-span-2">

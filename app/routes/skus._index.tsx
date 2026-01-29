@@ -53,7 +53,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         select: { quantity: true, state: true },
       },
     },
-    orderBy: [{ type: "asc" }, { sku: "asc" }],
+    orderBy: [
+      { processOrder: "asc" },
+      { type: "asc" },
+      { sku: "asc" }
+    ],
   });
 
   const skusWithStats = skus.map((sku) => ({
@@ -254,6 +258,7 @@ export default function SkusList() {
           <table className="data-table">
             <thead>
               <tr>
+                <th>Order</th>
                 <th>SKU</th>
                 <th>Name</th>
                 <th>Type</th>
@@ -267,6 +272,11 @@ export default function SkusList() {
             <tbody>
               {skus.map((sku) => (
                 <tr key={sku.id}>
+                  <td>
+                    <span className="text-gray-600 font-mono text-sm">
+                      {sku.processOrder ?? "—"}
+                    </span>
+                  </td>
                   <td>
                     <Link
                       to={`/skus/${sku.id}`}

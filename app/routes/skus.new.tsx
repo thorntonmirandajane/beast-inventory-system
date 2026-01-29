@@ -45,6 +45,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const description = formData.get("description") as string;
   const category = formData.get("category") as string | null;
   const material = formData.get("material") as string | null;
+  const processOrderStr = formData.get("processOrder") as string | null;
+  const processOrder = processOrderStr ? parseInt(processOrderStr, 10) : null;
 
   if (!sku || !name || !type) {
     return { error: "SKU, NAME, AND TYPE ARE REQUIRED" };
@@ -71,6 +73,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       description: description?.toUpperCase() || null,
       category: category || null,
       material: material || null,
+      processOrder: processOrder,
       bomComponents: {
         create: components.map((c) => ({
           componentSkuId: c.skuId,
@@ -251,6 +254,20 @@ export default function NewSku() {
                 </select>
                 <p className="text-sm text-gray-500 mt-1">
                   Product category for organization (e.g., Tips, Blades, etc.)
+                </p>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Process Order</label>
+                <input
+                  type="number"
+                  name="processOrder"
+                  className="form-input"
+                  placeholder="E.G., 1, 2, 3..."
+                  min="1"
+                  step="1"
+                />
+                <p className="text-sm text-gray-500 mt-1">
+                  Workflow sequence number for this SKU
                 </p>
               </div>
               <div className="form-group md:col-span-2">
