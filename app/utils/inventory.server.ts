@@ -335,6 +335,37 @@ export async function calculateTotalRequirements(
 // ============================================
 
 /**
+ * Log inventory movement
+ */
+export async function logInventoryMovement(
+  skuId: string,
+  action: "RECEIVED" | "CONSUMED" | "PRODUCED" | "TRANSFERRED_OUT" | "TRANSFERRED_IN" | "ADJUSTED" | "DISPOSED",
+  quantity: number,
+  fromState?: InventoryState,
+  toState?: InventoryState,
+  relatedResource?: string,
+  relatedResourceType?: string,
+  processName?: string,
+  notes?: string,
+  performedById?: string
+): Promise<void> {
+  await prisma.inventoryLog.create({
+    data: {
+      skuId,
+      action,
+      quantity,
+      fromState: fromState || null,
+      toState: toState || null,
+      relatedResource: relatedResource || null,
+      relatedResourceType: relatedResourceType || null,
+      processName: processName || null,
+      notes: notes || null,
+      performedById: performedById || null,
+    },
+  });
+}
+
+/**
  * Add inventory (used when receiving is signed off or build completes)
  */
 export async function addInventory(
@@ -342,7 +373,11 @@ export async function addInventory(
   quantity: number,
   state: InventoryState,
   location?: string,
-  notes?: string
+  notes?: string,
+  relatedResource?: string,
+  relatedResourceType?: string,
+  processName?: string,
+  performedById?: string
 ): Promise<void> {
   // Check if there's an existing inventory item for this SKU/state/location
   const existing = await prisma.inventoryItem.findFirst({
@@ -371,6 +406,24 @@ export async function addInventory(
       },
     });
   }
+
+  // Log the inventory movement
+  const action = relatedResourceType === "PURCHASE_ORDER" ? "RECEIVED" :
+                 relatedResourceType === "TRANSFER" ? "TRANSFERRED_IN" :
+                 "PRODUCED";
+
+  await logInventoryMovement(
+    skuId,
+    action,
+    quantity,
+    undefined,
+    state,
+    relatedResource,
+    relatedResourceType,
+    processName,
+    notes,
+    performedById
+  );
 }
 
 /**
@@ -380,7 +433,11 @@ export async function addInventory(
 export async function deductInventory(
   skuId: string,
   quantity: number,
-  states: InventoryState[]
+  states: InventoryState[],
+  relatedResource?: string,
+  relatedResourceType?: string,
+  processName?: string,
+  performedById?: string
 ): Promise<{ success: boolean; error?: string }> {
   // Get available inventory items for this SKU in the specified states
   const items = await prisma.inventoryItem.findMany({
@@ -453,6 +510,22 @@ export async function deductInventory(
       });
     }
   }
+
+  // Log the inventory movement
+  const action = relatedResourceType === "TRANSFER" ? "TRANSFERRED_OUT" : "CONSUMED";
+
+  await logInventoryMovement(
+    skuId,
+    action,
+    quantity,
+    states[0],
+    undefined,
+    relatedResource,
+    relatedResourceType,
+    processName,
+    undefined,
+    performedById
+  );
 
   return { success: true };
 }

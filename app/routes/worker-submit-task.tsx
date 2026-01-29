@@ -59,6 +59,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       sku: true,
       name: true,
       category: true,
+      material: true,
       type: true,
     },
     orderBy: [{ type: "asc" }, { sku: "asc" }],
@@ -245,9 +246,20 @@ export default function WorkerSubmitTask() {
     : skus.filter(sku => {
         if (!selectedProcessConfig) return false;
 
-        // Filter SKUs based on category matching the process displayName
-        // SKUs are assigned to processes via their category field on the Capacity page
-        const matchesProcess = sku.category === selectedProcessConfig.displayName;
+        // Match SKU material field to process
+        // Material field can be: "Tipped", "Bladed", "Stud Tested", "Completed Packs"
+        // ProcessName can be: "TIPPING", "BLADING", "STUD_TESTING", "COMPLETE_PACKS"
+        let matchesProcess = false;
+
+        if (sku.material) {
+          const materialLower = sku.material.toLowerCase().replace(/\s+/g, '_');
+          const processLower = selectedProcessConfig.processName.toLowerCase();
+
+          // Check if material matches process (e.g., "tipped" matches "tipping", "stud_tested" matches "stud_testing")
+          matchesProcess = materialLower === processLower ||
+                          materialLower.replace('ed', 'ing') === processLower ||
+                          materialLower === processLower.replace('_', ' ');
+        }
 
         // If doesn't match process, exclude it
         if (!matchesProcess) return false;

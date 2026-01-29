@@ -89,6 +89,7 @@ model Sku {
   workOrdersProducing WorkOrder[]       @relation("OutputSku")
   workerTasks         WorkerTask[]      @relation("TaskSku")
   forecastTemplateItems ForecastTemplateItem[]
+  inventoryLogs       InventoryLog[]
 
   @@map("skus")
 }
@@ -583,4 +584,35 @@ enum TimeOffRequestStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+model InventoryLog {
+  id                String              @id @default(cuid())
+  skuId             String
+  sku               Sku                 @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  action            InventoryLogAction
+  quantity          Int
+  fromState         InventoryState?
+  toState           InventoryState?
+  relatedResource   String?             // PO ID, Work Order ID, Transfer ID, Time Entry ID, etc.
+  relatedResourceType String?           // "PURCHASE_ORDER", "WORK_ORDER", "TRANSFER", "TIME_ENTRY", "DISPOSAL"
+  processName       String?             // Process that triggered the change (e.g., "TIPPING", "BLADING")
+  notes             String?
+  performedById     String?             // User who triggered the action
+  createdAt         DateTime            @default(now())
+
+  @@index([skuId, createdAt])
+  @@index([action])
+  @@index([relatedResourceType, relatedResource])
+  @@map("inventory_logs")
+}
+
+enum InventoryLogAction {
+  RECEIVED          // From purchase order
+  CONSUMED          // Used in production process
+  PRODUCED          // Created from production process
+  TRANSFERRED_OUT   // Transferred to another location
+  TRANSFERRED_IN    // Received from transfer
+  ADJUSTED          // Manual adjustment
+  DISPOSED          // Damaged/discarded items
 }

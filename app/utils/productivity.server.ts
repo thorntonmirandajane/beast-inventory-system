@@ -240,7 +240,11 @@ export async function approveTimeEntry(
           const deductResult = await deductInventory(
             line.skuId,
             finalQuantity,
-            [transition.consumes]
+            [transition.consumes],
+            timeEntry.id,
+            "TIME_ENTRY",
+            line.processName,
+            timeEntry.userId
           );
 
           if (!deductResult.success) {
@@ -253,7 +257,17 @@ export async function approveTimeEntry(
         // Add produced inventory
         if (transition.produces) {
           console.log(`[Approve] Adding ${finalQuantity} units of ${transition.produces} to SKU ${line.skuId}`);
-          await addInventory(line.skuId, finalQuantity, transition.produces);
+          await addInventory(
+            line.skuId,
+            finalQuantity,
+            transition.produces,
+            undefined,
+            undefined,
+            timeEntry.id,
+            "TIME_ENTRY",
+            line.processName,
+            timeEntry.userId
+          );
           console.log(`[Approve] Addition successful`);
         }
 

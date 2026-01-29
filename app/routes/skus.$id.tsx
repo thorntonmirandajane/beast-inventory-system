@@ -262,6 +262,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     orderBy: { category: "asc" },
   });
 
+  console.log("[SKU Detail] Getting inventory logs...");
+  // Get inventory movement logs for this SKU
+  const inventoryLogs = await prisma.inventoryLog.findMany({
+    where: { skuId: sku.id },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+
   console.log("[SKU Detail] Loader completed successfully");
     return {
       user,
@@ -271,6 +279,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       usedInProducts,
       recentReceiving,
       recentActivities,
+      inventoryLogs,
       allSkus,
       allManufacturers,
       processConfigs,
@@ -624,6 +633,7 @@ export default function SkuDetail() {
     usedInProducts,
     recentReceiving,
     recentActivities,
+    inventoryLogs,
     allManufacturers,
     allSkus,
     processConfigs,
@@ -1112,6 +1122,121 @@ export default function SkuDetail() {
             </table>
           </div>
         )}
+
+        {/* Inventory Movement Log */}
+        <div className="card">
+          <div className="card-header">
+            <h2 className="card-title">Inventory Movement Log</h2>
+            <p className="text-sm text-gray-500">Track all inventory movements for this SKU</p>
+          </div>
+          <div className="card-body">
+            {inventoryLogs && inventoryLogs.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Date/Time</th>
+                      <th>Action</th>
+                      <th>Quantity</th>
+                      <th>From State</th>
+                      <th>To State</th>
+                      <th>Process</th>
+                      <th>Related To</th>
+                      <th>Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inventoryLogs.map((log) => {
+                      const formatAction = (action: string) => {
+                        return action.replace(/_/g, ' ');
+                      };
+
+                      const getActionColor = (action: string) => {
+                        switch (action) {
+                          case "RECEIVED":
+                            return "bg-blue-100 text-blue-800";
+                          case "PRODUCED":
+                            return "bg-green-100 text-green-800";
+                          case "CONSUMED":
+                            return "bg-orange-100 text-orange-800";
+                          case "TRANSFERRED_OUT":
+                            return "bg-purple-100 text-purple-800";
+                          case "TRANSFERRED_IN":
+                            return "bg-indigo-100 text-indigo-800";
+                          case "DISPOSED":
+                            return "bg-red-100 text-red-800";
+                          case "ADJUSTED":
+                            return "bg-yellow-100 text-yellow-800";
+                          default:
+                            return "bg-gray-100 text-gray-800";
+                        }
+                      };
+
+                      return (
+                        <tr key={log.id}>
+                          <td className="text-sm whitespace-nowrap">
+                            {new Date(log.createdAt).toLocaleString()}
+                          </td>
+                          <td>
+                            <span className={`badge text-xs ${getActionColor(log.action)}`}>
+                              {formatAction(log.action)}
+                            </span>
+                          </td>
+                          <td className="font-semibold">
+                            {log.quantity.toLocaleString()}
+                          </td>
+                          <td className="text-sm">
+                            {log.fromState ? (
+                              <span className="badge bg-gray-100 text-gray-700 text-xs">
+                                {log.fromState}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="text-sm">
+                            {log.toState ? (
+                              <span className="badge bg-gray-100 text-gray-700 text-xs">
+                                {log.toState}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="text-sm">
+                            {log.processName ? (
+                              <span className="font-mono text-xs">
+                                {log.processName}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="text-sm">
+                            {log.relatedResourceType && log.relatedResource ? (
+                              <span className="text-blue-600">
+                                {log.relatedResourceType}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
+                          <td className="text-sm max-w-xs truncate">
+                            {log.notes || <span className="text-gray-400">—</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-center text-gray-500 py-8">
+                <p>No inventory movements recorded yet</p>
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* Activity Log */}
         <div className="card">
