@@ -143,12 +143,6 @@ export default function SkusList() {
                 </svg>
                 Manage Categories & Processes
               </Link>
-              <Link to="/skus/export" className="btn btn-secondary">
-                Export CSV
-              </Link>
-              <Link to="/skus/import" className="btn btn-secondary">
-                Import CSV
-              </Link>
               <Link to="/skus/new" className="btn btn-primary">
                 + Add New SKU
               </Link>

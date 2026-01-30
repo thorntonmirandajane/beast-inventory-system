@@ -897,14 +897,22 @@ export default function Inventory() {
           ))}
         </div>
 
-        {/* Reset All Button (Admin Only) */}
+        {/* Admin Actions */}
         {user.role === "ADMIN" && (
-          <button
-            onClick={() => setShowResetConfirm(true)}
-            className="btn btn-error"
-          >
-            🔄 Reset All to 0
-          </button>
+          <div className="flex gap-3">
+            <Link to="/skus/export" className="btn btn-secondary">
+              Export CSV
+            </Link>
+            <Link to="/skus/import" className="btn btn-secondary">
+              Import CSV
+            </Link>
+            <button
+              onClick={() => setShowResetConfirm(true)}
+              className="btn btn-error"
+            >
+              Reset All to 0
+            </button>
+          </div>
         )}
       </div>
 

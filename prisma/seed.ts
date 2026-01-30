@@ -758,6 +758,38 @@ async function main() {
   console.log(`   BOM Relationships: ${bomCount}`);
 
   // ============================================
+  // RENAME SKUs (Old -> New)
+  // ============================================
+  console.log("\n🔄 Renaming SKUs...");
+
+  const skuRenames = [
+    { oldSku: "D6-3PACK-23IN-100G", newSku: "D6-3PACK-100g-2.3in" },
+    { oldSku: "D6-3PACK-23IN-125G", newSku: "D6-3PACK-100g-2.0in" },
+    { oldSku: "D6-3PACK-2IN-100G", newSku: "D6-3PACK-125g-2.3in" },
+    { oldSku: "D6-3PACK-2IN-125G", newSku: "D6-3PACK-125g-2.0in" },
+    { oldSku: "PT-100G-BEAST", newSku: "3PACK-PT-100G" },
+    { oldSku: "PT-125G-BEAST", newSku: "3PACK-PT-125G" },
+    { oldSku: "ST-3PACK-2IN-150G", newSku: "3PACK-150g-2.0in" },
+    { oldSku: "TR-3PACK-23IN-100G", newSku: "TRUMP-3PACK-100g-2.3in" },
+    { oldSku: "TR-3PACK-23IN-125G", newSku: "TRUMP-3PACK-23IN-125G" },
+    { oldSku: "TR-3PACK-2IN-100G", newSku: "TRUMP-3PACK-125g-2.3in" },
+    { oldSku: "TR-3PACK-2IN-125G", newSku: "TRUMP-3PACK-125g-2.0in" },
+  ];
+
+  let skuRenameCount = 0;
+  for (const { oldSku, newSku } of skuRenames) {
+    const existing = await prisma.sku.findUnique({ where: { sku: oldSku } });
+    if (existing) {
+      const conflict = await prisma.sku.findUnique({ where: { sku: newSku } });
+      if (!conflict) {
+        await prisma.sku.update({ where: { sku: oldSku }, data: { sku: newSku } });
+        skuRenameCount++;
+      }
+    }
+  }
+  console.log(`✅ Renamed ${skuRenameCount} SKUs`);
+
+  // ============================================
   // CREATE PROCESS CONFIGURATIONS
   // ============================================
   console.log("\n⚙️ Creating process configurations...");

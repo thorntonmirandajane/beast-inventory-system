@@ -228,7 +228,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
-  // Delete PO
+  // Delete PO (can delete any PO, but approved POs don't affect inventory)
   if (intent === "delete") {
     const poId = formData.get("poId") as string;
 
@@ -239,11 +239,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     if (!po) {
       return { error: "PO not found" };
-    }
-
-    // Don't allow deleting approved POs (inventory already added)
-    if (po.status === "APPROVED") {
-      return { error: "Cannot delete approved PO - inventory has already been added" };
     }
 
     // Delete PO items first, then the PO
@@ -257,11 +252,86 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     await createAuditLog(user.id, "DELETE_PO", "PurchaseOrder", poId, {
       poNumber: po.poNumber,
+      status: po.status,
     });
 
     return {
       success: true,
       message: `${po.poNumber} deleted successfully`,
+    };
+  }
+
+  // Edit PO item quantity
+  if (intent === "edit-item") {
+    const poId = formData.get("poId") as string;
+    const itemId = formData.get("itemId") as string;
+    const newQuantity = parseInt(formData.get("quantity") as string, 10);
+
+    if (isNaN(newQuantity) || newQuantity < 0) {
+      return { error: "Invalid quantity" };
+    }
+
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+    });
+
+    if (!po) {
+      return { error: "PO not found" };
+    }
+
+    if (po.status === "APPROVED") {
+      return { error: "Cannot edit approved PO" };
+    }
+
+    await prisma.purchaseOrderItem.update({
+      where: { id: itemId },
+      data: { quantityOrdered: newQuantity },
+    });
+
+    await createAuditLog(user.id, "EDIT_PO_ITEM", "PurchaseOrderItem", itemId, {
+      poNumber: po.poNumber,
+      newQuantity,
+    });
+
+    return {
+      success: true,
+      message: `Item quantity updated to ${newQuantity}`,
+    };
+  }
+
+  // Delete PO item
+  if (intent === "delete-item") {
+    const poId = formData.get("poId") as string;
+    const itemId = formData.get("itemId") as string;
+
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+      include: { items: true },
+    });
+
+    if (!po) {
+      return { error: "PO not found" };
+    }
+
+    if (po.status === "APPROVED") {
+      return { error: "Cannot edit approved PO" };
+    }
+
+    if (po.items.length <= 1) {
+      return { error: "Cannot delete the only item - delete the entire PO instead" };
+    }
+
+    await prisma.purchaseOrderItem.delete({
+      where: { id: itemId },
+    });
+
+    await createAuditLog(user.id, "DELETE_PO_ITEM", "PurchaseOrderItem", itemId, {
+      poNumber: po.poNumber,
+    });
+
+    return {
+      success: true,
+      message: `Item removed from ${po.poNumber}`,
     };
   }
 
@@ -639,7 +709,10 @@ export default function PurchaseOrders() {
                             <th className="text-right">Ordered</th>
                             <th className="text-right">Received</th>
                             {po.status !== "APPROVED" && (
-                              <th className="text-right">Receive Qty</th>
+                              <>
+                                <th className="text-right">Receive Qty</th>
+                                <th className="text-right">Actions</th>
+                              </>
                             )}
                           </tr>
                         </thead>
@@ -650,7 +723,27 @@ export default function PurchaseOrders() {
                                 {item.sku.sku.toUpperCase()}
                               </td>
                               <td>{item.sku.name}</td>
-                              <td className="text-right">{item.quantityOrdered}</td>
+                              <td className="text-right">
+                                {po.status !== "APPROVED" ? (
+                                  <Form method="post" className="inline-flex items-center gap-1">
+                                    <input type="hidden" name="intent" value="edit-item" />
+                                    <input type="hidden" name="poId" value={po.id} />
+                                    <input type="hidden" name="itemId" value={item.id} />
+                                    <input
+                                      type="number"
+                                      name="quantity"
+                                      className="form-input w-20 text-sm text-right"
+                                      defaultValue={item.quantityOrdered}
+                                      min="0"
+                                    />
+                                    <button type="submit" className="btn btn-xs btn-ghost" title="Save">
+                                      ✓
+                                    </button>
+                                  </Form>
+                                ) : (
+                                  item.quantityOrdered
+                                )}
+                              </td>
                               <td className="text-right">
                                 <span
                                   className={
@@ -665,23 +758,39 @@ export default function PurchaseOrders() {
                                 </span>
                               </td>
                               {po.status !== "APPROVED" && (
-                                <td className="text-right">
-                                  <input
-                                    type="hidden"
-                                    form={`receive-${po.id}`}
-                                    name={`received[${idx}][itemId]`}
-                                    value={item.id}
-                                  />
-                                  <input
-                                    type="number"
-                                    form={`receive-${po.id}`}
-                                    name={`received[${idx}][quantity]`}
-                                    className="form-input w-20 text-sm"
-                                    min="0"
-                                    max={item.quantityOrdered - item.quantityReceived}
-                                    defaultValue="0"
-                                  />
-                                </td>
+                                <>
+                                  <td className="text-right">
+                                    <input
+                                      type="hidden"
+                                      form={`receive-${po.id}`}
+                                      name={`received[${idx}][itemId]`}
+                                      value={item.id}
+                                    />
+                                    <input
+                                      type="number"
+                                      form={`receive-${po.id}`}
+                                      name={`received[${idx}][quantity]`}
+                                      className="form-input w-20 text-sm"
+                                      min="0"
+                                      max={item.quantityOrdered - item.quantityReceived}
+                                      defaultValue="0"
+                                    />
+                                  </td>
+                                  <td className="text-right">
+                                    {po.items.length > 1 && (
+                                      <Form method="post" className="inline" onSubmit={(e) => {
+                                        if (!confirm("Remove this item from the PO?")) e.preventDefault();
+                                      }}>
+                                        <input type="hidden" name="intent" value="delete-item" />
+                                        <input type="hidden" name="poId" value={po.id} />
+                                        <input type="hidden" name="itemId" value={item.id} />
+                                        <button type="submit" className="btn btn-xs btn-error" title="Remove item">
+                                          ✕
+                                        </button>
+                                      </Form>
+                                    )}
+                                  </td>
+                                </>
                               )}
                             </tr>
                           ))}
@@ -738,23 +847,24 @@ export default function PurchaseOrders() {
                               </Form>
                             )}
 
-                            {po.status !== "APPROVED" && (
-                              <Form method="post" onSubmit={(e) => {
-                                if (!confirm(`Delete ${po.poNumber}? This cannot be undone.`)) {
-                                  e.preventDefault();
-                                }
-                              }}>
-                                <input type="hidden" name="intent" value="delete" />
-                                <input type="hidden" name="poId" value={po.id} />
-                                <button
-                                  type="submit"
-                                  className="btn btn-error btn-sm"
-                                  disabled={isSubmitting}
-                                >
-                                  Delete
-                                </button>
-                              </Form>
-                            )}
+                            <Form method="post" onSubmit={(e) => {
+                              const msg = po.status === "APPROVED"
+                                ? `Delete ${po.poNumber}? Note: Inventory that was added from this PO will NOT be removed.`
+                                : `Delete ${po.poNumber}? This cannot be undone.`;
+                              if (!confirm(msg)) {
+                                e.preventDefault();
+                              }
+                            }}>
+                              <input type="hidden" name="intent" value="delete" />
+                              <input type="hidden" name="poId" value={po.id} />
+                              <button
+                                type="submit"
+                                className="btn btn-error btn-sm"
+                                disabled={isSubmitting}
+                              >
+                                Delete
+                              </button>
+                            </Form>
                           </>
                         )}
                       </div>

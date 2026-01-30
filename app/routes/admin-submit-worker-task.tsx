@@ -130,6 +130,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     // Create all TimeEntryLine records
+    let totalExpectedSeconds = 0;
     for (const task of tasks) {
       await prisma.timeEntryLine.create({
         data: {
@@ -144,6 +145,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
       });
 
+      totalExpectedSeconds += task.quantity * task.secondsPerUnit;
+
       await createAuditLog(user.id, "ADMIN_SUBMIT_TASK", "TimeEntryLine", timeEntry.id, {
         workerId,
         processName: task.processName,
@@ -153,7 +156,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
     }
 
-    return { success: true, message: `Successfully submitted ${tasks.length} task(s) for worker` };
+    // Update time entry to PENDING status so it shows in approvals
+    // Admin-submitted tasks are ready for approval
+    await prisma.workerTimeEntry.update({
+      where: { id: timeEntry.id },
+      data: {
+        status: "PENDING",
+        expectedMinutes: totalExpectedSeconds / 60,
+      },
+    });
+
+    return { success: true, message: `Successfully submitted ${tasks.length} task(s) for worker. Entry is now pending approval.` };
   }
 
   return { error: "Invalid action" };

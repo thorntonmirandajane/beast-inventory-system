@@ -141,26 +141,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       }
     } else {
-      // No clock-in today, find or create a standalone time entry for today
-      timeEntry = await prisma.workerTimeEntry.findFirst({
-        where: {
+      // No clock-in today - create a synthetic clock event for task submission
+      // This is required since clockInEventId is a required field
+      const syntheticClockIn = await prisma.clockEvent.create({
+        data: {
           userId: user.id,
-          createdAt: { gte: today, lt: tomorrow },
-          clockInEventId: null, // Standalone entry
+          type: "CLOCK_IN",
+          timestamp: new Date(),
+          notes: "Auto-created for task submission",
         },
       });
 
-      if (!timeEntry) {
-        // Create standalone time entry for tasks submitted without clocking in
-        timeEntry = await prisma.workerTimeEntry.create({
-          data: {
-            userId: user.id,
-            clockInTime: new Date(), // Use current time
-            status: "DRAFT",
-            // Note: clockInEventId is null for standalone entries
-          },
-        });
-      }
+      // Now create time entry linked to the synthetic clock event
+      timeEntry = await prisma.workerTimeEntry.create({
+        data: {
+          userId: user.id,
+          clockInEventId: syntheticClockIn.id,
+          clockInTime: syntheticClockIn.timestamp,
+          status: "DRAFT",
+        },
+      });
     }
 
     // Create all TimeEntryLine records
