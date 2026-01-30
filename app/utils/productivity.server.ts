@@ -241,10 +241,10 @@ export async function approveTimeEntry(
             line.skuId,
             finalQuantity,
             [transition.consumes],
-            timeEntry.id,
+            entry.id,
             "TIME_ENTRY",
             line.processName,
-            timeEntry.userId
+            entry.userId
           );
 
           if (!deductResult.success) {
@@ -263,10 +263,10 @@ export async function approveTimeEntry(
             transition.produces,
             undefined,
             undefined,
-            timeEntry.id,
+            entry.id,
             "TIME_ENTRY",
             line.processName,
-            timeEntry.userId
+            entry.userId
           );
           console.log(`[Approve] Addition successful`);
         }
