@@ -229,7 +229,8 @@ export async function submitTimeEntry(
 export async function approveTimeEntry(
   timeEntryId: string,
   approvedById?: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; details?: string[] }> {
+  const details: string[] = [];
   const entry = await prisma.workerTimeEntry.findUnique({
     where: { id: timeEntryId },
     include: {
@@ -252,16 +253,20 @@ export async function approveTimeEntry(
     await prisma.$transaction(async (tx) => {
       // Process inventory changes for each line
       for (const line of entry.lines) {
+        const skuName = line.sku?.sku || line.skuId || "unknown";
+        details.push(`Processing: ${line.processName} for ${skuName}`);
         console.log(`[Approve] Processing line: ${line.processName}, SKU: ${line.skuId}, isRejected: ${line.isRejected}, isMisc: ${line.isMisc}`);
 
         // Skip rejected lines for inventory updates
         if (line.isRejected) {
+          details.push(`  SKIPPED: line is rejected`);
           console.log(`[Approve] Skipping rejected line`);
           continue;
         }
 
         // Skip MISC tasks (no inventory impact)
         if (line.isMisc || !line.skuId) {
+          details.push(`  SKIPPED: MISC task or no SKU`);
           console.log(`[Approve] Skipping MISC or no SKU line`);
           continue;
         }
@@ -270,19 +275,23 @@ export async function approveTimeEntry(
         const baseQuantity = line.adminAdjustedQuantity ?? line.quantityCompleted;
         const rejectedQuantity = line.rejectionQuantity ?? 0;
         const finalQuantity = baseQuantity - rejectedQuantity;
+        details.push(`  Quantity: ${finalQuantity} (base: ${baseQuantity}, rejected: ${rejectedQuantity})`);
         console.log(`[Approve] Final quantity: ${finalQuantity} (base: ${baseQuantity}, rejected: ${rejectedQuantity})`);
 
         if (finalQuantity === 0) {
+          details.push(`  SKIPPED: zero quantity`);
           console.log(`[Approve] Skipping zero quantity line`);
           continue; // Skip if fully rejected/adjusted to zero
         }
 
         const transition = PROCESS_TRANSITIONS[line.processName];
         if (!transition) {
+          details.push(`  SKIPPED: No transition found for process "${line.processName}"`);
           console.warn(`[Approve] No transition found for process: ${line.processName}`);
           continue;
         }
 
+        details.push(`  Transition: produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
         console.log(`[Approve] Transition found: consumes ${transition.consumes}, produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
 
         // Deduct inventory - either from BOM raw materials or from specific state
@@ -292,9 +301,11 @@ export async function approveTimeEntry(
           const rawMaterials = new Map<string, { skuId: string; sku: string; needed: number }>();
           await explodeBomForRawMaterials(line.skuId, finalQuantity, rawMaterials);
 
+          details.push(`  BOM explosion found ${rawMaterials.size} raw materials`);
           console.log(`[Approve] Found ${rawMaterials.size} raw materials to deduct`);
 
           for (const [rawSkuId, rawMaterial] of rawMaterials) {
+            details.push(`    Deducting ${rawMaterial.needed} of ${rawMaterial.sku}`);
             console.log(`[Approve] Deducting ${rawMaterial.needed} units of RAW ${rawMaterial.sku} (${rawSkuId})`);
             const deductResult = await deductInventory(
               rawSkuId,
@@ -307,6 +318,7 @@ export async function approveTimeEntry(
             );
 
             if (!deductResult.success) {
+              details.push(`    FAILED: ${deductResult.error}`);
               console.error(`[Approve] Deduction of raw material ${rawMaterial.sku} failed: ${deductResult.error}`);
               throw new Error(`Failed to deduct raw material ${rawMaterial.sku}: ${deductResult.error}`);
             }
@@ -314,6 +326,7 @@ export async function approveTimeEntry(
           }
         } else if (transition.consumes) {
           // Legacy behavior: deduct from specific inventory state
+          details.push(`  Deducting ${finalQuantity} ${transition.consumes} from ${skuName}`);
           console.log(`[Approve] Deducting ${finalQuantity} units of ${transition.consumes} from SKU ${line.skuId}`);
           const deductResult = await deductInventory(
             line.skuId,
@@ -326,6 +339,7 @@ export async function approveTimeEntry(
           );
 
           if (!deductResult.success) {
+            details.push(`  FAILED: ${deductResult.error}`);
             console.error(`[Approve] Deduction failed: ${deductResult.error}`);
             throw new Error(`Failed to deduct inventory: ${deductResult.error}`);
           }
@@ -334,6 +348,7 @@ export async function approveTimeEntry(
 
         // Add produced inventory
         if (transition.produces) {
+          details.push(`  Adding ${finalQuantity} ${transition.produces} to ${skuName}`);
           console.log(`[Approve] Adding ${finalQuantity} units of ${transition.produces} to SKU ${line.skuId}`);
           await addInventory(
             line.skuId,
@@ -346,6 +361,7 @@ export async function approveTimeEntry(
             line.processName,
             entry.userId
           );
+          details.push(`  SUCCESS: Added ${finalQuantity} ${transition.produces}`);
           console.log(`[Approve] Addition successful`);
         }
 
@@ -390,12 +406,14 @@ export async function approveTimeEntry(
       }
     });
 
-    return { success: true };
+    return { success: true, details };
   } catch (error) {
     console.error("Error approving time entry:", error);
+    details.push(`ERROR: ${error instanceof Error ? error.message : "Unknown error"}`);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error occurred",
+      details,
     };
   }
 }

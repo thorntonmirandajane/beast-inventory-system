@@ -379,6 +379,8 @@ export async function addInventory(
   processName?: string,
   performedById?: string
 ): Promise<void> {
+  console.log(`[addInventory] Called with: skuId=${skuId}, quantity=${quantity}, state=${state}, location=${location}`);
+
   // Check if there's an existing inventory item for this SKU/state/location
   const existing = await prisma.inventoryItem.findFirst({
     where: {
@@ -388,14 +390,20 @@ export async function addInventory(
     },
   });
 
+  console.log(`[addInventory] Existing item found: ${existing ? `id=${existing.id}, qty=${existing.quantity}` : 'none'}`);
+
   if (existing) {
     // Update existing
+    const newQty = existing.quantity + quantity;
+    console.log(`[addInventory] Updating existing: ${existing.quantity} + ${quantity} = ${newQty}`);
     await prisma.inventoryItem.update({
       where: { id: existing.id },
-      data: { quantity: existing.quantity + quantity },
+      data: { quantity: newQty },
     });
+    console.log(`[addInventory] Update complete`);
   } else {
     // Create new
+    console.log(`[addInventory] Creating new inventory item`);
     await prisma.inventoryItem.create({
       data: {
         skuId,
@@ -405,6 +413,7 @@ export async function addInventory(
         notes,
       },
     });
+    console.log(`[addInventory] Create complete`);
   }
 
   // Log the inventory movement
