@@ -350,19 +350,25 @@ export async function approveTimeEntry(
         if (transition.produces) {
           details.push(`  Adding ${finalQuantity} ${transition.produces} to ${skuName}`);
           console.log(`[Approve] Adding ${finalQuantity} units of ${transition.produces} to SKU ${line.skuId}`);
-          await addInventory(
-            line.skuId,
-            finalQuantity,
-            transition.produces,
-            undefined,
-            undefined,
-            entry.id,
-            "TIME_ENTRY",
-            line.processName,
-            entry.userId
-          );
-          details.push(`  SUCCESS: Added ${finalQuantity} ${transition.produces}`);
-          console.log(`[Approve] Addition successful`);
+          try {
+            await addInventory(
+              line.skuId,
+              finalQuantity,
+              transition.produces,
+              undefined,
+              undefined,
+              entry.id,
+              "TIME_ENTRY",
+              line.processName,
+              entry.userId
+            );
+            details.push(`  SUCCESS: Added ${finalQuantity} ${transition.produces}`);
+            console.log(`[Approve] Addition successful`);
+          } catch (addError) {
+            console.error(`[Approve] ERROR in addInventory:`, addError);
+            details.push(`  ERROR adding inventory: ${addError instanceof Error ? addError.message : String(addError)}`);
+            throw addError; // Re-throw to fail the transaction
+          }
         }
 
         // Mark linked task as completed if any
