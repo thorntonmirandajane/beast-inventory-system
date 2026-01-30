@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, Link, useFetcher } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, Link, useFetcher, redirect } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import { ImageUpload } from "../components/ImageUpload";
@@ -39,7 +39,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       select: { processName: true, displayName: true },
     });
 
-    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs };
+    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs, justApproved: false };
   }
 
   // List view
@@ -93,7 +93,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     select: { processName: true, displayName: true },
   });
 
-  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs };
+  // Check if we just approved an entry
+  const justApproved = url.searchParams.get("approved") === "true";
+
+  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs, justApproved };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -174,10 +177,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: result.error };
     }
 
-    console.log("[Quality Control] Approval successful, creating audit log");
-    await createAuditLog(user.id, "APPROVE_TIME_ENTRY", "WorkerTimeEntry", entryId, {});
+    console.log("[Quality Control] Approval successful");
 
-    return { success: true, message: "Time entry approved successfully" };
+    // Redirect back to pending list after successful approval
+    throw redirect("/quality-control?tab=pending&approved=true");
   }
 
   return { error: "Unknown intent" };
@@ -360,7 +363,7 @@ function RejectTaskModal({
 }
 
 export default function QualityControl() {
-  const { user, timeEntries, timeEntry, tab, entryId, processConfigs } = useLoaderData<typeof loader>();
+  const { user, timeEntries, timeEntry, tab, entryId, processConfigs, justApproved } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -627,6 +630,11 @@ export default function QualityControl() {
           )}
           {actionData?.success && (
             <div className="alert alert-success mb-6">{actionData.message}</div>
+          )}
+          {justApproved && (
+            <div className="alert alert-success mb-6">
+              Time entry approved successfully! Inventory has been updated.
+            </div>
           )}
 
           {/* Tabs */}
