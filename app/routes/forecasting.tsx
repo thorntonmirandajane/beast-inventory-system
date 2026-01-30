@@ -5,6 +5,87 @@ import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 
+// Recursive function to explode BOM and find all raw materials at any depth
+async function explodeBomRecursively(
+  skuId: string,
+  quantity: number,
+  rawMaterials: Map<string, { skuId: string; sku: string; name: string; needed: number; available: number }>,
+  assemblies: Map<string, { skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }>,
+  visited: Set<string> = new Set()
+): Promise<void> {
+  // Prevent infinite loops from circular references
+  if (visited.has(skuId)) return;
+  visited.add(skuId);
+
+  const sku = await prisma.sku.findUnique({
+    where: { id: skuId },
+    include: {
+      inventoryItems: {
+        where: { quantity: { not: 0 } },
+      },
+      bomComponents: {
+        include: {
+          componentSku: {
+            include: {
+              inventoryItems: {
+                where: { quantity: { not: 0 } },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!sku) return;
+
+  for (const bomComp of sku.bomComponents) {
+    const comp = bomComp.componentSku;
+    const qtyNeeded = bomComp.quantity * quantity;
+    const available = comp.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
+
+    if (comp.type === "RAW") {
+      // Raw material - accumulate it
+      const existing = rawMaterials.get(comp.id);
+      if (existing) {
+        existing.needed += qtyNeeded;
+      } else {
+        rawMaterials.set(comp.id, {
+          skuId: comp.id,
+          sku: comp.sku,
+          name: comp.name,
+          needed: qtyNeeded,
+          available,
+        });
+      }
+    } else if (comp.type === "ASSEMBLY") {
+      // Track the assembly
+      const existingAssembly = assemblies.get(comp.id);
+      if (existingAssembly) {
+        existingAssembly.totalNeeded += qtyNeeded;
+      } else {
+        assemblies.set(comp.id, {
+          skuId: comp.id,
+          sku: comp.sku,
+          name: comp.name,
+          type: comp.type,
+          qtyPerUnit: bomComp.quantity,
+          totalNeeded: qtyNeeded,
+          available,
+        });
+      }
+
+      // Calculate shortfall - how many we still need to build
+      const shortfall = Math.max(0, qtyNeeded - available);
+
+      // Recursively explode this assembly's BOM for the shortfall quantity
+      if (shortfall > 0) {
+        await explodeBomRecursively(comp.id, shortfall, rawMaterials, assemblies, visited);
+      }
+    }
+  }
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
 
@@ -32,21 +113,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       bomComponents: {
         include: {
           componentSku: {
-            include: {
-              inventoryItems: {
-                where: { quantity: { gt: 0 } },
-              },
-              bomComponents: {
-                include: {
-                  componentSku: {
-                    include: {
-                      inventoryItems: {
-                        where: { quantity: { gt: 0 } },
-                      },
-                    },
-                  },
-                },
-              },
+            select: {
+              id: true,
+              sku: true,
+              name: true,
+              type: true,
+              material: true,
             },
           },
         },
@@ -76,8 +148,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
   const processMap = new Map(processConfigs.map(p => [p.processName, p]));
 
-  // Calculate forecast data for each SKU
-  const forecastData = completedSkus.map(sku => {
+  // Calculate forecast data for each SKU using recursive BOM explosion
+  const forecastData: Array<{
+    skuId: string;
+    sku: string;
+    name: string;
+    currentCompleted: number;
+    currentInGallatin: number;
+    forecastedQty: number;
+    needToBuild: number;
+    assemblySkusNeeded: Array<{ skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }>;
+    rawMaterialsNeeded: Array<{ skuId: string; sku: string; name: string; needed: number; available: number }>;
+    processTotals: Record<string, { units: number; seconds: number }>;
+    hasForecast: boolean;
+    hasSufficientRawMaterials: boolean;
+    buildTimeHours: number;
+  }> = [];
+
+  for (const sku of completedSkus) {
     const forecast = forecastMap.get(sku.id);
     const currentInGallatin = forecast?.currentInGallatin || 0;
     const forecastedQty = forecast?.quantity || 0;
@@ -88,108 +176,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Need to Build = Demand - (Current Completed + Current in Gallatin)
     const needToBuild = Math.max(0, forecastedQty - (currentCompleted + currentInGallatin));
 
-    // BOM explosion - track assembly SKUs and raw materials needed
-    // ALWAYS process BOM structure so we can show it even when needToBuild is 0
-    const assemblySkusNeeded: Record<string, { skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }> = {};
-    const rawMaterialsNeeded: Record<string, { skuId: string; sku: string; name: string; needed: number; available: number }> = {};
-    const processTotals: Record<string, { units: number; seconds: number }> = {};
+    // Use recursive BOM explosion to find ALL raw materials at any depth
+    const rawMaterialsMap = new Map<string, { skuId: string; sku: string; name: string; needed: number; available: number }>();
+    const assembliesMap = new Map<string, { skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }>();
 
-    // Process each component in the BOM
-    for (const bomComp of sku.bomComponents) {
-      const qtyNeeded = bomComp.quantity * needToBuild;
-      const available = bomComp.componentSku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
-
-      // Track process time for this component (only if needToBuild > 0)
-      if (needToBuild > 0) {
-        const compProcess = bomComp.componentSku.material;
-        if (compProcess && processMap.has(compProcess)) {
-          if (!processTotals[compProcess]) {
-            processTotals[compProcess] = { units: 0, seconds: 0 };
-          }
-          processTotals[compProcess].units += qtyNeeded;
-          processTotals[compProcess].seconds += qtyNeeded * (processMap.get(compProcess)?.secondsPerUnit || 0);
-        }
-      }
-
-      // If component is RAW, track it
-      if (bomComp.componentSku.type === "RAW") {
-        if (!rawMaterialsNeeded[bomComp.componentSku.id]) {
-          rawMaterialsNeeded[bomComp.componentSku.id] = {
-            skuId: bomComp.componentSku.id,
-            sku: bomComp.componentSku.sku,
-            name: bomComp.componentSku.name,
-            needed: 0,
-            available,
-          };
-        }
-        rawMaterialsNeeded[bomComp.componentSku.id].needed += qtyNeeded;
-      } else if (bomComp.componentSku.type === "ASSEMBLY") {
-        // Track assembly SKU needed
-        if (!assemblySkusNeeded[bomComp.componentSku.id]) {
-          assemblySkusNeeded[bomComp.componentSku.id] = {
-            skuId: bomComp.componentSku.id,
-            sku: bomComp.componentSku.sku,
-            name: bomComp.componentSku.name,
-            type: bomComp.componentSku.type,
-            qtyPerUnit: bomComp.quantity,
-            totalNeeded: 0,
-            available,
-          };
-        }
-        assemblySkusNeeded[bomComp.componentSku.id].totalNeeded += qtyNeeded;
-
-        // Calculate how many assemblies we still need to build after accounting for available inventory
-        const assemblyShortfall = Math.max(0, qtyNeeded - available);
-
-        // Explode assembly BOM for raw materials (only for what we need to build)
-        for (const subComp of bomComp.componentSku.bomComponents) {
-          // Only calculate raw materials for assemblies we still need to build
-          const subQtyNeeded = subComp.quantity * assemblyShortfall;
-          const subAvailable = subComp.componentSku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
-
-          // Track process time (only for assemblies we need to build)
-          if (assemblyShortfall > 0 && needToBuild > 0) {
-            const subProcess = subComp.componentSku.material;
-            if (subProcess && processMap.has(subProcess)) {
-              if (!processTotals[subProcess]) {
-                processTotals[subProcess] = { units: 0, seconds: 0 };
-              }
-              processTotals[subProcess].units += subQtyNeeded;
-              processTotals[subProcess].seconds += subQtyNeeded * (processMap.get(subProcess)?.secondsPerUnit || 0);
-            }
-          }
-
-          if (subComp.componentSku.type === "RAW") {
-            if (!rawMaterialsNeeded[subComp.componentSku.id]) {
-              rawMaterialsNeeded[subComp.componentSku.id] = {
-                skuId: subComp.componentSku.id,
-                sku: subComp.componentSku.sku,
-                name: subComp.componentSku.name,
-                needed: 0,
-                available: subAvailable,
-              };
-            }
-            rawMaterialsNeeded[subComp.componentSku.id].needed += subQtyNeeded;
-          }
-        }
-
-        // Also track process time for assembling the available assemblies into completed products
-        // (if we have them in inventory, we still need to do the final assembly process)
-        if (needToBuild > 0) {
-          const compProcess = bomComp.componentSku.material;
-          if (compProcess && processMap.has(compProcess)) {
-            if (!processTotals[compProcess]) {
-              processTotals[compProcess] = { units: 0, seconds: 0 };
-            }
-            // Use the full qtyNeeded (not assemblyShortfall) because we need to process all assemblies
-            processTotals[compProcess].units += qtyNeeded;
-            processTotals[compProcess].seconds += qtyNeeded * (processMap.get(compProcess)?.secondsPerUnit || 0);
-          }
-        }
-      }
+    if (needToBuild > 0) {
+      await explodeBomRecursively(sku.id, needToBuild, rawMaterialsMap, assembliesMap);
     }
 
-    // Track final assembly process (only if needToBuild > 0)
+    // Calculate process totals (simplified - based on raw materials found)
+    const processTotals: Record<string, { units: number; seconds: number }> = {};
+
+    // Track final assembly process
     if (needToBuild > 0) {
       const finalProcess = sku.material;
       if (finalProcess && processMap.has(finalProcess)) {
@@ -202,14 +200,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
 
     // Check if all raw materials are sufficient
-    const rawMaterialsList = Object.values(rawMaterialsNeeded);
+    const rawMaterialsList = Array.from(rawMaterialsMap.values());
     const hasSufficientRawMaterials = rawMaterialsList.length > 0 && rawMaterialsList.every(raw => raw.available >= raw.needed);
 
     // Calculate total build time in hours
     const totalBuildSeconds = Object.values(processTotals).reduce((sum, p) => sum + p.seconds, 0);
     const buildTimeHours = totalBuildSeconds / 3600;
 
-    return {
+    forecastData.push({
       skuId: sku.id,
       sku: sku.sku,
       name: sku.name,
@@ -217,14 +215,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       currentInGallatin,
       forecastedQty,
       needToBuild,
-      assemblySkusNeeded: Object.values(assemblySkusNeeded),
-      rawMaterialsNeeded: Object.values(rawMaterialsNeeded),
+      assemblySkusNeeded: Array.from(assembliesMap.values()),
+      rawMaterialsNeeded: rawMaterialsList,
       processTotals,
       hasForecast: !!forecast,
       hasSufficientRawMaterials,
       buildTimeHours,
-    };
-  });
+    });
+  }
 
   // Calculate total labor requirements
   const totalProcessRequirements: Record<string, { units: number; seconds: number; hours: number }> = {};

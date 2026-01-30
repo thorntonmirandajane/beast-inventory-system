@@ -4,34 +4,85 @@ import { addInventory, deductInventory } from "./inventory.server";
 import { createAuditLog } from "./auth.server";
 
 // Process-to-inventory transition mapping
+// consumesRawFromBom: true means explode BOM and deduct all RAW materials (not intermediate states)
 export const PROCESS_TRANSITIONS: Record<
   string,
   {
     consumes?: InventoryState;
     produces?: InventoryState;
+    consumesRawFromBom?: boolean; // If true, explode BOM and deduct RAW materials instead of using consumes
     description: string;
   }
 > = {
   TIPPING: {
-    consumes: "RAW",
     produces: "ASSEMBLED",
+    consumesRawFromBom: true,
     description: "Tip raw ferrules to create assembled tips",
   },
   BLADING: {
-    consumes: "ASSEMBLED",
     produces: "ASSEMBLED",
-    description: "Add blades to assembled tips (state unchanged)",
+    consumesRawFromBom: true,
+    description: "Add blades to assembled tips",
   },
   STUD_TESTING: {
-    // No inventory change - validation/QC step
-    description: "Test studs for quality (no inventory change)",
+    produces: "COMPLETED",
+    consumesRawFromBom: true,
+    description: "Test studs and complete production",
   },
   COMPLETE_PACKS: {
-    consumes: "ASSEMBLED",
     produces: "COMPLETED",
-    description: "Package assembled items into completed products",
+    consumesRawFromBom: true,
+    description: "Package items into completed products",
   },
 };
+
+// Recursively explode BOM to find all RAW materials needed
+async function explodeBomForRawMaterials(
+  skuId: string,
+  quantity: number,
+  rawMaterials: Map<string, { skuId: string; sku: string; needed: number }>,
+  visited: Set<string> = new Set()
+): Promise<void> {
+  // Prevent infinite loops from circular references
+  const visitKey = `${skuId}-${quantity}`;
+  if (visited.has(skuId)) return;
+  visited.add(skuId);
+
+  const sku = await prisma.sku.findUnique({
+    where: { id: skuId },
+    include: {
+      bomComponents: {
+        include: {
+          componentSku: true,
+        },
+      },
+    },
+  });
+
+  if (!sku) return;
+
+  for (const bomComp of sku.bomComponents) {
+    const comp = bomComp.componentSku;
+    const qtyNeeded = bomComp.quantity * quantity;
+
+    if (comp.type === "RAW") {
+      // Raw material - accumulate it
+      const existing = rawMaterials.get(comp.id);
+      if (existing) {
+        existing.needed += qtyNeeded;
+      } else {
+        rawMaterials.set(comp.id, {
+          skuId: comp.id,
+          sku: comp.sku,
+          needed: qtyNeeded,
+        });
+      }
+    } else {
+      // Assembly or other type - recurse into its BOM
+      await explodeBomForRawMaterials(comp.id, qtyNeeded, rawMaterials, visited);
+    }
+  }
+}
 
 // Get process config with seconds per unit
 export async function getProcessConfig(processName: string) {
@@ -232,10 +283,37 @@ export async function approveTimeEntry(
           continue;
         }
 
-        console.log(`[Approve] Transition found: consumes ${transition.consumes}, produces ${transition.produces}`);
+        console.log(`[Approve] Transition found: consumes ${transition.consumes}, produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
 
-        // Deduct consumed inventory
-        if (transition.consumes) {
+        // Deduct inventory - either from BOM raw materials or from specific state
+        if (transition.consumesRawFromBom) {
+          // Explode BOM and deduct all RAW materials
+          console.log(`[Approve] Exploding BOM for SKU ${line.skuId} to find raw materials`);
+          const rawMaterials = new Map<string, { skuId: string; sku: string; needed: number }>();
+          await explodeBomForRawMaterials(line.skuId, finalQuantity, rawMaterials);
+
+          console.log(`[Approve] Found ${rawMaterials.size} raw materials to deduct`);
+
+          for (const [rawSkuId, rawMaterial] of rawMaterials) {
+            console.log(`[Approve] Deducting ${rawMaterial.needed} units of RAW ${rawMaterial.sku} (${rawSkuId})`);
+            const deductResult = await deductInventory(
+              rawSkuId,
+              rawMaterial.needed,
+              ["RAW"], // Always deduct from RAW state for raw materials
+              entry.id,
+              "TIME_ENTRY",
+              line.processName,
+              entry.userId
+            );
+
+            if (!deductResult.success) {
+              console.error(`[Approve] Deduction of raw material ${rawMaterial.sku} failed: ${deductResult.error}`);
+              throw new Error(`Failed to deduct raw material ${rawMaterial.sku}: ${deductResult.error}`);
+            }
+            console.log(`[Approve] Deduction of ${rawMaterial.sku} successful`);
+          }
+        } else if (transition.consumes) {
+          // Legacy behavior: deduct from specific inventory state
           console.log(`[Approve] Deducting ${finalQuantity} units of ${transition.consumes} from SKU ${line.skuId}`);
           const deductResult = await deductInventory(
             line.skuId,
