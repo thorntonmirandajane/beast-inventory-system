@@ -314,7 +314,8 @@ export async function approveTimeEntry(
               entry.id,
               "TIME_ENTRY",
               line.processName,
-              entry.userId
+              entry.userId,
+              tx // Pass transaction client
             );
 
             if (!deductResult.success) {
@@ -335,7 +336,8 @@ export async function approveTimeEntry(
             entry.id,
             "TIME_ENTRY",
             line.processName,
-            entry.userId
+            entry.userId,
+            tx // Pass transaction client
           );
 
           if (!deductResult.success) {
@@ -360,7 +362,8 @@ export async function approveTimeEntry(
               entry.id,
               "TIME_ENTRY",
               line.processName,
-              entry.userId
+              entry.userId,
+              tx // Pass transaction client
             );
             details.push(`  SUCCESS: Added ${finalQuantity} ${transition.produces}`);
             console.log(`[Approve] Addition successful`);

@@ -1,5 +1,8 @@
 import prisma from "../db.server";
-import type { InventoryState, SkuType } from "@prisma/client";
+import type { InventoryState, SkuType, Prisma } from "@prisma/client";
+
+// Type for Prisma client or transaction
+type PrismaClientOrTx = typeof prisma | Prisma.TransactionClient;
 
 // ============================================
 // TYPES
@@ -336,6 +339,7 @@ export async function calculateTotalRequirements(
 
 /**
  * Log inventory movement
+ * @param client - Optional Prisma client or transaction. Uses global prisma if not provided.
  */
 export async function logInventoryMovement(
   skuId: string,
@@ -347,9 +351,11 @@ export async function logInventoryMovement(
   relatedResourceType?: string,
   processName?: string,
   notes?: string,
-  performedById?: string
+  performedById?: string,
+  client?: PrismaClientOrTx
 ): Promise<void> {
-  await prisma.inventoryLog.create({
+  const db = client || prisma;
+  await db.inventoryLog.create({
     data: {
       skuId,
       action,
@@ -367,6 +373,7 @@ export async function logInventoryMovement(
 
 /**
  * Add inventory (used when receiving is signed off or build completes)
+ * @param client - Optional Prisma client or transaction. Uses global prisma if not provided.
  */
 export async function addInventory(
   skuId: string,
@@ -377,12 +384,14 @@ export async function addInventory(
   relatedResource?: string,
   relatedResourceType?: string,
   processName?: string,
-  performedById?: string
+  performedById?: string,
+  client?: PrismaClientOrTx
 ): Promise<void> {
-  console.log(`[addInventory] Called with: skuId=${skuId}, quantity=${quantity}, state=${state}, location=${location}`);
+  const db = client || prisma;
+  console.log(`[addInventory] Called with: skuId=${skuId}, quantity=${quantity}, state=${state}, location=${location}, usingTx=${!!client}`);
 
   // Check if there's an existing inventory item for this SKU/state/location
-  const existing = await prisma.inventoryItem.findFirst({
+  const existing = await db.inventoryItem.findFirst({
     where: {
       skuId,
       state,
@@ -396,7 +405,7 @@ export async function addInventory(
     // Update existing
     const newQty = existing.quantity + quantity;
     console.log(`[addInventory] Updating existing: ${existing.quantity} + ${quantity} = ${newQty}`);
-    await prisma.inventoryItem.update({
+    await db.inventoryItem.update({
       where: { id: existing.id },
       data: { quantity: newQty },
     });
@@ -404,7 +413,7 @@ export async function addInventory(
   } else {
     // Create new
     console.log(`[addInventory] Creating new inventory item`);
-    await prisma.inventoryItem.create({
+    await db.inventoryItem.create({
       data: {
         skuId,
         quantity,
@@ -431,13 +440,15 @@ export async function addInventory(
     relatedResourceType,
     processName,
     notes,
-    performedById
+    performedById,
+    db
   );
 }
 
 /**
  * Deduct inventory (used when consuming components in a build or transferring)
  * For RAW materials, allows negative inventory to support incremental worker task submissions
+ * @param client - Optional Prisma client or transaction. Uses global prisma if not provided.
  */
 export async function deductInventory(
   skuId: string,
@@ -446,10 +457,14 @@ export async function deductInventory(
   relatedResource?: string,
   relatedResourceType?: string,
   processName?: string,
-  performedById?: string
+  performedById?: string,
+  client?: PrismaClientOrTx
 ): Promise<{ success: boolean; error?: string }> {
+  const db = client || prisma;
+  console.log(`[deductInventory] Called with: skuId=${skuId}, quantity=${quantity}, states=${states.join(",")}, usingTx=${!!client}`);
+
   // Get available inventory items for this SKU in the specified states
-  const items = await prisma.inventoryItem.findMany({
+  const items = await db.inventoryItem.findMany({
     where: {
       skuId,
       state: { in: states },
@@ -459,6 +474,7 @@ export async function deductInventory(
   });
 
   const totalAvailable = items.reduce((sum, i) => sum + i.quantity, 0);
+  console.log(`[deductInventory] Found ${items.length} items with total available: ${totalAvailable}`);
 
   // Allow negative inventory for RAW, ASSEMBLED, and COMPLETED states
   // This supports incremental worker task submissions where assemblies are used before recorded
@@ -480,9 +496,9 @@ export async function deductInventory(
     const newQty = item.quantity - toDeduct;
 
     if (newQty === 0) {
-      await prisma.inventoryItem.delete({ where: { id: item.id } });
+      await db.inventoryItem.delete({ where: { id: item.id } });
     } else {
-      await prisma.inventoryItem.update({
+      await db.inventoryItem.update({
         where: { id: item.id },
         data: { quantity: newQty },
       });
@@ -495,7 +511,7 @@ export async function deductInventory(
   // (RAW, ASSEMBLED, or COMPLETED materials), create a negative inventory item
   if (remaining > 0 && allowNegative) {
     // Find or create a negative inventory item for this SKU/state
-    const negativeItem = await prisma.inventoryItem.findFirst({
+    const negativeItem = await db.inventoryItem.findFirst({
       where: {
         skuId,
         state: { in: states },
@@ -504,13 +520,13 @@ export async function deductInventory(
 
     if (negativeItem) {
       // Update existing item to go more negative
-      await prisma.inventoryItem.update({
+      await db.inventoryItem.update({
         where: { id: negativeItem.id },
         data: { quantity: negativeItem.quantity - remaining },
       });
     } else {
       // Create new negative inventory item
-      await prisma.inventoryItem.create({
+      await db.inventoryItem.create({
         data: {
           skuId,
           quantity: -remaining,
@@ -533,7 +549,8 @@ export async function deductInventory(
     relatedResourceType,
     processName,
     undefined,
-    performedById
+    performedById,
+    db
   );
 
   return { success: true };
