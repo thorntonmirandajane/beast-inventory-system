@@ -228,6 +228,43 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
+  // Delete PO
+  if (intent === "delete") {
+    const poId = formData.get("poId") as string;
+
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+      include: { items: true },
+    });
+
+    if (!po) {
+      return { error: "PO not found" };
+    }
+
+    // Don't allow deleting approved POs (inventory already added)
+    if (po.status === "APPROVED") {
+      return { error: "Cannot delete approved PO - inventory has already been added" };
+    }
+
+    // Delete PO items first, then the PO
+    await prisma.purchaseOrderItem.deleteMany({
+      where: { purchaseOrderId: poId },
+    });
+
+    await prisma.purchaseOrder.delete({
+      where: { id: poId },
+    });
+
+    await createAuditLog(user.id, "DELETE_PO", "PurchaseOrder", poId, {
+      poNumber: po.poNumber,
+    });
+
+    return {
+      success: true,
+      message: `${po.poNumber} deleted successfully`,
+    };
+  }
+
   return { error: "Invalid action" };
 };
 
@@ -697,6 +734,24 @@ export default function PurchaseOrders() {
                                   disabled={isSubmitting}
                                 >
                                   Approve & Add to Inventory
+                                </button>
+                              </Form>
+                            )}
+
+                            {po.status !== "APPROVED" && (
+                              <Form method="post" onSubmit={(e) => {
+                                if (!confirm(`Delete ${po.poNumber}? This cannot be undone.`)) {
+                                  e.preventDefault();
+                                }
+                              }}>
+                                <input type="hidden" name="intent" value="delete" />
+                                <input type="hidden" name="poId" value={po.id} />
+                                <button
+                                  type="submit"
+                                  className="btn btn-error btn-sm"
+                                  disabled={isSubmitting}
+                                >
+                                  Delete
                                 </button>
                               </Form>
                             )}

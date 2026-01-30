@@ -427,9 +427,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       user.id,
       "RESET_INVENTORY",
       "INVENTORY",
-      null,
-      null,
-      `Reset all inventory to 0 (deleted ${deleteResult.count} inventory items)`
+      "all",
+      { message: `Reset all inventory to 0 (deleted ${deleteResult.count} inventory items)` }
     );
 
     return {
@@ -678,9 +677,9 @@ export default function Inventory() {
       return ["sku", "name", "category", "process", "raw", "assembled", "onOrder"].includes(column);
     }
 
-    // Assembly tab - show Type, Assembled columns (includes both ASSEMBLY and COMPLETED)
+    // Assembly tab - show Order, Type, Assembled columns (includes both ASSEMBLY and COMPLETED)
     if (typeFilter === "assembly") {
-      return ["sku", "name", "category", "type", "process", "assembled"].includes(column);
+      return ["processOrder", "sku", "name", "category", "type", "process", "assembled"].includes(column);
     }
 
     return true;
