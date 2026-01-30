@@ -258,9 +258,11 @@ function EditableQuantityCell({
 function RejectTaskModal({
   line,
   onClose,
+  processDisplayName,
 }: {
   line: any;
   onClose: () => void;
+  processDisplayName: string;
 }) {
   const fetcher = useFetcher();
   const [rejectionQuantity, setRejectionQuantity] = useState(line.quantityCompleted);
@@ -288,7 +290,7 @@ function RejectTaskModal({
         <h3 className="text-lg font-bold mb-4">Reject Task</h3>
         <div className="mb-4 text-sm">
           <p>
-            <strong>Process:</strong> {getProcessDisplay(line.processName)}
+            <strong>Process:</strong> {processDisplayName}
           </p>
           {line.sku && (
             <p>
@@ -605,7 +607,11 @@ export default function QualityControl() {
           </div>
 
           {rejectModalLine && (
-            <RejectTaskModal line={rejectModalLine} onClose={() => setRejectModalLine(null)} />
+            <RejectTaskModal
+              line={rejectModalLine}
+              onClose={() => setRejectModalLine(null)}
+              processDisplayName={getProcessDisplay(rejectModalLine.processName)}
+            />
           )}
         </div>
       ) : (
