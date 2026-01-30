@@ -242,7 +242,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     // Delete PO items first, then the PO
-    await prisma.purchaseOrderItem.deleteMany({
+    await prisma.pOItem.deleteMany({
       where: { purchaseOrderId: poId },
     });
 
@@ -283,7 +283,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "Cannot edit approved PO" };
     }
 
-    await prisma.purchaseOrderItem.update({
+    await prisma.pOItem.update({
       where: { id: itemId },
       data: { quantityOrdered: newQuantity },
     });
@@ -321,7 +321,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "Cannot delete the only item - delete the entire PO instead" };
     }
 
-    await prisma.purchaseOrderItem.delete({
+    await prisma.pOItem.delete({
       where: { id: itemId },
     });
 
