@@ -53,11 +53,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: [{ material: "asc" }, { sku: "asc" }],
   });
 
+  // Load process configs to map processName -> displayName
+  const processConfigs = await prisma.processConfig.findMany({
+    select: { processName: true, displayName: true },
+  });
+  const processDisplayMap: Record<string, string> = {};
+  for (const config of processConfigs) {
+    processDisplayMap[config.processName] = config.displayName;
+  }
+
   return {
     user,
     tutorials,
     uniqueProcesses: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
     allSkus,
+    processDisplayMap,
   };
 };
 
@@ -163,7 +173,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function ProcessTutorials() {
-  const { user, tutorials, uniqueProcesses, allSkus } = useLoaderData<typeof loader>();
+  const { user, tutorials, uniqueProcesses, allSkus, processDisplayMap } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -282,7 +292,7 @@ export default function ProcessTutorials() {
                       <option value="">Select a process...</option>
                       {uniqueProcesses.map(process => (
                         <option key={process} value={process}>
-                          {process}
+                          {processDisplayMap[process] || process}
                         </option>
                       ))}
                     </select>
@@ -431,7 +441,7 @@ export default function ProcessTutorials() {
                   {Object.entries(tutorialsByProcess).map(([processName, processTutorials]) => (
                     <div key={processName}>
                       <h3 className="font-semibold text-lg mb-3 text-blue-600">
-                        {processName}
+                        {processDisplayMap[processName] || processName}
                       </h3>
                       <div className="space-y-3">
                         {processTutorials.map(tutorial => (

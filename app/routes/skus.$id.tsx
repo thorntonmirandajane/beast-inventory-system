@@ -6,6 +6,7 @@ import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { calculateBuildEligibility } from "../utils/inventory.server";
 import { getUsedInProducts } from "../utils/bom.server";
+import { useState } from "react";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   try {
@@ -646,6 +647,16 @@ export default function SkuDetail() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
+  // Build process display name map
+  const processDisplayMap: Record<string, string> = {};
+  for (const config of processConfigs) {
+    processDisplayMap[config.processName] = config.displayName;
+  }
+
+  // State for component search
+  const [componentSearch, setComponentSearch] = useState("");
+  const [selectedComponentId, setSelectedComponentId] = useState("");
+
   // Build current BOM map for form defaults
   const currentBom = new Map(sku.bomComponents.map((b) => [b.componentSku.id, b.quantity]));
 
@@ -706,10 +717,10 @@ export default function SkuDetail() {
             <h1 className="page-title font-mono">{sku.sku}</h1>
             <span className={`badge ${getTypeColor(sku.type)}`}>{sku.type}</span>
             {sku.category && (
-              <span className="badge bg-purple-100 text-purple-800">{sku.category.replace("_", " ")}</span>
+              <span className="badge bg-purple-100 text-purple-800">{sku.category.replaceAll("_", " ")}</span>
             )}
             {sku.material && (
-              <span className="badge bg-yellow-100 text-yellow-800">{sku.material}</span>
+              <span className="badge bg-yellow-100 text-yellow-800">{processDisplayMap[sku.material] || sku.material}</span>
             )}
             {!sku.isActive && (
               <span className="badge bg-red-100 text-red-800">Inactive</span>
@@ -911,21 +922,34 @@ export default function SkuDetail() {
                   <h3 className="font-semibold mb-3">Add Component</h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div className="md:col-span-2">
-                      <label htmlFor="componentSkuId" className="form-label">
+                      <label htmlFor="componentSkuSearch" className="form-label">
                         Component SKU
                       </label>
                       <input
-                        type="text"
-                        id="componentSkuId"
+                        type="hidden"
                         name="componentSkuId"
+                        id="componentSkuId"
+                        value={selectedComponentId}
+                      />
+                      <input
+                        type="text"
+                        id="componentSkuSearch"
                         className="form-input"
                         list="component-sku-options"
                         placeholder="Type to search..."
                         required
+                        value={componentSearch}
+                        onChange={(e) => {
+                          setComponentSearch(e.target.value);
+                          const match = allSkus.find(
+                            (s) => `${s.sku} | ${s.name} (${s.type})` === e.target.value
+                          );
+                          setSelectedComponentId(match ? match.id : "");
+                        }}
                       />
                       <datalist id="component-sku-options">
                         {allSkus.map((s) => (
-                          <option key={s.id} value={s.id} label={`${s.sku} | ${s.name} (${s.type})`} />
+                          <option key={s.id} value={`${s.sku} | ${s.name} (${s.type})`} />
                         ))}
                       </datalist>
                     </div>

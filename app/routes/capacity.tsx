@@ -835,7 +835,7 @@ export default function Capacity() {
                           <div className="font-mono text-sm font-semibold">{sku.sku}</div>
                           <div className="text-sm text-gray-600">{sku.name}</div>
                           <div className="text-xs text-gray-500">
-                            {sku.type} {sku.category && `• Current: ${sku.category}`}
+                            {sku.type} {sku.category && `• Current: ${sku.category.replaceAll("_", " ")}`}
                           </div>
                         </div>
                       </label>

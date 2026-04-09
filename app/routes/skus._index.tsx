@@ -88,6 +88,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { category: "asc" },
   });
 
+  // Load process configs to map processName -> displayName
+  const processConfigs = await prisma.processConfig.findMany({
+    select: { processName: true, displayName: true },
+  });
+  const processDisplayMap: Record<string, string> = {};
+  for (const config of processConfigs) {
+    processDisplayMap[config.processName] = config.displayName;
+  }
+
   return {
     user,
     skus: skusWithStats,
@@ -98,11 +107,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     categoryFilter,
     processes: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
     categories: uniqueCategories.map(c => c.category).filter(Boolean) as string[],
+    processDisplayMap,
   };
 };
 
 export default function SkusList() {
-  const { user, skus, counts, currentType, search, processFilter, categoryFilter, processes, categories } = useLoaderData<typeof loader>();
+  const { user, skus, counts, currentType, search, processFilter, categoryFilter, processes, categories, processDisplayMap } = useLoaderData<typeof loader>();
 
   const tabs = [
     { id: "all", label: "All", count: counts.all },
@@ -173,7 +183,7 @@ export default function SkusList() {
                   <option value="">All Processes</option>
                   {processes.map((process) => (
                     <option key={process} value={process}>
-                      {process}
+                      {processDisplayMap[process] || process}
                     </option>
                   ))}
                 </select>
@@ -185,7 +195,7 @@ export default function SkusList() {
                   <option value="">All Categories</option>
                   {categories.map((category) => (
                     <option key={category} value={category}>
-                      {category}
+                      {category.replaceAll("_", " ")}
                     </option>
                   ))}
                 </select>
@@ -288,7 +298,7 @@ export default function SkusList() {
                   <td>
                     {sku.material ? (
                       <span className="badge bg-yellow-100 text-yellow-800 text-xs">
-                        {sku.material}
+                        {processDisplayMap[sku.material] || sku.material}
                       </span>
                     ) : (
                       <span className="text-gray-400">—</span>
@@ -297,7 +307,7 @@ export default function SkusList() {
                   <td>
                     {sku.category ? (
                       <span className="badge bg-purple-100 text-purple-800 text-xs">
-                        {sku.category.replace("_", " ")}
+                        {sku.category.replaceAll("_", " ")}
                       </span>
                     ) : (
                       <span className="text-gray-400">—</span>

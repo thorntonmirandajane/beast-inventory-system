@@ -267,7 +267,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     console.log(`[Inventory Loader] Sample items being returned:`, rawMaterialsWithInAssembly.slice(0, 3).map(i => ({ sku: i.sku, inAssembly: i.inAssembly })));
   }
 
-  return { user, inventory, counts, typeFilter, search, sortBy, sortDir };
+  // Load process configs to map processName -> displayName
+  const processConfigs = await prisma.processConfig.findMany({
+    select: { processName: true, displayName: true },
+  });
+  const processDisplayMap: Record<string, string> = {};
+  for (const config of processConfigs) {
+    processDisplayMap[config.processName] = config.displayName;
+  }
+
+  return { user, inventory, counts, typeFilter, search, sortBy, sortDir, processDisplayMap };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -565,7 +574,7 @@ function EditableCell({
 }
 
 export default function Inventory() {
-  const { user, inventory, counts, typeFilter, search, sortBy, sortDir } = useLoaderData<typeof loader>();
+  const { user, inventory, counts, typeFilter, search, sortBy, sortDir, processDisplayMap } = useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [filters, setFilters] = useState({
     sku: "",
@@ -1233,12 +1242,12 @@ export default function Inventory() {
                         ) : item.type === "COMPLETED" ? (
                           <span className="text-gray-700">Completed Packs</span>
                         ) : (
-                          item.process || "—"
+                          (item.process ? (processDisplayMap[item.process] || item.process) : "—")
                         )}
                       </td>
                     )}
                     {shouldShowColumn("category") && (
-                      <td className="text-sm text-gray-600">{item.category || "—"}</td>
+                      <td className="text-sm text-gray-600">{item.category ? item.category.replaceAll("_", " ") : "—"}</td>
                     )}
                     {shouldShowColumn("raw") && (
                       <td className="text-right">
