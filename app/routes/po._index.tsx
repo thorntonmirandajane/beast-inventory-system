@@ -577,6 +577,15 @@ export default function PurchaseOrders() {
                           <div className="text-gray-500">Progress</div>
                           <div>{totalReceived}/{totalOrdered}</div>
                         </div>
+                        {po.status !== "RECEIVED" && po.status !== "APPROVED" && po.status !== "CANCELLED" && (
+                          <Link
+                            to={`/po/${po.id}?new=1`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="btn btn-primary btn-sm whitespace-nowrap"
+                          >
+                            + Receive Shipment
+                          </Link>
+                        )}
                         <svg
                           className={`w-5 h-5 transition-transform ${isExpanded ? "rotate-180" : ""}`}
                           fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"

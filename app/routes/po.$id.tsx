@@ -5,8 +5,9 @@ import {
   Form,
   Link,
   useNavigation,
+  useSearchParams,
 } from "react-router";
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -299,7 +300,20 @@ export default function POShow() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
-  const [showNewShipment, setShowNewShipment] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const canReceive =
+    po.status !== "RECEIVED" && po.status !== "APPROVED" && po.status !== "CANCELLED";
+  const initiallyOpen =
+    canReceive && (searchParams.get("new") === "1" || po.shipments.length === 0);
+  const [showNewShipment, setShowNewShipment] = useState(initiallyOpen);
+
+  useEffect(() => {
+    if (showNewShipment && searchParams.get("new") === "1") {
+      const next = new URLSearchParams(searchParams);
+      next.delete("new");
+      setSearchParams(next, { replace: true });
+    }
+  }, [showNewShipment, searchParams, setSearchParams]);
 
   // Per-item draft state for the new-shipment form
   const initialDraft = useMemo(() => {
@@ -713,9 +727,19 @@ export default function POShow() {
           <div className="card-body">
             <div className="empty-state">
               <h3 className="empty-state-title">No shipments yet</h3>
-              <p className="empty-state-description">
-                Click "Receive Shipment" above to record an arriving delivery.
+              <p className="empty-state-description mb-4">
+                Receive this PO in segments — record each delivery as a shipment with its
+                own tracking, tariff, and cost.
               </p>
+              {canReceive && !showNewShipment && (
+                <button
+                  type="button"
+                  onClick={() => setShowNewShipment(true)}
+                  className="btn btn-primary"
+                >
+                  + Record First Shipment
+                </button>
+              )}
             </div>
           </div>
         ) : (
