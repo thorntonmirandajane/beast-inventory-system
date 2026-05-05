@@ -6,7 +6,7 @@ import {
   Link,
   useNavigation,
 } from "react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -745,33 +745,94 @@ function MasterPOView({
   getStatusColor: (status: string) => string;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [dateMode, setDateMode] = useState<"shipment" | "po">("shipment");
 
-  const flatRows = purchaseOrders.flatMap((po) =>
-    po.items.map((item) => {
-      const approvedShipmentItems = item.shipmentItems.filter(
-        (si) => si.shipment.status === "APPROVED"
-      );
-      const totalReceivedFromShipments = approvedShipmentItems.reduce(
-        (sum, si) => sum + si.quantityReceived,
-        0
-      );
-      const totalCost = approvedShipmentItems.reduce(
-        (sum, si) => sum + (si.actualUnitCost ?? item.unitCost ?? 0) * si.quantityReceived,
-        0
-      );
+  const allRows = useMemo(
+    () =>
+      purchaseOrders.flatMap((po) =>
+        po.items.map((item) => {
+          const approvedShipmentItems = item.shipmentItems.filter(
+            (si) => si.shipment.status === "APPROVED"
+          );
+          const totalReceivedFromShipments = approvedShipmentItems.reduce(
+            (sum, si) => sum + si.quantityReceived,
+            0
+          );
+          const totalCost = approvedShipmentItems.reduce(
+            (sum, si) => sum + (si.actualUnitCost ?? item.unitCost ?? 0) * si.quantityReceived,
+            0
+          );
 
-      return {
-        rowId: `${po.id}-${item.id}`,
-        po,
-        item,
-        approvedShipmentItems,
-        totalReceivedFromShipments,
-        totalCost,
-      };
-    })
+          return {
+            rowId: `${po.id}-${item.id}`,
+            po,
+            item,
+            approvedShipmentItems,
+            totalReceivedFromShipments,
+            totalCost,
+          };
+        })
+      ),
+    [purchaseOrders]
   );
 
-  if (flatRows.length === 0) {
+  const fromMs = dateFrom ? new Date(dateFrom).getTime() : null;
+  // Inclusive end-of-day for dateTo so a same-day filter still matches
+  const toMs = dateTo ? new Date(dateTo).getTime() + 24 * 60 * 60 * 1000 - 1 : null;
+
+  const inDateRange = (d: Date | string) => {
+    const t = new Date(d).getTime();
+    if (fromMs != null && t < fromMs) return false;
+    if (toMs != null && t > toMs) return false;
+    return true;
+  };
+
+  const searchLower = search.trim().toLowerCase();
+  const matchesSearch = (row: (typeof allRows)[number]) => {
+    if (!searchLower) return true;
+    if (row.po.poNumber.toLowerCase().includes(searchLower)) return true;
+    if (row.item.sku.sku.toLowerCase().includes(searchLower)) return true;
+    if (row.item.sku.name.toLowerCase().includes(searchLower)) return true;
+    if (row.item.manufacturer?.name?.toLowerCase().includes(searchLower)) return true;
+    if (
+      row.item.shipmentItems.some((si) =>
+        si.shipment.trackingNumber?.toLowerCase().includes(searchLower)
+      )
+    )
+      return true;
+    return false;
+  };
+
+  const filteredRows = allRows
+    .map((row) => {
+      // When filtering by shipment date, narrow the visible shipments inside the dropdown
+      const visibleShipmentItems =
+        dateMode === "shipment" && (fromMs != null || toMs != null)
+          ? row.item.shipmentItems.filter((si) => inDateRange(si.shipment.receivedAt))
+          : row.item.shipmentItems;
+      return { ...row, visibleShipmentItems };
+    })
+    .filter((row) => {
+      if (!matchesSearch(row)) return false;
+      if (fromMs == null && toMs == null) return true;
+      if (dateMode === "po") return inDateRange(row.po.submittedAt);
+      return row.visibleShipmentItems.length > 0;
+    });
+
+  const filtersActive =
+    !!searchLower || dateFrom !== "" || dateTo !== "";
+
+  const clearFilters = () => {
+    setSearch("");
+    setDateFrom("");
+    setDateTo("");
+    setDateMode("shipment");
+  };
+
+  if (allRows.length === 0) {
     return (
       <div className="card">
         <div className="card-body">
@@ -792,6 +853,60 @@ function MasterPOView({
           Every line item across all POs with shipment history. Click a row to expand.
         </p>
       </div>
+      <div className="card-body border-b">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
+          <div className="form-group mb-0 lg:col-span-2">
+            <label className="form-label">Search</label>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="form-input"
+              placeholder="PO #, SKU, name, manufacturer, tracking..."
+            />
+          </div>
+          <div className="form-group mb-0">
+            <label className="form-label">Date filter applies to</label>
+            <select
+              value={dateMode}
+              onChange={(e) => setDateMode(e.target.value as "shipment" | "po")}
+              className="form-select"
+            >
+              <option value="shipment">Shipment received date</option>
+              <option value="po">PO submitted date</option>
+            </select>
+          </div>
+          <div className="form-group mb-0">
+            <label className="form-label">From</label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="form-input"
+            />
+          </div>
+          <div className="form-group mb-0">
+            <label className="form-label">To</label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="form-input"
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-between mt-3 text-sm text-gray-600">
+          <div>
+            Showing <span className="font-semibold">{filteredRows.length}</span> of{" "}
+            {allRows.length} line item{allRows.length !== 1 ? "s" : ""}
+          </div>
+          {filtersActive && (
+            <button type="button" onClick={clearFilters} className="btn btn-xs btn-ghost">
+              Clear filters
+            </button>
+          )}
+        </div>
+      </div>
       <div className="overflow-x-auto">
         <table className="data-table">
           <thead>
@@ -809,9 +924,31 @@ function MasterPOView({
             </tr>
           </thead>
           <tbody>
-            {flatRows.map((row) => {
+            {filteredRows.length === 0 && (
+              <tr>
+                <td colSpan={10} className="text-center text-gray-500 py-8">
+                  No line items match the current filters.
+                </td>
+              </tr>
+            )}
+            {filteredRows.map((row) => {
               const isOpen = expanded === row.rowId;
-              const allShipmentItems = row.item.shipmentItems;
+              const allShipmentItems = row.visibleShipmentItems;
+              const dateFiltered =
+                dateMode === "shipment" && (fromMs != null || toMs != null);
+              const visibleApprovedItems = allShipmentItems.filter(
+                (si) => si.shipment.status === "APPROVED"
+              );
+              const visibleApprovedQty = visibleApprovedItems.reduce(
+                (s, si) => s + si.quantityReceived,
+                0
+              );
+              const visibleApprovedCost = visibleApprovedItems.reduce(
+                (s, si) => s + (si.actualUnitCost ?? row.item.unitCost ?? 0) * si.quantityReceived,
+                0
+              );
+              const displayedReceived = dateFiltered ? visibleApprovedQty : row.item.quantityReceived;
+              const displayedCost = dateFiltered ? visibleApprovedCost : row.totalCost;
 
               return (
                 <>
@@ -840,20 +977,21 @@ function MasterPOView({
                     <td className="text-right">{row.item.quantityOrdered}</td>
                     <td className="text-right">
                       <span className={
-                        row.item.quantityReceived >= row.item.quantityOrdered
+                        displayedReceived >= row.item.quantityOrdered
                           ? "text-green-600 font-semibold"
-                          : row.item.quantityReceived > 0
+                          : displayedReceived > 0
                           ? "text-orange-600"
                           : "text-gray-400"
                       }>
-                        {row.item.quantityReceived}
+                        {displayedReceived}
                       </span>
+                      {dateFiltered && <span className="ml-1 text-xs text-gray-400">in range</span>}
                     </td>
                     <td className="text-right">
                       {row.item.unitCost != null ? `$${row.item.unitCost.toFixed(2)}` : "—"}
                     </td>
                     <td className="text-right font-semibold">
-                      ${row.totalCost.toFixed(2)}
+                      ${displayedCost.toFixed(2)}
                     </td>
                     <td>
                       <div className="flex items-center gap-1 text-xs text-gray-600">
@@ -862,7 +1000,7 @@ function MasterPOView({
                         ) : (
                           <>
                             <span>
-                              {row.approvedShipmentItems.length}/{allShipmentItems.length} approved
+                              {visibleApprovedItems.length}/{allShipmentItems.length} approved
                             </span>
                             <svg
                               className={`w-4 h-4 transition-transform ${isOpen ? "rotate-180" : ""}`}
