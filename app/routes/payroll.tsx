@@ -1,12 +1,12 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData, Form, useNavigation } from "react-router";
-import { requireUser } from "../utils/auth.server";
+import { requireRole } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { calculateWeeklyHours, calculateOvertimePay } from "../utils/overtime.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
 
   if (user.role !== "ADMIN") {
     throw new Response("Unauthorized", { status: 403 });

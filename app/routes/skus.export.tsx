@@ -1,9 +1,9 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { requireUser } from "../utils/auth.server";
+import { requireRole } from "../utils/auth.server";
 import prisma from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
 
   // Only admins can export
   if (user.role !== "ADMIN") {

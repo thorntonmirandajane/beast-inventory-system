@@ -392,6 +392,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (intent === "add-manufacturer") {
+    if (user.role !== "ADMIN") return { error: "Unauthorized" };
     const manufacturerName = (formData.get("manufacturerName") as string)?.trim();
     const existingManufacturerId = formData.get("existingManufacturerId") as string;
     const cost = formData.get("cost") as string;
@@ -462,6 +463,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (intent === "remove-manufacturer") {
+    if (user.role !== "ADMIN") return { error: "Unauthorized" };
     const skuManufacturerId = formData.get("skuManufacturerId") as string;
 
     await prisma.skuManufacturer.delete({
@@ -476,6 +478,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   }
 
   if (intent === "update-manufacturer") {
+    if (user.role !== "ADMIN") return { error: "Unauthorized" };
     const skuManufacturerId = formData.get("skuManufacturerId") as string;
     const cost = formData.get("cost") as string;
     const leadTimeDays = formData.get("leadTimeDays") as string;
@@ -982,7 +985,8 @@ export default function SkuDetail() {
           </div>
         )}
 
-        {/* Manufacturers */}
+        {/* Manufacturers — admin only (managers should not see vendor/cost info) */}
+        {user.role === "ADMIN" && (
         <div className="card">
           <div className="card-header flex items-center justify-between">
             <div>
@@ -1118,6 +1122,7 @@ export default function SkuDetail() {
             </div>
           </div>
         </div>
+        )}
 
         {/* Used In */}
         {usedInProducts.length > 0 && (

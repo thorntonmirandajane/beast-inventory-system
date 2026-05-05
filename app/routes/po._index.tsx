@@ -7,12 +7,12 @@ import {
   useNavigation,
 } from "react-router";
 import { useMemo, useState } from "react";
-import { requireUser, createAuditLog } from "../utils/auth.server";
+import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
 
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "all";
@@ -66,7 +66,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 

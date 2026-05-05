@@ -8,7 +8,7 @@ import {
   useSearchParams,
 } from "react-router";
 import { useEffect, useState, useMemo } from "react";
-import { requireUser, createAuditLog } from "../utils/auth.server";
+import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { addInventory } from "../utils/inventory.server";
@@ -16,7 +16,7 @@ import { ImageUpload } from "../components/ImageUpload";
 import { MultiImageUpload } from "../components/MultiImageUpload";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
   const { id } = params;
   if (!id) throw new Response("Not found", { status: 404 });
 
@@ -47,7 +47,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
   const { id: poId } = params;
   if (!poId) return { error: "Missing PO id" };
 

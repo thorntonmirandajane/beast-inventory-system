@@ -1,11 +1,11 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
-import { requireUser, createAuditLog } from "../utils/auth.server";
+import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
 
   if (user.role !== "ADMIN") {
     throw new Response("Unauthorized", { status: 403 });
@@ -15,7 +15,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
 
   if (user.role !== "ADMIN") {
     return { error: "Unauthorized" };

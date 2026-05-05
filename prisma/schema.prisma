@@ -504,6 +504,7 @@ model AuditLog {
 
 enum UserRole {
   ADMIN
+  MANAGER
   WORKER
 }
 

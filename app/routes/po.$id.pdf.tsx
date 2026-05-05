@@ -1,11 +1,11 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData, Link } from "react-router";
 import { useEffect, useRef, useState } from "react";
-import { requireUser } from "../utils/auth.server";
+import { requireRole } from "../utils/auth.server";
 import prisma from "../db.server";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  const user = await requireUser(request);
+  const user = await requireRole(request, ["ADMIN"]);
   const { id } = params;
 
   const po = await prisma.purchaseOrder.findUnique({

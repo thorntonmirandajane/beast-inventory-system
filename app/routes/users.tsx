@@ -113,12 +113,14 @@ export default function Users() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
-  const roles: UserRole[] = ["ADMIN", "WORKER"];
+  const roles: UserRole[] = ["ADMIN", "MANAGER", "WORKER"];
 
   const getRoleColor = (role: UserRole) => {
     switch (role) {
       case "ADMIN":
         return "bg-purple-100 text-purple-800";
+      case "MANAGER":
+        return "bg-blue-100 text-blue-800";
       case "WORKER":
         return "bg-gray-100 text-gray-800";
       default:

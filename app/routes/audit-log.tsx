@@ -5,7 +5,7 @@ import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const user = await requireRole(request, ["ADMIN", "SUPERVISOR"]);
+  const user = await requireRole(request, ["ADMIN"]);
 
   const url = new URL(request.url);
   const action = url.searchParams.get("action");
