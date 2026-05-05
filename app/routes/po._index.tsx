@@ -10,16 +10,16 @@ import { useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
-import { addInventory } from "../utils/inventory.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
 
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "all";
+  const isMaster = status === "master";
 
   const whereClause: any = {};
-  if (status !== "all") {
+  if (!isMaster && status !== "all") {
     whereClause.status = status.toUpperCase();
   }
 
@@ -30,16 +30,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         include: {
           sku: true,
           manufacturer: true,
+          shipmentItems: {
+            include: {
+              shipment: true,
+            },
+          },
         },
+      },
+      shipments: {
+        orderBy: { shipmentNumber: "asc" },
       },
       createdBy: true,
       approvedBy: true,
     },
     orderBy: { submittedAt: "desc" },
-    take: 100,
+    take: isMaster ? 500 : 100,
   });
 
-  // Get raw material SKUs for creating new POs
   const rawSkus = await prisma.sku.findMany({
     where: { isActive: true, type: "RAW" },
     include: {
@@ -69,22 +76,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
-  // Create new PO
   if (intent === "create") {
     const estimatedArrival = formData.get("estimatedArrival") as string;
     const notes = formData.get("notes") as string;
 
-    // Parse items from JSON
     const itemsJson = formData.get("itemsJson") as string;
-    const items: { skuId: string; quantity: number; manufacturerId?: string | null }[] = itemsJson
-      ? JSON.parse(itemsJson)
-      : [];
+    const items: {
+      skuId: string;
+      quantity: number;
+      manufacturerId?: string | null;
+      unitCost?: number | null;
+    }[] = itemsJson ? JSON.parse(itemsJson) : [];
 
     if (items.length === 0) {
       return { error: "At least one item is required" };
     }
 
-    // Generate PO number
     const poCount = await prisma.purchaseOrder.count();
     const poNumber = `PO-${String(poCount + 1).padStart(5, "0")}`;
 
@@ -100,6 +107,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             skuId: item.skuId,
             quantityOrdered: item.quantity,
             manufacturerId: item.manufacturerId || null,
+            unitCost: item.unitCost && item.unitCost > 0 ? item.unitCost : null,
           })),
         },
       },
@@ -116,172 +124,47 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
-  // Mark items as received
-  if (intent === "receive") {
-    const poId = formData.get("poId") as string;
-
-    const po = await prisma.purchaseOrder.findUnique({
-      where: { id: poId },
-      include: { items: true },
-    });
-
-    if (!po) {
-      return { error: "PO not found" };
-    }
-
-    // Parse received quantities
-    const receivedItems: { itemId: string; quantity: number }[] = [];
-    let i = 0;
-    while (formData.get(`received[${i}][itemId]`)) {
-      const itemId = formData.get(`received[${i}][itemId]`) as string;
-      const quantity = parseInt(formData.get(`received[${i}][quantity]`) as string, 10);
-      if (itemId && quantity > 0) {
-        receivedItems.push({ itemId, quantity });
-      }
-      i++;
-    }
-
-    // Update received quantities
-    for (const item of receivedItems) {
-      await prisma.pOItem.update({
-        where: { id: item.itemId },
-        data: {
-          quantityReceived: {
-            increment: item.quantity,
-          },
-        },
-      });
-    }
-
-    // Check if all items fully received
-    const updatedPo = await prisma.purchaseOrder.findUnique({
-      where: { id: poId },
-      include: { items: true },
-    });
-
-    const allReceived = updatedPo?.items.every(
-      (item) => item.quantityReceived >= item.quantityOrdered
-    );
-    const someReceived = updatedPo?.items.some((item) => item.quantityReceived > 0);
-
-    await prisma.purchaseOrder.update({
-      where: { id: poId },
-      data: {
-        status: allReceived ? "RECEIVED" : someReceived ? "PARTIAL" : "SUBMITTED",
-        receivedAt: allReceived ? new Date() : null,
-      },
-    });
-
-    await createAuditLog(user.id, "RECEIVE_PO", "PurchaseOrder", poId, {
-      receivedItems,
-    });
-
-    return {
-      success: true,
-      message: allReceived
-        ? "All items received - ready for approval"
-        : "Quantities updated",
-    };
-  }
-
-  // Approve PO and add to inventory
-  if (intent === "approve") {
-    const poId = formData.get("poId") as string;
-
-    const po = await prisma.purchaseOrder.findUnique({
-      where: { id: poId },
-      include: { items: { include: { sku: true } } },
-    });
-
-    if (!po) {
-      return { error: "PO not found" };
-    }
-
-    if (po.status === "APPROVED") {
-      return { error: "PO already approved" };
-    }
-
-    // Add received items to inventory
-    for (const item of po.items) {
-      if (item.quantityReceived > 0) {
-        await addInventory(item.skuId, item.quantityReceived, "RAW");
-      }
-    }
-
-    await prisma.purchaseOrder.update({
-      where: { id: poId },
-      data: {
-        status: "APPROVED",
-        approvedById: user.id,
-        approvedAt: new Date(),
-      },
-    });
-
-    await createAuditLog(user.id, "APPROVE_PO", "PurchaseOrder", poId, {
-      poNumber: po.poNumber,
-    });
-
-    const totalReceived = po.items.reduce((sum, i) => sum + i.quantityReceived, 0);
-    return {
-      success: true,
-      message: `${po.poNumber} approved - ${totalReceived} units added to inventory`,
-    };
-  }
-
-  // Delete PO (can delete any PO, but approved POs don't affect inventory)
   if (intent === "delete") {
     const poId = formData.get("poId") as string;
 
     const po = await prisma.purchaseOrder.findUnique({
       where: { id: poId },
-      include: { items: true },
+      include: { items: true, shipments: true },
     });
 
-    if (!po) {
-      return { error: "PO not found" };
+    if (!po) return { error: "PO not found" };
+
+    if (po.shipments.some((s) => s.status === "APPROVED")) {
+      return {
+        error: "Cannot delete PO with approved shipments — inventory has already been recorded",
+      };
     }
 
-    // Delete PO items first, then the PO
-    await prisma.pOItem.deleteMany({
-      where: { purchaseOrderId: poId },
+    await prisma.pOShipmentItem.deleteMany({
+      where: { shipment: { purchaseOrderId: poId } },
     });
-
-    await prisma.purchaseOrder.delete({
-      where: { id: poId },
-    });
+    await prisma.pOShipment.deleteMany({ where: { purchaseOrderId: poId } });
+    await prisma.pOItem.deleteMany({ where: { purchaseOrderId: poId } });
+    await prisma.purchaseOrder.delete({ where: { id: poId } });
 
     await createAuditLog(user.id, "DELETE_PO", "PurchaseOrder", poId, {
       poNumber: po.poNumber,
       status: po.status,
     });
 
-    return {
-      success: true,
-      message: `${po.poNumber} deleted successfully`,
-    };
+    return { success: true, message: `${po.poNumber} deleted successfully` };
   }
 
-  // Edit PO item quantity
   if (intent === "edit-item") {
     const poId = formData.get("poId") as string;
     const itemId = formData.get("itemId") as string;
     const newQuantity = parseInt(formData.get("quantity") as string, 10);
 
-    if (isNaN(newQuantity) || newQuantity < 0) {
-      return { error: "Invalid quantity" };
-    }
+    if (isNaN(newQuantity) || newQuantity < 0) return { error: "Invalid quantity" };
 
-    const po = await prisma.purchaseOrder.findUnique({
-      where: { id: poId },
-    });
-
-    if (!po) {
-      return { error: "PO not found" };
-    }
-
-    if (po.status === "APPROVED") {
-      return { error: "Cannot edit approved PO" };
-    }
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: poId } });
+    if (!po) return { error: "PO not found" };
+    if (po.status === "APPROVED") return { error: "Cannot edit approved PO" };
 
     await prisma.pOItem.update({
       where: { id: itemId },
@@ -293,13 +176,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       newQuantity,
     });
 
-    return {
-      success: true,
-      message: `Item quantity updated to ${newQuantity}`,
-    };
+    return { success: true, message: `Item quantity updated to ${newQuantity}` };
   }
 
-  // Delete PO item
   if (intent === "delete-item") {
     const poId = formData.get("poId") as string;
     const itemId = formData.get("itemId") as string;
@@ -309,34 +188,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       include: { items: true },
     });
 
-    if (!po) {
-      return { error: "PO not found" };
-    }
-
-    if (po.status === "APPROVED") {
-      return { error: "Cannot edit approved PO" };
-    }
-
+    if (!po) return { error: "PO not found" };
+    if (po.status === "APPROVED") return { error: "Cannot edit approved PO" };
     if (po.items.length <= 1) {
-      return { error: "Cannot delete the only item - delete the entire PO instead" };
+      return { error: "Cannot delete the only item — delete the entire PO instead" };
     }
 
-    await prisma.pOItem.delete({
-      where: { id: itemId },
+    const shipmentItemCount = await prisma.pOShipmentItem.count({
+      where: { poItemId: itemId, shipment: { status: "APPROVED" } },
     });
+    if (shipmentItemCount > 0) {
+      return { error: "Cannot delete item that has approved shipments" };
+    }
+
+    await prisma.pOShipmentItem.deleteMany({ where: { poItemId: itemId } });
+    await prisma.pOItem.delete({ where: { id: itemId } });
 
     await createAuditLog(user.id, "DELETE_PO_ITEM", "PurchaseOrderItem", itemId, {
       poNumber: po.poNumber,
     });
 
-    return {
-      success: true,
-      message: `Item removed from ${po.poNumber}`,
-    };
+    return { success: true, message: `Item removed from ${po.poNumber}` };
   }
 
   return { error: "Invalid action" };
 };
+
+type PO = Awaited<ReturnType<typeof loader>>["purchaseOrders"][number];
 
 export default function PurchaseOrders() {
   const { user, purchaseOrders, rawSkus, counts, currentStatus } =
@@ -344,6 +222,8 @@ export default function PurchaseOrders() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+
+  const isMaster = currentStatus === "master";
 
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [expandedPO, setExpandedPO] = useState<string | null>(null);
@@ -353,6 +233,7 @@ export default function PurchaseOrders() {
     name: string;
     quantity: number;
     manufacturerId?: string | null;
+    unitCost?: number | null;
   }[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -362,9 +243,9 @@ export default function PurchaseOrders() {
     { id: "partial", label: "Partial", count: counts.partial },
     { id: "received", label: "Received", count: counts.received },
     { id: "approved", label: "Approved", count: counts.approved },
+    { id: "master", label: "Master", count: counts.all },
   ];
 
-  // Filter available SKUs based on search
   const availableSkus = rawSkus.filter((s) => {
     if (selectedItems.some((si) => si.skuId === s.id)) return false;
     if (searchTerm) {
@@ -375,9 +256,10 @@ export default function PurchaseOrders() {
   });
 
   const addItem = (sku: typeof rawSkus[0]) => {
-    // Default to preferred manufacturer if available
     const preferredManuf = sku.manufacturers.find((m) => m.isPreferred);
-    const defaultManufId = preferredManuf?.manufacturerId || sku.manufacturers[0]?.manufacturerId || null;
+    const defaultManuf = preferredManuf || sku.manufacturers[0];
+    const defaultManufId = defaultManuf?.manufacturerId || null;
+    const defaultCost = defaultManuf?.cost ?? null;
 
     setSelectedItems([...selectedItems, {
       skuId: sku.id,
@@ -385,6 +267,7 @@ export default function PurchaseOrders() {
       name: sku.name,
       quantity: 1,
       manufacturerId: defaultManufId,
+      unitCost: defaultCost,
     }]);
     setSearchTerm("");
   };
@@ -394,7 +277,19 @@ export default function PurchaseOrders() {
   };
 
   const updateManufacturer = (skuId: string, manufacturerId: string | null) => {
-    setSelectedItems(selectedItems.map((item) => item.skuId === skuId ? { ...item, manufacturerId } : item));
+    const sku = rawSkus.find((s) => s.id === skuId);
+    const matching = sku?.manufacturers.find((m) => m.manufacturerId === manufacturerId);
+    setSelectedItems(selectedItems.map((item) =>
+      item.skuId === skuId
+        ? { ...item, manufacturerId, unitCost: matching?.cost ?? item.unitCost }
+        : item
+    ));
+  };
+
+  const updateUnitCost = (skuId: string, unitCost: number | null) => {
+    setSelectedItems(selectedItems.map((item) =>
+      item.skuId === skuId ? { ...item, unitCost } : item
+    ));
   };
 
   const removeItem = (skuId: string) => {
@@ -408,18 +303,12 @@ export default function PurchaseOrders() {
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case "SUBMITTED":
-        return "bg-yellow-100 text-yellow-800";
-      case "PARTIAL":
-        return "bg-orange-100 text-orange-800";
-      case "RECEIVED":
-        return "bg-blue-100 text-blue-800";
-      case "APPROVED":
-        return "bg-green-100 text-green-800";
-      case "CANCELLED":
-        return "bg-red-100 text-red-800";
-      default:
-        return "bg-gray-100 text-gray-800";
+      case "SUBMITTED": return "bg-yellow-100 text-yellow-800";
+      case "PARTIAL": return "bg-orange-100 text-orange-800";
+      case "RECEIVED": return "bg-blue-100 text-blue-800";
+      case "APPROVED": return "bg-green-100 text-green-800";
+      case "CANCELLED": return "bg-red-100 text-red-800";
+      default: return "bg-gray-100 text-gray-800";
     }
   };
 
@@ -464,6 +353,7 @@ export default function PurchaseOrders() {
                   skuId: i.skuId,
                   quantity: i.quantity,
                   manufacturerId: i.manufacturerId,
+                  unitCost: i.unitCost,
                 })))}
               />
 
@@ -478,7 +368,6 @@ export default function PurchaseOrders() {
                 </div>
               </div>
 
-              {/* Selected Items */}
               {selectedItems.length > 0 && (
                 <div className="mb-6">
                   <label className="form-label">Selected Items ({selectedItems.length})</label>
@@ -486,15 +375,16 @@ export default function PurchaseOrders() {
                     {selectedItems.map((item) => {
                       const skuData = rawSkus.find((s) => s.id === item.skuId);
                       const manufacturers = skuData?.manufacturers || [];
+                      const lineTotal = (item.unitCost || 0) * item.quantity;
 
                       return (
-                        <div key={item.skuId} className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded gap-3">
+                        <div key={item.skuId} className="flex items-center justify-between p-3 bg-blue-50 border border-blue-200 rounded gap-3 flex-wrap">
                           <div className="flex-1 min-w-0">
                             <span className="font-mono font-semibold">{item.sku.toUpperCase()}</span>
                             <span className="mx-2 text-gray-400">—</span>
                             <span className="text-gray-600">{item.name}</span>
                           </div>
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-3 flex-wrap">
                             {manufacturers.length > 0 && (
                               <div className="flex items-center gap-2">
                                 <span className="text-sm text-gray-500">From:</span>
@@ -524,6 +414,25 @@ export default function PurchaseOrders() {
                                 min="1"
                               />
                             </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm text-gray-500">$/unit:</span>
+                              <input
+                                type="number"
+                                value={item.unitCost ?? ""}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  updateUnitCost(item.skuId, v === "" ? null : parseFloat(v));
+                                }}
+                                className="form-input w-24 text-right"
+                                min="0"
+                                step="0.01"
+                                placeholder="0.00"
+                              />
+                            </div>
+                            <div className="text-sm text-gray-700 min-w-[80px] text-right">
+                              <span className="text-gray-500">Total:</span>{" "}
+                              <span className="font-semibold">${lineTotal.toFixed(2)}</span>
+                            </div>
                             <button type="button" onClick={() => removeItem(item.skuId)} className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded">
                               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -534,10 +443,16 @@ export default function PurchaseOrders() {
                       );
                     })}
                   </div>
+                  <div className="mt-3 text-right text-sm text-gray-700">
+                    <span className="text-gray-500">Estimated PO subtotal:</span>{" "}
+                    <span className="font-semibold">
+                      ${selectedItems.reduce((s, i) => s + (i.unitCost || 0) * i.quantity, 0).toFixed(2)}
+                    </span>
+                    <span className="text-xs text-gray-400 ml-2">(excludes tariffs/shipping — captured per shipment)</span>
+                  </div>
                 </div>
               )}
 
-              {/* Add Items */}
               <div className="mb-6">
                 <label className="form-label">Add Raw Materials</label>
                 <input
@@ -596,286 +511,437 @@ export default function PurchaseOrders() {
         ))}
       </div>
 
-      {/* PO List */}
-      <div className="card">
-        {purchaseOrders.length === 0 ? (
-          <div className="card-body">
-            <div className="empty-state">
-              <svg
-                className="empty-state-icon"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"
-                />
-              </svg>
-              <h3 className="empty-state-title">No purchase orders</h3>
-              <p className="empty-state-description">
-                Create your first PO using the button above.
-              </p>
+      {/* Master view */}
+      {isMaster ? (
+        <MasterPOView purchaseOrders={purchaseOrders} getStatusColor={getStatusColor} />
+      ) : (
+        /* PO List */
+        <div className="card">
+          {purchaseOrders.length === 0 ? (
+            <div className="card-body">
+              <div className="empty-state">
+                <h3 className="empty-state-title">No purchase orders</h3>
+                <p className="empty-state-description">
+                  Create your first PO using the button above.
+                </p>
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="divide-y">
-            {purchaseOrders.map((po) => {
-              const totalOrdered = po.items.reduce(
-                (sum, i) => sum + i.quantityOrdered,
-                0
-              );
-              const totalReceived = po.items.reduce(
-                (sum, i) => sum + i.quantityReceived,
-                0
-              );
-              const isExpanded = expandedPO === po.id;
+          ) : (
+            <div className="divide-y">
+              {purchaseOrders.map((po) => {
+                const totalOrdered = po.items.reduce((sum, i) => sum + i.quantityOrdered, 0);
+                const totalReceived = po.items.reduce((sum, i) => sum + i.quantityReceived, 0);
+                const isExpanded = expandedPO === po.id;
+                const approvedShipments = po.shipments.filter((s) => s.status === "APPROVED");
+                const pendingShipments = po.shipments.filter((s) => s.status === "PENDING");
 
-              return (
-                <div key={po.id} className="p-4">
-                  {/* PO Header Row */}
-                  <div
-                    className="flex items-center justify-between cursor-pointer"
-                    onClick={() => setExpandedPO(isExpanded ? null : po.id)}
-                  >
-                    <div className="flex items-center gap-4">
-                      <div>
-                        <div className="font-mono font-semibold">
-                          {po.poNumber}
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          {po.items.length} item{po.items.length !== 1 ? "s" : ""}
-                        </div>
-                      </div>
-                      <span className={`badge ${getStatusColor(po.status)}`}>
-                        {po.status}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-6 text-sm">
-                      <div className="text-right">
-                        <div className="text-gray-500">Submitted</div>
-                        <div>{new Date(po.submittedAt).toLocaleDateString()}</div>
-                      </div>
-                      {po.estimatedArrival && (
-                        <div className="text-right">
-                          <div className="text-gray-500">ETA</div>
-                          <div>
-                            {new Date(po.estimatedArrival).toLocaleDateString()}
-                          </div>
-                        </div>
-                      )}
-                      {po.receivedAt && (
-                        <div className="text-right">
-                          <div className="text-gray-500">Received</div>
-                          <div>
-                            {new Date(po.receivedAt).toLocaleDateString()}
-                          </div>
-                        </div>
-                      )}
-                      <div className="text-right">
-                        <div className="text-gray-500">Progress</div>
+                return (
+                  <div key={po.id} className="p-4">
+                    <div
+                      className="flex items-center justify-between cursor-pointer flex-wrap gap-3"
+                      onClick={() => setExpandedPO(isExpanded ? null : po.id)}
+                    >
+                      <div className="flex items-center gap-4">
                         <div>
-                          {totalReceived}/{totalOrdered}
-                        </div>
-                      </div>
-                      <svg
-                        className={`w-5 h-5 transition-transform ${
-                          isExpanded ? "rotate-180" : ""
-                        }`}
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        strokeWidth={1.5}
-                        stroke="currentColor"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M19.5 8.25l-7.5 7.5-7.5-7.5"
-                        />
-                      </svg>
-                    </div>
-                  </div>
-
-                  {/* Expanded Details */}
-                  {isExpanded && (
-                    <div className="mt-4 pt-4 border-t">
-                      <table className="data-table mb-4">
-                        <thead>
-                          <tr>
-                            <th>SKU</th>
-                            <th>Name</th>
-                            <th className="text-right">Ordered</th>
-                            <th className="text-right">Received</th>
-                            {po.status !== "APPROVED" && (
-                              <>
-                                <th className="text-right">Receive Qty</th>
-                                <th className="text-right">Actions</th>
-                              </>
+                          <div className="font-mono font-semibold">{po.poNumber}</div>
+                          <div className="text-sm text-gray-500">
+                            {po.items.length} item{po.items.length !== 1 ? "s" : ""}
+                            {po.shipments.length > 0 && (
+                              <span className="ml-2">
+                                · {approvedShipments.length}/{po.shipments.length} shipments approved
+                              </span>
                             )}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {po.items.map((item, idx) => (
-                            <tr key={item.id}>
-                              <td className="font-mono text-sm">
-                                {item.sku.sku.toUpperCase()}
-                              </td>
-                              <td>{item.sku.name}</td>
-                              <td className="text-right">
-                                {po.status !== "APPROVED" ? (
-                                  <Form method="post" className="inline-flex items-center gap-1">
-                                    <input type="hidden" name="intent" value="edit-item" />
-                                    <input type="hidden" name="poId" value={po.id} />
-                                    <input type="hidden" name="itemId" value={item.id} />
-                                    <input
-                                      type="number"
-                                      name="quantity"
-                                      className="form-input w-20 text-sm text-right"
-                                      defaultValue={item.quantityOrdered}
-                                      min="0"
-                                    />
-                                    <button type="submit" className="btn btn-xs btn-ghost" title="Save">
-                                      ✓
-                                    </button>
-                                  </Form>
-                                ) : (
-                                  item.quantityOrdered
-                                )}
-                              </td>
-                              <td className="text-right">
-                                <span
-                                  className={
-                                    item.quantityReceived >= item.quantityOrdered
-                                      ? "text-green-600 font-semibold"
-                                      : item.quantityReceived > 0
-                                      ? "text-orange-600"
-                                      : "text-gray-400"
-                                  }
-                                >
-                                  {item.quantityReceived}
-                                </span>
-                              </td>
+                          </div>
+                        </div>
+                        <span className={`badge ${getStatusColor(po.status)}`}>
+                          {po.status}
+                        </span>
+                        {pendingShipments.length > 0 && (
+                          <span className="badge bg-yellow-100 text-yellow-800">
+                            {pendingShipments.length} pending
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-6 text-sm">
+                        <div className="text-right">
+                          <div className="text-gray-500">Submitted</div>
+                          <div>{new Date(po.submittedAt).toLocaleDateString()}</div>
+                        </div>
+                        {po.estimatedArrival && (
+                          <div className="text-right">
+                            <div className="text-gray-500">ETA</div>
+                            <div>{new Date(po.estimatedArrival).toLocaleDateString()}</div>
+                          </div>
+                        )}
+                        <div className="text-right">
+                          <div className="text-gray-500">Progress</div>
+                          <div>{totalReceived}/{totalOrdered}</div>
+                        </div>
+                        <svg
+                          className={`w-5 h-5 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                          fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                        </svg>
+                      </div>
+                    </div>
+
+                    {isExpanded && (
+                      <div className="mt-4 pt-4 border-t">
+                        <table className="data-table mb-4">
+                          <thead>
+                            <tr>
+                              <th>SKU</th>
+                              <th>Name</th>
+                              <th className="text-right">Ordered</th>
+                              <th className="text-right">Received</th>
+                              <th className="text-right">$/unit</th>
                               {po.status !== "APPROVED" && (
-                                <>
+                                <th className="text-right">Actions</th>
+                              )}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {po.items.map((item) => (
+                              <tr key={item.id}>
+                                <td className="font-mono text-sm">{item.sku.sku.toUpperCase()}</td>
+                                <td>{item.sku.name}</td>
+                                <td className="text-right">
+                                  {po.status !== "APPROVED" ? (
+                                    <Form method="post" className="inline-flex items-center gap-1">
+                                      <input type="hidden" name="intent" value="edit-item" />
+                                      <input type="hidden" name="poId" value={po.id} />
+                                      <input type="hidden" name="itemId" value={item.id} />
+                                      <input
+                                        type="number" name="quantity"
+                                        className="form-input w-20 text-sm text-right"
+                                        defaultValue={item.quantityOrdered} min="0"
+                                      />
+                                      <button type="submit" className="btn btn-xs btn-ghost" title="Save">✓</button>
+                                    </Form>
+                                  ) : (
+                                    item.quantityOrdered
+                                  )}
+                                </td>
+                                <td className="text-right">
+                                  <span
+                                    className={
+                                      item.quantityReceived >= item.quantityOrdered
+                                        ? "text-green-600 font-semibold"
+                                        : item.quantityReceived > 0
+                                        ? "text-orange-600"
+                                        : "text-gray-400"
+                                    }
+                                  >
+                                    {item.quantityReceived}
+                                  </span>
+                                </td>
+                                <td className="text-right">
+                                  {item.unitCost != null ? `$${item.unitCost.toFixed(2)}` : <span className="text-gray-400">—</span>}
+                                </td>
+                                {po.status !== "APPROVED" && (
                                   <td className="text-right">
-                                    <input
-                                      type="hidden"
-                                      form={`receive-${po.id}`}
-                                      name={`received[${idx}][itemId]`}
-                                      value={item.id}
-                                    />
-                                    <input
-                                      type="number"
-                                      form={`receive-${po.id}`}
-                                      name={`received[${idx}][quantity]`}
-                                      className="form-input w-20 text-sm"
-                                      min="0"
-                                      max={item.quantityOrdered - item.quantityReceived}
-                                      defaultValue="0"
-                                    />
-                                  </td>
-                                  <td className="text-right">
-                                    {po.items.length > 1 && (
+                                    {po.items.length > 1 && item.shipmentItems.every((si) => si.shipment.status !== "APPROVED") && (
                                       <Form method="post" className="inline" onSubmit={(e) => {
                                         if (!confirm("Remove this item from the PO?")) e.preventDefault();
                                       }}>
                                         <input type="hidden" name="intent" value="delete-item" />
                                         <input type="hidden" name="poId" value={po.id} />
                                         <input type="hidden" name="itemId" value={item.id} />
-                                        <button type="submit" className="btn btn-xs btn-error" title="Remove item">
-                                          ✕
-                                        </button>
+                                        <button type="submit" className="btn btn-xs btn-error" title="Remove item">✕</button>
                                       </Form>
                                     )}
                                   </td>
-                                </>
-                              )}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                                )}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
 
-                      {/* Action Buttons */}
-                      <div className="flex gap-3">
-                        <Link
-                          to={`/po/${po.id}/pdf`}
-                          className="btn btn-ghost"
-                        >
-                          <svg
-                            className="w-4 h-4 mr-1 inline"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            strokeWidth={1.5}
-                            stroke="currentColor"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
-                            />
-                          </svg>
-                          View PDF
-                        </Link>
+                        {po.shipments.length > 0 && (
+                          <div className="mb-4">
+                            <h4 className="text-sm font-semibold text-gray-700 mb-2">Shipments</h4>
+                            <table className="data-table text-sm">
+                              <thead>
+                                <tr>
+                                  <th>#</th>
+                                  <th>Status</th>
+                                  <th>Tracking</th>
+                                  <th>Received</th>
+                                  <th className="text-right">Tariff</th>
+                                  <th className="text-right">Shipping</th>
+                                  <th></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {po.shipments.map((s) => (
+                                  <tr key={s.id}>
+                                    <td>#{s.shipmentNumber}</td>
+                                    <td>
+                                      <span className={`badge ${
+                                        s.status === "APPROVED" ? "bg-green-100 text-green-800"
+                                        : s.status === "REJECTED" ? "bg-red-100 text-red-800"
+                                        : "bg-yellow-100 text-yellow-800"
+                                      }`}>
+                                        {s.status}
+                                      </span>
+                                      {s.hasVariance && (
+                                        <span className="ml-1 badge bg-orange-100 text-orange-800">Variance</span>
+                                      )}
+                                    </td>
+                                    <td>{s.trackingNumber || "—"}</td>
+                                    <td>{new Date(s.receivedAt).toLocaleDateString()}</td>
+                                    <td className="text-right">${s.tariffAmount.toFixed(2)}</td>
+                                    <td className="text-right">${s.shippingCost.toFixed(2)}</td>
+                                    <td className="text-right">
+                                      <Link to={`/po/${po.id}#shipment-${s.id}`} className="text-blue-600 hover:underline text-xs">
+                                        View
+                                      </Link>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
 
-                        {po.status !== "APPROVED" && (
-                          <>
-                            <Form method="post" id={`receive-${po.id}`}>
-                              <input type="hidden" name="intent" value="receive" />
-                              <input type="hidden" name="poId" value={po.id} />
-                              <button
-                                type="submit"
-                                className="btn btn-secondary"
-                                disabled={isSubmitting}
-                              >
-                                Update Received
-                              </button>
-                            </Form>
-
-                            {(po.status === "RECEIVED" || po.status === "PARTIAL") && (
-                              <Form method="post">
-                                <input type="hidden" name="intent" value="approve" />
-                                <input type="hidden" name="poId" value={po.id} />
-                                <button
-                                  type="submit"
-                                  className="btn btn-primary"
-                                  disabled={isSubmitting}
-                                >
-                                  Approve & Add to Inventory
-                                </button>
-                              </Form>
-                            )}
-
+                        <div className="flex gap-3 flex-wrap">
+                          <Link to={`/po/${po.id}`} className="btn btn-primary">
+                            Open PO / Receive Shipment
+                          </Link>
+                          <Link to={`/po/${po.id}/pdf`} className="btn btn-ghost">
+                            View PDF
+                          </Link>
+                          {po.status !== "APPROVED" && (
                             <Form method="post" onSubmit={(e) => {
-                              const msg = po.status === "APPROVED"
-                                ? `Delete ${po.poNumber}? Note: Inventory that was added from this PO will NOT be removed.`
-                                : `Delete ${po.poNumber}? This cannot be undone.`;
-                              if (!confirm(msg)) {
-                                e.preventDefault();
-                              }
+                              if (!confirm(`Delete ${po.poNumber}? This cannot be undone.`)) e.preventDefault();
                             }}>
                               <input type="hidden" name="intent" value="delete" />
                               <input type="hidden" name="poId" value={po.id} />
-                              <button
-                                type="submit"
-                                className="btn btn-error btn-sm"
-                                disabled={isSubmitting}
-                              >
+                              <button type="submit" className="btn btn-error btn-sm" disabled={isSubmitting}>
                                 Delete
                               </button>
                             </Form>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </Layout>
+  );
+}
+
+function MasterPOView({
+  purchaseOrders,
+  getStatusColor,
+}: {
+  purchaseOrders: PO[];
+  getStatusColor: (status: string) => string;
+}) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const flatRows = purchaseOrders.flatMap((po) =>
+    po.items.map((item) => {
+      const approvedShipmentItems = item.shipmentItems.filter(
+        (si) => si.shipment.status === "APPROVED"
+      );
+      const totalReceivedFromShipments = approvedShipmentItems.reduce(
+        (sum, si) => sum + si.quantityReceived,
+        0
+      );
+      const totalCost = approvedShipmentItems.reduce(
+        (sum, si) => sum + (si.actualUnitCost ?? item.unitCost ?? 0) * si.quantityReceived,
+        0
+      );
+
+      return {
+        rowId: `${po.id}-${item.id}`,
+        po,
+        item,
+        approvedShipmentItems,
+        totalReceivedFromShipments,
+        totalCost,
+      };
+    })
+  );
+
+  if (flatRows.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-body">
+          <div className="empty-state">
+            <h3 className="empty-state-title">No PO items</h3>
+            <p className="empty-state-description">Create a PO to populate the master view.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2 className="card-title">Master PO View</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          Every line item across all POs with shipment history. Click a row to expand.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>PO</th>
+              <th>SKU</th>
+              <th>Name</th>
+              <th>Mfr</th>
+              <th>Status</th>
+              <th className="text-right">Ordered</th>
+              <th className="text-right">Received</th>
+              <th className="text-right">$/unit (PO)</th>
+              <th className="text-right">Approved cost</th>
+              <th>Shipments</th>
+            </tr>
+          </thead>
+          <tbody>
+            {flatRows.map((row) => {
+              const isOpen = expanded === row.rowId;
+              const allShipmentItems = row.item.shipmentItems;
+
+              return (
+                <>
+                  <tr
+                    key={row.rowId}
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => setExpanded(isOpen ? null : row.rowId)}
+                  >
+                    <td>
+                      <Link
+                        to={`/po/${row.po.id}`}
+                        className="font-mono text-sm text-blue-600 hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {row.po.poNumber}
+                      </Link>
+                    </td>
+                    <td className="font-mono text-sm">{row.item.sku.sku.toUpperCase()}</td>
+                    <td className="max-w-xs truncate">{row.item.sku.name}</td>
+                    <td className="text-sm">{row.item.manufacturer?.name || "—"}</td>
+                    <td>
+                      <span className={`badge ${getStatusColor(row.po.status)}`}>
+                        {row.po.status}
+                      </span>
+                    </td>
+                    <td className="text-right">{row.item.quantityOrdered}</td>
+                    <td className="text-right">
+                      <span className={
+                        row.item.quantityReceived >= row.item.quantityOrdered
+                          ? "text-green-600 font-semibold"
+                          : row.item.quantityReceived > 0
+                          ? "text-orange-600"
+                          : "text-gray-400"
+                      }>
+                        {row.item.quantityReceived}
+                      </span>
+                    </td>
+                    <td className="text-right">
+                      {row.item.unitCost != null ? `$${row.item.unitCost.toFixed(2)}` : "—"}
+                    </td>
+                    <td className="text-right font-semibold">
+                      ${row.totalCost.toFixed(2)}
+                    </td>
+                    <td>
+                      <div className="flex items-center gap-1 text-xs text-gray-600">
+                        {allShipmentItems.length === 0 ? (
+                          <span className="text-gray-400">None yet</span>
+                        ) : (
+                          <>
+                            <span>
+                              {row.approvedShipmentItems.length}/{allShipmentItems.length} approved
+                            </span>
+                            <svg
+                              className={`w-4 h-4 transition-transform ${isOpen ? "rotate-180" : ""}`}
+                              fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                            </svg>
                           </>
                         )}
                       </div>
-                    </div>
+                    </td>
+                  </tr>
+                  {isOpen && allShipmentItems.length > 0 && (
+                    <tr>
+                      <td colSpan={10} className="bg-gray-50 p-0">
+                        <div className="p-4">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-gray-600">
+                                <th className="pb-2">Shipment #</th>
+                                <th className="pb-2">Status</th>
+                                <th className="pb-2">Tracking</th>
+                                <th className="pb-2">Carrier</th>
+                                <th className="pb-2">Date</th>
+                                <th className="pb-2 text-right">Qty</th>
+                                <th className="pb-2 text-right">Actual $/unit</th>
+                                <th className="pb-2 text-right">Tariff</th>
+                                <th className="pb-2 text-right">Shipping</th>
+                                <th className="pb-2"></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {allShipmentItems.map((si) => (
+                                <tr key={si.id} className="border-t border-gray-200">
+                                  <td className="py-2">#{si.shipment.shipmentNumber}</td>
+                                  <td className="py-2">
+                                    <span className={`badge ${
+                                      si.shipment.status === "APPROVED" ? "bg-green-100 text-green-800"
+                                      : si.shipment.status === "REJECTED" ? "bg-red-100 text-red-800"
+                                      : "bg-yellow-100 text-yellow-800"
+                                    }`}>
+                                      {si.shipment.status}
+                                    </span>
+                                    {si.shipment.hasVariance && (
+                                      <span className="ml-1 badge bg-orange-100 text-orange-800">Var</span>
+                                    )}
+                                  </td>
+                                  <td className="py-2">{si.shipment.trackingNumber || "—"}</td>
+                                  <td className="py-2">{si.shipment.carrier || "—"}</td>
+                                  <td className="py-2">{new Date(si.shipment.receivedAt).toLocaleDateString()}</td>
+                                  <td className="py-2 text-right">{si.quantityReceived}</td>
+                                  <td className="py-2 text-right">
+                                    {si.actualUnitCost != null ? `$${si.actualUnitCost.toFixed(2)}` : "—"}
+                                  </td>
+                                  <td className="py-2 text-right">${si.shipment.tariffAmount.toFixed(2)}</td>
+                                  <td className="py-2 text-right">${si.shipment.shippingCost.toFixed(2)}</td>
+                                  <td className="py-2 text-right">
+                                    <Link
+                                      to={`/po/${row.po.id}#shipment-${si.shipment.id}`}
+                                      className="text-blue-600 hover:underline text-xs"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      Details
+                                    </Link>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
                   )}
-                </div>
+                </>
               );
             })}
-          </div>
-        )}
+          </tbody>
+        </table>
       </div>
-    </Layout>
+    </div>
   );
 }
