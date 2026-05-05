@@ -5,6 +5,7 @@ export default [
   route("login", "routes/login.tsx"),
   route("logout", "routes/logout.tsx"),
   route("po", "routes/po._index.tsx"),
+  route("po/:id", "routes/po.$id.tsx"),
   route("po/:id/pdf", "routes/po.$id.pdf.tsx"),
   route("receiving", "routes/receiving._index.tsx"),
   route("inventory", "routes/inventory.tsx"),
