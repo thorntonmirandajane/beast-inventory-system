@@ -24,23 +24,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     where: { id },
     include: {
       items: {
-        include: {
-          sku: true,
-          manufacturer: true,
-        },
+        include: { sku: true, manufacturer: true },
         orderBy: { id: "asc" },
       },
-      shipments: {
+      parentPO: { select: { id: true, poNumber: true, status: true } },
+      children: {
         include: {
-          items: {
-            include: {
-              poItem: { include: { sku: true } },
-            },
-          },
+          items: { include: { sku: true } },
           createdBy: true,
           approvedBy: true,
         },
-        orderBy: { shipmentNumber: "asc" },
+        orderBy: { submittedAt: "asc" },
       },
       createdBy: true,
       approvedBy: true,
@@ -60,42 +54,132 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent") as string;
 
-  if (intent === "create-shipment") {
+  if (intent === "split-po") {
+    const splitsJson = formData.get("splitsJson") as string;
+    const splits: { poItemId: string; quantity: number }[] = splitsJson
+      ? JSON.parse(splitsJson)
+      : [];
+    const childNotes = (formData.get("childNotes") as string) || null;
+
+    const valid = splits.filter((s) => s.quantity > 0);
+    if (valid.length === 0) {
+      return { error: "Enter a quantity for at least one item to split" };
+    }
+
+    const parent = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+      include: { items: true, children: true },
+    });
+    if (!parent) return { error: "PO not found" };
+    if (parent.status === "APPROVED" || parent.status === "RECEIVED" || parent.status === "CANCELLED") {
+      return { error: `Cannot split a ${parent.status.toLowerCase()} PO` };
+    }
+
+    for (const s of valid) {
+      const item = parent.items.find((i) => i.id === s.poItemId);
+      if (!item) return { error: "Invalid line item" };
+      const remaining = item.quantityOrdered - item.quantityReceived;
+      if (s.quantity > remaining) {
+        return {
+          error: `Cannot split ${s.quantity} of ${s.poItemId} — only ${remaining} remaining on parent`,
+        };
+      }
+    }
+
+    const childPoNumber = `${parent.poNumber}-${parent.children.length + 1}`;
+
+    const child = await prisma.$transaction(async (tx) => {
+      // Pull source items so we can copy manufacturer/unitCost onto the child
+      const srcItems = await tx.pOItem.findMany({
+        where: { id: { in: valid.map((s) => s.poItemId) } },
+      });
+
+      const newChild = await tx.purchaseOrder.create({
+        data: {
+          poNumber: childPoNumber,
+          vendorName: parent.vendorName,
+          estimatedArrival: parent.estimatedArrival,
+          parentPOId: parent.id,
+          notes: childNotes,
+          createdById: user.id,
+          items: {
+            create: valid.map((s) => {
+              const src = srcItems.find((i) => i.id === s.poItemId)!;
+              return {
+                skuId: src.skuId,
+                quantityOrdered: s.quantity,
+                manufacturerId: src.manufacturerId,
+                unitCost: src.unitCost,
+              };
+            }),
+          },
+        },
+      });
+
+      // Decrement parent line items by the split amounts
+      for (const s of valid) {
+        await tx.pOItem.update({
+          where: { id: s.poItemId },
+          data: { quantityOrdered: { decrement: s.quantity } },
+        });
+      }
+
+      // Remove parent line items that are now zero AND have no receipts
+      await tx.pOItem.deleteMany({
+        where: {
+          purchaseOrderId: parent.id,
+          quantityOrdered: 0,
+          quantityReceived: 0,
+        },
+      });
+
+      return newChild;
+    });
+
+    await createAuditLog(user.id, "SPLIT_PO", "PurchaseOrder", child.id, {
+      parentPoNumber: parent.poNumber,
+      childPoNumber,
+      splits: valid,
+    });
+
+    return { success: true, message: `Split into ${childPoNumber}`, childId: child.id };
+  }
+
+  if (intent === "receive") {
     const trackingNumber = (formData.get("trackingNumber") as string) || null;
     const carrier = (formData.get("carrier") as string) || null;
     const tariffAmount = parseFloat((formData.get("tariffAmount") as string) || "0") || 0;
     const shippingCost = parseFloat((formData.get("shippingCost") as string) || "0") || 0;
     const receivedAt = (formData.get("receivedAt") as string) || null;
-    const notes = (formData.get("notes") as string) || null;
     const varianceNotes = (formData.get("varianceNotes") as string) || null;
     const packingSlipImageUrl = (formData.get("packingSlipImageUrl") as string) || null;
     const boxImageUrls = formData.getAll("boxImageUrls").map((v) => String(v)).filter(Boolean);
 
     const itemsJson = formData.get("itemsJson") as string;
-    const items: { poItemId: string; quantityReceived: number; actualUnitCost?: number | null }[] =
+    const lineItems: { poItemId: string; quantityReceived: number; actualUnitCost?: number | null }[] =
       itemsJson ? JSON.parse(itemsJson) : [];
 
-    const lineItems = items.filter((it) => it.quantityReceived > 0);
     if (lineItems.length === 0) {
-      return { error: "Enter a quantity for at least one line item" };
+      return { error: "No line items submitted" };
     }
-
     if (!packingSlipImageUrl) {
       return { error: "Packing slip image is required" };
     }
 
     const po = await prisma.purchaseOrder.findUnique({
       where: { id: poId },
-      include: { items: true, shipments: true },
+      include: { items: true },
     });
     if (!po) return { error: "PO not found" };
+    if (po.status !== "SUBMITTED" && po.status !== "PARTIAL") {
+      return { error: `Cannot receive a ${po.status.toLowerCase()} PO` };
+    }
 
     let hasVariance = false;
     for (const li of lineItems) {
       const poItem = po.items.find((i) => i.id === li.poItemId);
       if (!poItem) return { error: "Invalid line item" };
-      const remaining = poItem.quantityOrdered - poItem.quantityReceived;
-      if (li.quantityReceived !== remaining) hasVariance = true;
+      if (li.quantityReceived !== poItem.quantityOrdered) hasVariance = true;
     }
 
     if (hasVariance) {
@@ -111,171 +195,124 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       }
     }
 
-    const nextShipmentNumber =
-      po.shipments.reduce((max, s) => Math.max(max, s.shipmentNumber), 0) + 1;
-
-    const shipment = await prisma.pOShipment.create({
-      data: {
-        purchaseOrderId: poId,
-        shipmentNumber: nextShipmentNumber,
-        trackingNumber,
-        carrier,
-        tariffAmount,
-        shippingCost,
-        receivedAt: receivedAt ? new Date(receivedAt) : new Date(),
-        notes,
-        varianceNotes,
-        hasVariance,
-        packingSlipImageUrl,
-        boxImageUrls,
-        createdById: user.id,
-        items: {
-          create: lineItems.map((li) => ({
-            poItemId: li.poItemId,
+    await prisma.$transaction(async (tx) => {
+      for (const li of lineItems) {
+        await tx.pOItem.update({
+          where: { id: li.poItemId },
+          data: {
             quantityReceived: li.quantityReceived,
-            actualUnitCost:
-              li.actualUnitCost != null && li.actualUnitCost > 0 ? li.actualUnitCost : null,
-          })),
+            unitCost:
+              li.actualUnitCost != null && li.actualUnitCost > 0 ? li.actualUnitCost : undefined,
+          },
+        });
+      }
+
+      await tx.purchaseOrder.update({
+        where: { id: poId },
+        data: {
+          status: "RECEIVED",
+          receivedAt: receivedAt ? new Date(receivedAt) : new Date(),
+          trackingNumber,
+          carrier,
+          tariffAmount,
+          shippingCost,
+          packingSlipImageUrl,
+          boxImageUrls,
+          varianceNotes,
+          hasVariance,
         },
-      },
+      });
     });
 
-    await createAuditLog(user.id, "CREATE_SHIPMENT", "POShipment", shipment.id, {
+    await createAuditLog(user.id, "RECEIVE_PO", "PurchaseOrder", poId, {
       poNumber: po.poNumber,
-      shipmentNumber: nextShipmentNumber,
-      itemCount: lineItems.length,
       hasVariance,
     });
 
     return {
       success: true,
       message: hasVariance
-        ? `Shipment #${nextShipmentNumber} recorded with variance — pending approval`
-        : `Shipment #${nextShipmentNumber} recorded — pending approval`,
+        ? "Receipt recorded with variance — pending approval"
+        : "Receipt recorded — pending approval",
     };
   }
 
-  if (intent === "approve-shipment") {
-    const shipmentId = formData.get("shipmentId") as string;
-
-    const shipment = await prisma.pOShipment.findUnique({
-      where: { id: shipmentId },
-      include: {
-        items: { include: { poItem: { include: { sku: true } } } },
-        purchaseOrder: { include: { items: true } },
-      },
+  if (intent === "approve") {
+    const po = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+      include: { items: { include: { sku: true } } },
     });
-    if (!shipment) return { error: "Shipment not found" };
-    if (shipment.purchaseOrderId !== poId) return { error: "Shipment does not belong to this PO" };
-    if (shipment.status !== "PENDING") return { error: "Shipment already processed" };
+    if (!po) return { error: "PO not found" };
+    if (po.status !== "RECEIVED") return { error: "Only received POs can be approved" };
 
     await prisma.$transaction(async (tx) => {
-      for (const si of shipment.items) {
-        await tx.pOItem.update({
-          where: { id: si.poItemId },
-          data: { quantityReceived: { increment: si.quantityReceived } },
-        });
-        await addInventory(
-          si.poItem.skuId,
-          si.quantityReceived,
-          "RAW",
-          undefined,
-          `Shipment #${shipment.shipmentNumber} of ${shipment.purchaseOrder.poNumber}`,
-          shipmentId,
-          "PURCHASE_ORDER",
-          undefined,
-          user.id,
-          tx
-        );
+      for (const item of po.items) {
+        if (item.quantityReceived > 0) {
+          await addInventory(
+            item.skuId,
+            item.quantityReceived,
+            "RAW",
+            undefined,
+            `${po.poNumber}`,
+            poId,
+            "PURCHASE_ORDER",
+            undefined,
+            user.id,
+            tx
+          );
+        }
       }
 
-      await tx.pOShipment.update({
-        where: { id: shipmentId },
+      await tx.purchaseOrder.update({
+        where: { id: poId },
         data: {
           status: "APPROVED",
           approvedById: user.id,
           approvedAt: new Date(),
         },
       });
-
-      // Recompute PO status
-      const refreshed = await tx.purchaseOrder.findUnique({
-        where: { id: poId },
-        include: { items: true },
-      });
-      if (refreshed) {
-        const allFull = refreshed.items.every(
-          (i) => i.quantityReceived >= i.quantityOrdered
-        );
-        const anyReceived = refreshed.items.some((i) => i.quantityReceived > 0);
-        await tx.purchaseOrder.update({
-          where: { id: poId },
-          data: {
-            status: allFull ? "RECEIVED" : anyReceived ? "PARTIAL" : "SUBMITTED",
-            receivedAt: allFull ? new Date() : null,
-          },
-        });
-      }
     });
 
-    await createAuditLog(user.id, "APPROVE_SHIPMENT", "POShipment", shipmentId, {
-      poNumber: shipment.purchaseOrder.poNumber,
-      shipmentNumber: shipment.shipmentNumber,
+    await createAuditLog(user.id, "APPROVE_PO", "PurchaseOrder", poId, {
+      poNumber: po.poNumber,
     });
 
-    return {
-      success: true,
-      message: `Shipment #${shipment.shipmentNumber} approved — inventory updated`,
-    };
+    return { success: true, message: `${po.poNumber} approved — inventory updated` };
   }
 
-  if (intent === "reject-shipment") {
-    const shipmentId = formData.get("shipmentId") as string;
-    const reason = (formData.get("reason") as string) || null;
+  if (intent === "reject-receipt") {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: poId } });
+    if (!po) return { error: "PO not found" };
+    if (po.status !== "RECEIVED") return { error: "Only received POs can be rejected" };
 
-    const shipment = await prisma.pOShipment.findUnique({ where: { id: shipmentId } });
-    if (!shipment) return { error: "Shipment not found" };
-    if (shipment.purchaseOrderId !== poId) return { error: "Shipment does not belong to this PO" };
-    if (shipment.status !== "PENDING") return { error: "Shipment already processed" };
-
-    await prisma.pOShipment.update({
-      where: { id: shipmentId },
+    await prisma.purchaseOrder.update({
+      where: { id: poId },
       data: {
-        status: "REJECTED",
-        approvedById: user.id,
-        approvedAt: new Date(),
-        varianceNotes: reason
-          ? `${shipment.varianceNotes ? shipment.varianceNotes + "\n\n" : ""}REJECTED: ${reason}`
-          : shipment.varianceNotes,
+        status: "SUBMITTED",
+        receivedAt: null,
+        trackingNumber: null,
+        carrier: null,
+        tariffAmount: 0,
+        shippingCost: 0,
+        packingSlipImageUrl: null,
+        boxImageUrls: [],
+        // Keep variance/notes for record? Reset for cleanliness:
+        varianceNotes: null,
+        hasVariance: false,
       },
     });
 
-    await createAuditLog(user.id, "REJECT_SHIPMENT", "POShipment", shipmentId, {
-      shipmentNumber: shipment.shipmentNumber,
-      reason,
+    // Reset items received qty back to zero
+    await prisma.pOItem.updateMany({
+      where: { purchaseOrderId: poId },
+      data: { quantityReceived: 0 },
     });
 
-    return { success: true, message: `Shipment #${shipment.shipmentNumber} rejected` };
-  }
-
-  if (intent === "delete-shipment") {
-    const shipmentId = formData.get("shipmentId") as string;
-
-    const shipment = await prisma.pOShipment.findUnique({ where: { id: shipmentId } });
-    if (!shipment) return { error: "Shipment not found" };
-    if (shipment.purchaseOrderId !== poId) return { error: "Shipment does not belong to this PO" };
-    if (shipment.status === "APPROVED") {
-      return { error: "Cannot delete an approved shipment — inventory has been recorded" };
-    }
-
-    await prisma.pOShipmentItem.deleteMany({ where: { shipmentId } });
-    await prisma.pOShipment.delete({ where: { id: shipmentId } });
-
-    await createAuditLog(user.id, "DELETE_SHIPMENT", "POShipment", shipmentId, {
-      shipmentNumber: shipment.shipmentNumber,
+    await createAuditLog(user.id, "REJECT_RECEIPT", "PurchaseOrder", poId, {
+      poNumber: po.poNumber,
     });
 
-    return { success: true, message: `Shipment #${shipment.shipmentNumber} deleted` };
+    return { success: true, message: `${po.poNumber} reverted to SUBMITTED` };
   }
 
   return { error: "Invalid action" };
@@ -287,8 +324,6 @@ function getStatusColor(status: string) {
     case "PARTIAL": return "bg-orange-100 text-orange-800";
     case "RECEIVED": return "bg-blue-100 text-blue-800";
     case "APPROVED": return "bg-green-100 text-green-800";
-    case "PENDING": return "bg-yellow-100 text-yellow-800";
-    case "REJECTED": return "bg-red-100 text-red-800";
     case "CANCELLED": return "bg-red-100 text-red-800";
     default: return "bg-gray-100 text-gray-800";
   }
@@ -301,86 +336,108 @@ export default function POShow() {
   const isSubmitting = navigation.state === "submitting";
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const canReceive =
-    po.status !== "RECEIVED" && po.status !== "APPROVED" && po.status !== "CANCELLED";
-  const initiallyOpen =
-    canReceive && (searchParams.get("new") === "1" || po.shipments.length === 0);
-  const [showNewShipment, setShowNewShipment] = useState(initiallyOpen);
+  const canEdit = po.status === "SUBMITTED";
+  const canReceive = po.status === "SUBMITTED";
+  const canSplit = po.status === "SUBMITTED" && po.items.some((i) => i.quantityOrdered > 0);
+
+  const initiallyOpenReceive = canReceive && searchParams.get("receive") === "1";
+  const initiallyOpenSplit = canSplit && searchParams.get("split") === "1";
+
+  const [showSplit, setShowSplit] = useState(initiallyOpenSplit);
+  const [showReceive, setShowReceive] = useState(initiallyOpenReceive);
 
   useEffect(() => {
-    if (showNewShipment && searchParams.get("new") === "1") {
-      const next = new URLSearchParams(searchParams);
-      next.delete("new");
-      setSearchParams(next, { replace: true });
+    const next = new URLSearchParams(searchParams);
+    let changed = false;
+    if (showReceive && next.get("receive") === "1") {
+      next.delete("receive");
+      changed = true;
     }
-  }, [showNewShipment, searchParams, setSearchParams]);
+    if (showSplit && next.get("split") === "1") {
+      next.delete("split");
+      changed = true;
+    }
+    if (changed) setSearchParams(next, { replace: true });
+  }, [showReceive, showSplit, searchParams, setSearchParams]);
 
-  // Per-item draft state for the new-shipment form
-  const initialDraft = useMemo(() => {
-    const map: Record<string, { qty: number; cost: string }> = {};
+  // ============ SPLIT FORM STATE ============
+  const [splitDraft, setSplitDraft] = useState<Record<string, number>>({});
+  const splitTotal = Object.values(splitDraft).reduce((s, n) => s + (n || 0), 0);
+  const splitsJson = JSON.stringify(
+    Object.entries(splitDraft)
+      .filter(([_, q]) => q > 0)
+      .map(([poItemId, quantity]) => ({ poItemId, quantity }))
+  );
+  const splitValid = Object.entries(splitDraft).every(([itemId, qty]) => {
+    const item = po.items.find((i) => i.id === itemId);
+    if (!item) return false;
+    const remaining = item.quantityOrdered - item.quantityReceived;
+    return qty >= 0 && qty <= remaining;
+  });
+  const canSubmitSplit = splitTotal > 0 && splitValid;
+
+  // ============ RECEIVE FORM STATE ============
+  const initialReceiveDraft = useMemo(() => {
+    const m: Record<string, { qty: number; cost: string }> = {};
     for (const item of po.items) {
-      map[item.id] = { qty: 0, cost: item.unitCost != null ? String(item.unitCost) : "" };
+      m[item.id] = {
+        qty: item.quantityOrdered, // Default to expected qty for fastest entry
+        cost: item.unitCost != null ? String(item.unitCost) : "",
+      };
     }
-    return map;
+    return m;
   }, [po.items]);
-  const [draftItems, setDraftItems] = useState<Record<string, { qty: number; cost: string }>>(initialDraft);
-
+  const [receiveDraft, setReceiveDraft] = useState<Record<string, { qty: number; cost: string }>>(initialReceiveDraft);
   const [packingSlipUrl, setPackingSlipUrl] = useState<string>("");
   const [boxImageUrls, setBoxImageUrls] = useState<string[]>([]);
   const [varianceNotes, setVarianceNotes] = useState("");
 
-  const remainingByItem = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const item of po.items) {
-      m[item.id] = Math.max(0, item.quantityOrdered - item.quantityReceived);
-    }
-    return m;
-  }, [po.items]);
-
   const variancePerItem = useMemo(() => {
-    const v: Record<string, "match" | "short" | "over" | "none"> = {};
+    const v: Record<string, "match" | "short" | "over"> = {};
     for (const item of po.items) {
-      const qty = draftItems[item.id]?.qty || 0;
-      const remaining = remainingByItem[item.id];
-      if (qty === 0) v[item.id] = "none";
-      else if (qty === remaining) v[item.id] = "match";
-      else if (qty < remaining) v[item.id] = "short";
+      const qty = receiveDraft[item.id]?.qty ?? 0;
+      if (qty === item.quantityOrdered) v[item.id] = "match";
+      else if (qty < item.quantityOrdered) v[item.id] = "short";
       else v[item.id] = "over";
     }
     return v;
-  }, [draftItems, po.items, remainingByItem]);
-
-  const hasVariance = Object.values(variancePerItem).some((v) => v === "short" || v === "over");
-  const hasAnyQty = Object.values(draftItems).some((d) => d.qty > 0);
-
-  const canSubmit =
-    hasAnyQty &&
+  }, [receiveDraft, po.items]);
+  const hasVariance = Object.values(variancePerItem).some((v) => v !== "match");
+  const canSubmitReceive =
     !!packingSlipUrl &&
+    po.items.length > 0 &&
     (!hasVariance || (varianceNotes.trim().length > 0 && boxImageUrls.length > 0));
 
-  // Cost summary so far across approved shipments
-  const approvedShipments = po.shipments.filter((s) => s.status === "APPROVED");
-  const totalApprovedCost = approvedShipments.reduce((sum, s) => {
-    const itemCost = s.items.reduce(
-      (subtotal, si) =>
-        subtotal +
-        (si.actualUnitCost ?? si.poItem.unitCost ?? 0) * si.quantityReceived,
+  const itemsJsonValue = JSON.stringify(
+    po.items.map((item) => ({
+      poItemId: item.id,
+      quantityReceived: receiveDraft[item.id]?.qty ?? 0,
+      actualUnitCost:
+        receiveDraft[item.id]?.cost ? parseFloat(receiveDraft[item.id]!.cost) : null,
+    }))
+  );
+
+  // ============ COST ROLLUP ============
+  const ownCost = useMemo(() => {
+    if (po.status !== "RECEIVED" && po.status !== "APPROVED") return 0;
+    const items = po.items.reduce(
+      (s, i) => s + (i.unitCost ?? 0) * i.quantityReceived,
       0
     );
-    return sum + itemCost + s.tariffAmount + s.shippingCost;
-  }, 0);
+    return items + po.tariffAmount + po.shippingCost;
+  }, [po]);
 
-  const totalOrdered = po.items.reduce((s, i) => s + i.quantityOrdered, 0);
-  const totalReceived = po.items.reduce((s, i) => s + i.quantityReceived, 0);
-
-  const itemsJsonValue = JSON.stringify(
-    Object.entries(draftItems)
-      .filter(([_, d]) => d.qty > 0)
-      .map(([poItemId, d]) => ({
-        poItemId,
-        quantityReceived: d.qty,
-        actualUnitCost: d.cost ? parseFloat(d.cost) : null,
-      }))
+  const childrenCost = useMemo(
+    () =>
+      po.children.reduce((sum, child) => {
+        if (child.status !== "RECEIVED" && child.status !== "APPROVED") return sum;
+        const items = child.items.reduce(
+          (s, i) => s + (i.unitCost ?? 0) * i.quantityReceived,
+          0
+        );
+        return sum + items + child.tariffAmount + child.shippingCost;
+      }, 0),
+    [po.children]
   );
 
   return (
@@ -391,26 +448,65 @@ export default function POShow() {
             <Link to="/po" className="text-sm text-blue-600 hover:underline">
               ← All POs
             </Link>
+            {po.parentPO && (
+              <Link to={`/po/${po.parentPO.id}`} className="text-sm text-blue-600 hover:underline">
+                ↑ Parent {po.parentPO.poNumber}
+              </Link>
+            )}
           </div>
           <h1 className="page-title font-mono">{po.poNumber}</h1>
-          <div className="flex items-center gap-2 mt-1">
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
             <span className={`badge ${getStatusColor(po.status)}`}>{po.status}</span>
-            <span className="text-sm text-gray-500">
-              {po.items.length} item{po.items.length !== 1 ? "s" : ""} ·{" "}
-              {totalReceived}/{totalOrdered} received
-            </span>
+            {po.parentPO && (
+              <span className="badge bg-purple-100 text-purple-800">Child PO</span>
+            )}
+            {po.children.length > 0 && (
+              <span className="badge bg-purple-100 text-purple-800">
+                {po.children.length} child{po.children.length !== 1 ? "ren" : ""}
+              </span>
+            )}
+            {po.hasVariance && (
+              <span className="badge bg-orange-100 text-orange-800">Variance</span>
+            )}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Link to={`/po/${po.id}/pdf`} className="btn btn-ghost">View PDF</Link>
-          {po.status !== "RECEIVED" && po.status !== "APPROVED" && po.status !== "CANCELLED" && (
+          {canSplit && (
             <button
               type="button"
-              onClick={() => setShowNewShipment((v) => !v)}
+              onClick={() => { setShowSplit((v) => !v); setShowReceive(false); }}
+              className="btn btn-secondary"
+            >
+              {showSplit ? "Close split" : "↳ Split PO"}
+            </button>
+          )}
+          {canReceive && (
+            <button
+              type="button"
+              onClick={() => { setShowReceive((v) => !v); setShowSplit(false); }}
               className="btn btn-primary"
             >
-              {showNewShipment ? "Close" : "+ Receive Shipment"}
+              {showReceive ? "Close" : "+ Receive"}
             </button>
+          )}
+          {po.status === "RECEIVED" && (
+            <>
+              <Form method="post">
+                <input type="hidden" name="intent" value="approve" />
+                <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
+                  Approve & Add to Inventory
+                </button>
+              </Form>
+              <Form method="post" onSubmit={(e) => {
+                if (!confirm("Revert receipt? Quantities and tracking will be cleared.")) e.preventDefault();
+              }}>
+                <input type="hidden" name="intent" value="reject-receipt" />
+                <button type="submit" className="btn btn-error" disabled={isSubmitting}>
+                  Reject Receipt
+                </button>
+              </Form>
+            </>
           )}
         </div>
       </div>
@@ -418,7 +514,7 @@ export default function POShow() {
       {actionData?.error && <div className="alert alert-error">{actionData.error}</div>}
       {actionData?.success && <div className="alert alert-success">{actionData.message}</div>}
 
-      {/* PO Summary */}
+      {/* Summary */}
       <div className="card mb-6">
         <div className="card-body grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
           <div>
@@ -434,17 +530,41 @@ export default function POShow() {
               <div>{new Date(po.estimatedArrival).toLocaleDateString()}</div>
             </div>
           )}
-          <div>
-            <div className="text-gray-500">Shipments</div>
+          {po.receivedAt && (
             <div>
-              {approvedShipments.length} approved / {po.shipments.length} total
+              <div className="text-gray-500">Received</div>
+              <div>{new Date(po.receivedAt).toLocaleDateString()}</div>
             </div>
-          </div>
+          )}
+          {po.approvedAt && po.approvedBy && (
+            <div>
+              <div className="text-gray-500">Approved</div>
+              <div>{new Date(po.approvedAt).toLocaleDateString()}</div>
+              <div className="text-xs text-gray-400">
+                by {po.approvedBy.firstName} {po.approvedBy.lastName}
+              </div>
+            </div>
+          )}
           <div>
-            <div className="text-gray-500">Total received cost</div>
-            <div className="font-semibold">${totalApprovedCost.toFixed(2)}</div>
-            <div className="text-xs text-gray-400">incl. tariffs + shipping</div>
+            <div className="text-gray-500">This PO total</div>
+            <div className="font-semibold">${ownCost.toFixed(2)}</div>
+            <div className="text-xs text-gray-400">incl. tariff + shipping</div>
           </div>
+          {(po.children.length > 0 || childrenCost > 0) && (
+            <div>
+              <div className="text-gray-500">Children total</div>
+              <div className="font-semibold">${childrenCost.toFixed(2)}</div>
+              <div className="text-xs text-gray-400">received/approved children</div>
+            </div>
+          )}
+          {(po.children.length > 0 || childrenCost > 0) && (
+            <div>
+              <div className="text-gray-500">Combined total</div>
+              <div className="font-semibold text-blue-700">
+                ${(ownCost + childrenCost).toFixed(2)}
+              </div>
+            </div>
+          )}
           {po.notes && (
             <div className="col-span-2 md:col-span-4">
               <div className="text-gray-500">Notes</div>
@@ -459,61 +579,167 @@ export default function POShow() {
         <div className="card-header">
           <h2 className="card-title">Line Items</h2>
         </div>
-        <div className="overflow-x-auto">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>SKU</th>
-                <th>Name</th>
-                <th>Manufacturer</th>
-                <th className="text-right">Ordered</th>
-                <th className="text-right">Received</th>
-                <th className="text-right">Remaining</th>
-                <th className="text-right">$/unit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {po.items.map((item) => (
-                <tr key={item.id}>
-                  <td className="font-mono text-sm">{item.sku.sku.toUpperCase()}</td>
-                  <td>{item.sku.name}</td>
-                  <td className="text-sm">{item.manufacturer?.name || "—"}</td>
-                  <td className="text-right">{item.quantityOrdered}</td>
-                  <td className="text-right">
-                    <span className={
-                      item.quantityReceived >= item.quantityOrdered
-                        ? "text-green-600 font-semibold"
-                        : item.quantityReceived > 0
-                        ? "text-orange-600"
-                        : "text-gray-400"
-                    }>
-                      {item.quantityReceived}
-                    </span>
-                  </td>
-                  <td className="text-right">{remainingByItem[item.id]}</td>
-                  <td className="text-right">
-                    {item.unitCost != null ? `$${item.unitCost.toFixed(2)}` : <span className="text-gray-400">—</span>}
-                  </td>
+        {po.items.length === 0 ? (
+          <div className="card-body">
+            <p className="text-sm text-gray-500">
+              All quantity has been split out to child POs.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>Name</th>
+                  <th>Manufacturer</th>
+                  <th className="text-right">Ordered</th>
+                  <th className="text-right">Received</th>
+                  <th className="text-right">$/unit</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {po.items.map((item) => (
+                  <tr key={item.id}>
+                    <td className="font-mono text-sm">{item.sku.sku.toUpperCase()}</td>
+                    <td>{item.sku.name}</td>
+                    <td className="text-sm">{item.manufacturer?.name || "—"}</td>
+                    <td className="text-right">{item.quantityOrdered}</td>
+                    <td className="text-right">
+                      <span className={
+                        item.quantityReceived >= item.quantityOrdered && item.quantityOrdered > 0
+                          ? "text-green-600 font-semibold"
+                          : item.quantityReceived > 0
+                          ? "text-orange-600"
+                          : "text-gray-400"
+                      }>
+                        {item.quantityReceived}
+                      </span>
+                    </td>
+                    <td className="text-right">
+                      {item.unitCost != null ? `$${item.unitCost.toFixed(2)}` : <span className="text-gray-400">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* New Shipment Form */}
-      {showNewShipment && (
-        <div className="card mb-6 border-2 border-blue-300">
+      {/* Split Form */}
+      {showSplit && (
+        <div className="card mb-6 border-2 border-purple-300">
           <div className="card-header">
-            <h2 className="card-title">Receive Shipment</h2>
+            <h2 className="card-title">↳ Split PO</h2>
             <p className="text-sm text-gray-500 mt-1">
-              Record a partial or full delivery. Photos and notes are required when received qty
-              doesn't match what's expected.
+              Carve out a child PO with whatever portion of these items will arrive in a separate
+              shipment. The child gets its own PO number, tracking, tariffs, and approval.
+              The parent's quantity drops by the amount you split out.
             </p>
           </div>
           <div className="card-body">
-            <Form method="post" id="new-shipment-form">
-              <input type="hidden" name="intent" value="create-shipment" />
+            <Form method="post">
+              <input type="hidden" name="intent" value="split-po" />
+              <input type="hidden" name="splitsJson" value={splitsJson} />
+
+              <div className="overflow-x-auto mb-4">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th className="text-right">On Parent</th>
+                      <th className="text-right">Split into Child</th>
+                      <th className="text-right">Parent After</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {po.items.map((item) => {
+                      const remaining = item.quantityOrdered - item.quantityReceived;
+                      const splitQty = splitDraft[item.id] || 0;
+                      return (
+                        <tr key={item.id}>
+                          <td>
+                            <div className="font-mono text-sm">{item.sku.sku.toUpperCase()}</div>
+                            <div className="text-xs text-gray-500">{item.sku.name}</div>
+                          </td>
+                          <td className="text-right">{remaining}</td>
+                          <td className="text-right">
+                            <input
+                              type="number"
+                              className="form-input w-28 text-right"
+                              min="0"
+                              max={remaining}
+                              value={splitQty || ""}
+                              onChange={(e) => {
+                                const v = parseInt(e.target.value, 10) || 0;
+                                setSplitDraft((prev) => ({
+                                  ...prev,
+                                  [item.id]: Math.max(0, Math.min(remaining, v)),
+                                }));
+                              }}
+                              placeholder="0"
+                            />
+                          </td>
+                          <td className="text-right">
+                            <span className={splitQty > 0 ? "font-semibold text-purple-700" : "text-gray-400"}>
+                              {remaining - splitQty}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Notes for child PO (optional)</label>
+                <input
+                  type="text"
+                  name="childNotes"
+                  className="form-input"
+                  placeholder="e.g. First batch arriving via DHL"
+                />
+              </div>
+
+              <div className="flex gap-3 mt-4">
+                <button
+                  type="submit"
+                  className="btn btn-secondary"
+                  disabled={isSubmitting || !canSubmitSplit}
+                >
+                  {isSubmitting ? "Splitting..." : `Create Child PO (${splitTotal} units)`}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setShowSplit(false);
+                    setSplitDraft({});
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </Form>
+          </div>
+        </div>
+      )}
+
+      {/* Receive Form */}
+      {showReceive && (
+        <div className="card mb-6 border-2 border-blue-300">
+          <div className="card-header">
+            <h2 className="card-title">Receive {po.poNumber}</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Record what physically arrived for this PO. Photos and notes are required when
+              received qty doesn't match what's expected.
+            </p>
+          </div>
+          <div className="card-body">
+            <Form method="post" id="receive-form">
+              <input type="hidden" name="intent" value="receive" />
               <input type="hidden" name="itemsJson" value={itemsJsonValue} />
               <input type="hidden" name="packingSlipImageUrl" value={packingSlipUrl} />
               {boxImageUrls.map((url) => (
@@ -549,33 +775,30 @@ export default function POShow() {
                 />
               </div>
 
-              {/* Per-item qty + actual cost */}
               <div className="mb-6">
-                <label className="form-label">Items in this Shipment</label>
+                <label className="form-label">Items Received</label>
                 <div className="overflow-x-auto">
                   <table className="data-table">
                     <thead>
                       <tr>
                         <th>SKU</th>
-                        <th className="text-right">Remaining</th>
-                        <th className="text-right">Receive Qty</th>
+                        <th className="text-right">Expected</th>
+                        <th className="text-right">Received Qty</th>
                         <th className="text-right">Actual $/unit</th>
                         <th>Variance</th>
                       </tr>
                     </thead>
                     <tbody>
                       {po.items.map((item) => {
-                        const draft = draftItems[item.id] || { qty: 0, cost: "" };
-                        const remaining = remainingByItem[item.id];
+                        const draft = receiveDraft[item.id] || { qty: 0, cost: "" };
                         const variance = variancePerItem[item.id];
-
                         return (
                           <tr key={item.id}>
                             <td>
                               <div className="font-mono text-sm">{item.sku.sku.toUpperCase()}</div>
                               <div className="text-xs text-gray-500">{item.sku.name}</div>
                             </td>
-                            <td className="text-right">{remaining}</td>
+                            <td className="text-right">{item.quantityOrdered}</td>
                             <td className="text-right">
                               <input
                                 type="number"
@@ -584,13 +807,12 @@ export default function POShow() {
                                 value={draft.qty || ""}
                                 onChange={(e) => {
                                   const v = parseInt(e.target.value, 10) || 0;
-                                  setDraftItems((prev) => ({
+                                  setReceiveDraft((prev) => ({
                                     ...prev,
                                     [item.id]: { ...draft, qty: Math.max(0, v) },
                                   }));
                                 }}
                                 placeholder="0"
-                                disabled={remaining === 0}
                               />
                             </td>
                             <td className="text-right">
@@ -601,7 +823,7 @@ export default function POShow() {
                                 step="0.01"
                                 value={draft.cost}
                                 onChange={(e) => {
-                                  setDraftItems((prev) => ({
+                                  setReceiveDraft((prev) => ({
                                     ...prev,
                                     [item.id]: { ...draft, cost: e.target.value },
                                   }));
@@ -615,16 +837,13 @@ export default function POShow() {
                               )}
                               {variance === "short" && (
                                 <span className="badge bg-orange-100 text-orange-800">
-                                  Short by {remaining - draft.qty}
+                                  Short by {item.quantityOrdered - draft.qty}
                                 </span>
                               )}
                               {variance === "over" && (
                                 <span className="badge bg-red-100 text-red-800">
-                                  Over by {draft.qty - remaining}
+                                  Over by {draft.qty - item.quantityOrdered}
                                 </span>
-                              )}
-                              {variance === "none" && (
-                                <span className="text-xs text-gray-400">—</span>
                               )}
                             </td>
                           </tr>
@@ -635,7 +854,6 @@ export default function POShow() {
                 </div>
               </div>
 
-              {/* Variance notes */}
               {hasVariance && (
                 <div className="bg-orange-50 border border-orange-300 rounded-lg p-4 mb-6">
                   <div className="font-semibold text-orange-900 mb-2">
@@ -653,47 +871,40 @@ export default function POShow() {
                 </div>
               )}
 
-              {/* Packing slip image */}
               <div className="mb-6">
                 <ImageUpload
                   label="Packing Slip (required)"
                   helpText="Upload a photo of the packing slip"
-                  folder="po-shipments/packing-slips"
+                  folder="po-receipts/packing-slips"
                   onImageUploaded={(url) => setPackingSlipUrl(url)}
                 />
               </div>
 
-              {/* Box / items images */}
               <div className="mb-6">
                 <MultiImageUpload
                   name="boxImageUrlsClient"
                   label={hasVariance ? "Box / Items Photos (required for variance)" : "Box / Items Photos"}
                   helpText="Upload photos of the box and contents"
-                  folder="po-shipments/boxes"
+                  folder="po-receipts/boxes"
                   initialUrls={boxImageUrls}
                   onChange={(urls) => setBoxImageUrls(urls)}
                 />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">General Notes</label>
-                <textarea name="notes" className="form-textarea" rows={2} placeholder="Optional notes..." />
               </div>
 
               <div className="flex gap-3 mt-4">
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={isSubmitting || !canSubmit}
+                  disabled={isSubmitting || !canSubmitReceive}
                 >
-                  {isSubmitting ? "Recording..." : "Record Shipment"}
+                  {isSubmitting ? "Recording..." : "Record Receipt"}
                 </button>
                 <button
                   type="button"
                   className="btn btn-ghost"
                   onClick={() => {
-                    setShowNewShipment(false);
-                    setDraftItems(initialDraft);
+                    setShowReceive(false);
+                    setReceiveDraft(initialReceiveDraft);
                     setPackingSlipUrl("");
                     setBoxImageUrls([]);
                     setVarianceNotes("");
@@ -701,7 +912,7 @@ export default function POShow() {
                 >
                   Cancel
                 </button>
-                {!canSubmit && hasAnyQty && (
+                {!canSubmitReceive && (
                   <span className="text-sm text-orange-600 self-center">
                     {!packingSlipUrl
                       ? "Packing slip image required"
@@ -718,261 +929,139 @@ export default function POShow() {
         </div>
       )}
 
-      {/* Existing Shipments */}
-      <div className="card">
-        <div className="card-header">
-          <h2 className="card-title">Shipments ({po.shipments.length})</h2>
-        </div>
-        {po.shipments.length === 0 ? (
-          <div className="card-body">
-            <div className="empty-state">
-              <h3 className="empty-state-title">No shipments yet</h3>
-              <p className="empty-state-description mb-4">
-                Receive this PO in segments — record each delivery as a shipment with its
-                own tracking, tariff, and cost.
-              </p>
-              {canReceive && !showNewShipment && (
-                <button
-                  type="button"
-                  onClick={() => setShowNewShipment(true)}
-                  className="btn btn-primary"
-                >
-                  + Record First Shipment
-                </button>
-              )}
-            </div>
+      {/* Receipt Details (when received or approved) */}
+      {(po.status === "RECEIVED" || po.status === "APPROVED") && (
+        <div className="card mb-6">
+          <div className="card-header">
+            <h2 className="card-title">Receipt Details</h2>
           </div>
-        ) : (
-          <div className="divide-y">
-            {po.shipments.map((s) => (
-              <ShipmentRow key={s.id} shipment={s} isSubmitting={isSubmitting} />
-            ))}
-          </div>
-        )}
-      </div>
-    </Layout>
-  );
-}
-
-type Shipment = Awaited<ReturnType<typeof loader>>["po"]["shipments"][number];
-
-function ShipmentRow({ shipment, isSubmitting }: { shipment: Shipment; isSubmitting: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [showRejectForm, setShowRejectForm] = useState(false);
-
-  const itemsCost = shipment.items.reduce(
-    (sum, si) =>
-      sum + (si.actualUnitCost ?? si.poItem.unitCost ?? 0) * si.quantityReceived,
-    0
-  );
-  const shipmentTotal = itemsCost + shipment.tariffAmount + shipment.shippingCost;
-
-  return (
-    <div id={`shipment-${shipment.id}`} className="p-4">
-      <div
-        className="flex items-center justify-between cursor-pointer flex-wrap gap-3"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="font-semibold">Shipment #{shipment.shipmentNumber}</div>
-          <span className={`badge ${getStatusColor(shipment.status)}`}>
-            {shipment.status}
-          </span>
-          {shipment.hasVariance && (
-            <span className="badge bg-orange-100 text-orange-800">Variance</span>
-          )}
-          <div className="text-sm text-gray-500">
-            {new Date(shipment.receivedAt).toLocaleDateString()} ·{" "}
-            {shipment.items.reduce((s, si) => s + si.quantityReceived, 0)} units ·{" "}
-            ${shipmentTotal.toFixed(2)}
-          </div>
-        </div>
-        <svg
-          className={`w-5 h-5 transition-transform ${open ? "rotate-180" : ""}`}
-          fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-        </svg>
-      </div>
-
-      {open && (
-        <div className="mt-4 pt-4 border-t space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div>
-              <div className="text-gray-500">Tracking</div>
-              <div className="font-mono">{shipment.trackingNumber || "—"}</div>
+          <div className="card-body space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <div className="text-gray-500">Tracking</div>
+                <div className="font-mono">{po.trackingNumber || "—"}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Carrier</div>
+                <div>{po.carrier || "—"}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Tariff</div>
+                <div>${po.tariffAmount.toFixed(2)}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Shipping</div>
+                <div>${po.shippingCost.toFixed(2)}</div>
+              </div>
             </div>
-            <div>
-              <div className="text-gray-500">Carrier</div>
-              <div>{shipment.carrier || "—"}</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Tariff</div>
-              <div>${shipment.tariffAmount.toFixed(2)}</div>
-            </div>
-            <div>
-              <div className="text-gray-500">Shipping</div>
-              <div>${shipment.shippingCost.toFixed(2)}</div>
-            </div>
-          </div>
 
-          <table className="data-table text-sm">
-            <thead>
-              <tr>
-                <th>SKU</th>
-                <th>Name</th>
-                <th className="text-right">Qty</th>
-                <th className="text-right">Actual $/unit</th>
-                <th className="text-right">Line total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shipment.items.map((si) => {
-                const cost = si.actualUnitCost ?? si.poItem.unitCost ?? 0;
-                return (
-                  <tr key={si.id}>
-                    <td className="font-mono">{si.poItem.sku.sku.toUpperCase()}</td>
-                    <td>{si.poItem.sku.name}</td>
-                    <td className="text-right">{si.quantityReceived}</td>
-                    <td className="text-right">
-                      {si.actualUnitCost != null ? `$${si.actualUnitCost.toFixed(2)}` : (
-                        <span className="text-gray-400 italic">
-                          {si.poItem.unitCost != null ? `$${si.poItem.unitCost.toFixed(2)} (PO)` : "—"}
-                        </span>
-                      )}
-                    </td>
-                    <td className="text-right">${(cost * si.quantityReceived).toFixed(2)}</td>
-                  </tr>
-                );
-              })}
-              <tr className="font-semibold border-t-2">
-                <td colSpan={4} className="text-right">Items subtotal</td>
-                <td className="text-right">${itemsCost.toFixed(2)}</td>
-              </tr>
-              <tr>
-                <td colSpan={4} className="text-right text-sm">+ Tariff</td>
-                <td className="text-right">${shipment.tariffAmount.toFixed(2)}</td>
-              </tr>
-              <tr>
-                <td colSpan={4} className="text-right text-sm">+ Shipping</td>
-                <td className="text-right">${shipment.shippingCost.toFixed(2)}</td>
-              </tr>
-              <tr className="font-bold border-t-2 bg-gray-50">
-                <td colSpan={4} className="text-right">Shipment total</td>
-                <td className="text-right">${shipmentTotal.toFixed(2)}</td>
-              </tr>
-            </tbody>
-          </table>
-
-          {(shipment.notes || shipment.varianceNotes) && (
-            <div className="space-y-2">
-              {shipment.notes && (
-                <div className="bg-gray-50 border rounded p-3">
-                  <div className="text-xs font-semibold text-gray-500 mb-1">NOTES</div>
-                  <div className="text-sm whitespace-pre-wrap">{shipment.notes}</div>
-                </div>
-              )}
-              {shipment.varianceNotes && (
-                <div className="bg-orange-50 border border-orange-200 rounded p-3">
-                  <div className="text-xs font-semibold text-orange-700 mb-1">VARIANCE NOTES</div>
-                  <div className="text-sm whitespace-pre-wrap">{shipment.varianceNotes}</div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Images */}
-          {(shipment.packingSlipImageUrl || shipment.boxImageUrls.length > 0) && (
-            <div className="space-y-3">
-              {shipment.packingSlipImageUrl && (
-                <div>
-                  <div className="text-xs font-semibold text-gray-500 mb-2">PACKING SLIP</div>
-                  <a href={shipment.packingSlipImageUrl} target="_blank" rel="noopener noreferrer">
-                    <img
-                      src={shipment.packingSlipImageUrl}
-                      alt="Packing slip"
-                      className="max-w-md max-h-64 rounded border hover:opacity-90"
-                    />
-                  </a>
-                </div>
-              )}
-              {shipment.boxImageUrls.length > 0 && (
-                <div>
-                  <div className="text-xs font-semibold text-gray-500 mb-2">
-                    BOX / ITEMS PHOTOS ({shipment.boxImageUrls.length})
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                    {shipment.boxImageUrls.map((url, idx) => (
-                      <a key={url} href={url} target="_blank" rel="noopener noreferrer">
-                        <img
-                          src={url}
-                          alt={`Box ${idx + 1}`}
-                          className="w-full h-32 object-cover rounded border hover:opacity-90"
-                        />
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Actions */}
-          <div className="flex gap-3 flex-wrap">
-            {shipment.status === "PENDING" && (
-              <>
-                <Form method="post">
-                  <input type="hidden" name="intent" value="approve-shipment" />
-                  <input type="hidden" name="shipmentId" value={shipment.id} />
-                  <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
-                    Approve & Add to Inventory
-                  </button>
-                </Form>
-                <button
-                  type="button"
-                  onClick={() => setShowRejectForm((v) => !v)}
-                  className="btn btn-ghost"
-                >
-                  {showRejectForm ? "Cancel reject" : "Reject"}
-                </button>
-                <Form method="post" onSubmit={(e) => {
-                  if (!confirm(`Delete shipment #${shipment.shipmentNumber}?`)) e.preventDefault();
-                }}>
-                  <input type="hidden" name="intent" value="delete-shipment" />
-                  <input type="hidden" name="shipmentId" value={shipment.id} />
-                  <button type="submit" className="btn btn-error btn-sm" disabled={isSubmitting}>
-                    Delete
-                  </button>
-                </Form>
-              </>
+            {po.varianceNotes && (
+              <div className="bg-orange-50 border border-orange-200 rounded p-3">
+                <div className="text-xs font-semibold text-orange-700 mb-1">VARIANCE NOTES</div>
+                <div className="text-sm whitespace-pre-wrap">{po.varianceNotes}</div>
+              </div>
             )}
-            <div className="text-xs text-gray-500 self-center ml-auto">
-              Created by {shipment.createdBy.firstName} {shipment.createdBy.lastName}
-              {shipment.approvedBy && (
-                <> · {shipment.status === "APPROVED" ? "approved" : "rejected"} by {shipment.approvedBy.firstName} {shipment.approvedBy.lastName}</>
-              )}
-            </div>
-          </div>
 
-          {showRejectForm && shipment.status === "PENDING" && (
-            <Form method="post" className="bg-red-50 border border-red-200 rounded p-3">
-              <input type="hidden" name="intent" value="reject-shipment" />
-              <input type="hidden" name="shipmentId" value={shipment.id} />
-              <label className="form-label">Reason for rejection</label>
-              <textarea
-                name="reason"
-                className="form-textarea mb-2"
-                rows={2}
-                placeholder="Why is this shipment being rejected?"
-                required
-              />
-              <button type="submit" className="btn btn-error btn-sm" disabled={isSubmitting}>
-                Confirm Reject
-              </button>
-            </Form>
-          )}
+            {po.packingSlipImageUrl && (
+              <div>
+                <div className="text-xs font-semibold text-gray-500 mb-2">PACKING SLIP</div>
+                <a href={po.packingSlipImageUrl} target="_blank" rel="noopener noreferrer">
+                  <img
+                    src={po.packingSlipImageUrl}
+                    alt="Packing slip"
+                    className="max-w-md max-h-64 rounded border hover:opacity-90"
+                  />
+                </a>
+              </div>
+            )}
+
+            {po.boxImageUrls.length > 0 && (
+              <div>
+                <div className="text-xs font-semibold text-gray-500 mb-2">
+                  BOX / ITEMS PHOTOS ({po.boxImageUrls.length})
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                  {po.boxImageUrls.map((url, idx) => (
+                    <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+                      <img
+                        src={url}
+                        alt={`Box ${idx + 1}`}
+                        className="w-full h-32 object-cover rounded border hover:opacity-90"
+                      />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
-    </div>
+
+      {/* Children */}
+      {po.children.length > 0 && (
+        <div className="card">
+          <div className="card-header">
+            <h2 className="card-title">Child POs ({po.children.length})</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Quantity that was split off into separate POs.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>PO #</th>
+                  <th>Status</th>
+                  <th className="text-right">Items</th>
+                  <th className="text-right">Total qty</th>
+                  <th>Tracking</th>
+                  <th>Created</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {po.children.map((child) => {
+                  const totalQty = child.items.reduce((s, i) => s + i.quantityOrdered, 0);
+                  return (
+                    <tr key={child.id}>
+                      <td className="font-mono text-sm">
+                        <Link to={`/po/${child.id}`} className="text-blue-600 hover:underline">
+                          {child.poNumber}
+                        </Link>
+                      </td>
+                      <td>
+                        <span className={`badge ${getStatusColor(child.status)}`}>
+                          {child.status}
+                        </span>
+                        {child.hasVariance && (
+                          <span className="ml-1 badge bg-orange-100 text-orange-800">Var</span>
+                        )}
+                      </td>
+                      <td className="text-right">{child.items.length}</td>
+                      <td className="text-right">{totalQty}</td>
+                      <td className="text-sm">
+                        {child.trackingNumber ? (
+                          <span className="font-mono">{child.trackingNumber}</span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="text-sm">
+                        {new Date(child.submittedAt).toLocaleDateString()}
+                      </td>
+                      <td>
+                        <Link to={`/po/${child.id}`} className="text-blue-600 hover:underline text-sm">
+                          Open →
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </Layout>
   );
 }

@@ -27,18 +27,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: whereClause,
     include: {
       items: {
-        include: {
-          sku: true,
-          manufacturer: true,
-          shipmentItems: {
-            include: {
-              shipment: true,
-            },
-          },
-        },
+        include: { sku: true, manufacturer: true },
       },
-      shipments: {
-        orderBy: { shipmentNumber: "asc" },
+      parentPO: { select: { id: true, poNumber: true } },
+      children: {
+        include: {
+          items: { include: { sku: true } },
+        },
+        orderBy: { submittedAt: "asc" },
       },
       createdBy: true,
       approvedBy: true,
@@ -51,9 +47,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { isActive: true, type: "RAW" },
     include: {
       manufacturers: {
-        include: {
-          manufacturer: true,
-        },
+        include: { manufacturer: true },
         orderBy: { isPreferred: "desc" },
       },
     },
@@ -92,7 +86,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "At least one item is required" };
     }
 
-    const poCount = await prisma.purchaseOrder.count();
+    const poCount = await prisma.purchaseOrder.count({ where: { parentPOId: null } });
     const poNumber = `PO-${String(poCount + 1).padStart(5, "0")}`;
 
     const po = await prisma.purchaseOrder.create({
@@ -118,10 +112,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       itemCount: items.length,
     });
 
-    return {
-      success: true,
-      message: `${poNumber} created with ${items.length} item(s)`,
-    };
+    return { success: true, message: `${poNumber} created with ${items.length} item(s)` };
   }
 
   if (intent === "delete") {
@@ -129,21 +120,46 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const po = await prisma.purchaseOrder.findUnique({
       where: { id: poId },
-      include: { items: true, shipments: true },
+      include: { children: true },
     });
-
     if (!po) return { error: "PO not found" };
 
-    if (po.shipments.some((s) => s.status === "APPROVED")) {
+    if (po.status === "APPROVED") {
+      return { error: "Cannot delete an approved PO — inventory has been recorded" };
+    }
+    if (po.children.length > 0) {
       return {
-        error: "Cannot delete PO with approved shipments — inventory has already been recorded",
+        error: "Cannot delete a PO with child POs — delete the children first",
       };
     }
 
-    await prisma.pOShipmentItem.deleteMany({
-      where: { shipment: { purchaseOrderId: poId } },
-    });
-    await prisma.pOShipment.deleteMany({ where: { purchaseOrderId: poId } });
+    // If this is a child, give its qty back to the parent's matching line items
+    if (po.parentPOId) {
+      const childItems = await prisma.pOItem.findMany({ where: { purchaseOrderId: poId } });
+      for (const ci of childItems) {
+        const parentItem = await prisma.pOItem.findFirst({
+          where: { purchaseOrderId: po.parentPOId, skuId: ci.skuId },
+        });
+        if (parentItem) {
+          await prisma.pOItem.update({
+            where: { id: parentItem.id },
+            data: { quantityOrdered: { increment: ci.quantityOrdered } },
+          });
+        } else {
+          // Recreate the parent line if it had been zeroed out and removed
+          await prisma.pOItem.create({
+            data: {
+              purchaseOrderId: po.parentPOId,
+              skuId: ci.skuId,
+              quantityOrdered: ci.quantityOrdered,
+              manufacturerId: ci.manufacturerId,
+              unitCost: ci.unitCost,
+            },
+          });
+        }
+      }
+    }
+
     await prisma.pOItem.deleteMany({ where: { purchaseOrderId: poId } });
     await prisma.purchaseOrder.delete({ where: { id: poId } });
 
@@ -152,7 +168,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       status: po.status,
     });
 
-    return { success: true, message: `${po.poNumber} deleted successfully` };
+    return { success: true, message: `${po.poNumber} deleted` };
   }
 
   if (intent === "edit-item") {
@@ -164,7 +180,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const po = await prisma.purchaseOrder.findUnique({ where: { id: poId } });
     if (!po) return { error: "PO not found" };
-    if (po.status === "APPROVED") return { error: "Cannot edit approved PO" };
+    if (po.status !== "SUBMITTED") return { error: "Can only edit submitted POs" };
 
     await prisma.pOItem.update({
       where: { id: itemId },
@@ -187,21 +203,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { id: poId },
       include: { items: true },
     });
-
     if (!po) return { error: "PO not found" };
-    if (po.status === "APPROVED") return { error: "Cannot edit approved PO" };
+    if (po.status !== "SUBMITTED") return { error: "Can only edit submitted POs" };
     if (po.items.length <= 1) {
       return { error: "Cannot delete the only item — delete the entire PO instead" };
     }
 
-    const shipmentItemCount = await prisma.pOShipmentItem.count({
-      where: { poItemId: itemId, shipment: { status: "APPROVED" } },
-    });
-    if (shipmentItemCount > 0) {
-      return { error: "Cannot delete item that has approved shipments" };
-    }
-
-    await prisma.pOShipmentItem.deleteMany({ where: { poItemId: itemId } });
     await prisma.pOItem.delete({ where: { id: itemId } });
 
     await createAuditLog(user.id, "DELETE_PO_ITEM", "PurchaseOrderItem", itemId, {
@@ -240,7 +247,6 @@ export default function PurchaseOrders() {
   const tabs = [
     { id: "all", label: "All", count: counts.all },
     { id: "submitted", label: "Submitted", count: counts.submitted },
-    { id: "partial", label: "Partial", count: counts.partial },
     { id: "received", label: "Received", count: counts.received },
     { id: "approved", label: "Approved", count: counts.approved },
     { id: "master", label: "Master", count: counts.all },
@@ -448,7 +454,7 @@ export default function PurchaseOrders() {
                     <span className="font-semibold">
                       ${selectedItems.reduce((s, i) => s + (i.unitCost || 0) * i.quantity, 0).toFixed(2)}
                     </span>
-                    <span className="text-xs text-gray-400 ml-2">(excludes tariffs/shipping — captured per shipment)</span>
+                    <span className="text-xs text-gray-400 ml-2">(excludes tariffs/shipping — captured at receipt)</span>
                   </div>
                 </div>
               )}
@@ -511,11 +517,9 @@ export default function PurchaseOrders() {
         ))}
       </div>
 
-      {/* Master view */}
       {isMaster ? (
         <MasterPOView purchaseOrders={purchaseOrders} getStatusColor={getStatusColor} />
       ) : (
-        /* PO List */
         <div className="card">
           {purchaseOrders.length === 0 ? (
             <div className="card-body">
@@ -532,8 +536,6 @@ export default function PurchaseOrders() {
                 const totalOrdered = po.items.reduce((sum, i) => sum + i.quantityOrdered, 0);
                 const totalReceived = po.items.reduce((sum, i) => sum + i.quantityReceived, 0);
                 const isExpanded = expandedPO === po.id;
-                const approvedShipments = po.shipments.filter((s) => s.status === "APPROVED");
-                const pendingShipments = po.shipments.filter((s) => s.status === "PENDING");
 
                 return (
                   <div key={po.id} className="p-4">
@@ -541,14 +543,25 @@ export default function PurchaseOrders() {
                       className="flex items-center justify-between cursor-pointer flex-wrap gap-3"
                       onClick={() => setExpandedPO(isExpanded ? null : po.id)}
                     >
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-4 flex-wrap">
                         <div>
-                          <div className="font-mono font-semibold">{po.poNumber}</div>
+                          <div className="font-mono font-semibold flex items-center gap-2">
+                            {po.poNumber}
+                            {po.parentPO && (
+                              <span className="text-xs font-normal text-gray-500">
+                                child of <Link
+                                  to={`/po/${po.parentPO.id}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-blue-600 hover:underline"
+                                >{po.parentPO.poNumber}</Link>
+                              </span>
+                            )}
+                          </div>
                           <div className="text-sm text-gray-500">
                             {po.items.length} item{po.items.length !== 1 ? "s" : ""}
-                            {po.shipments.length > 0 && (
+                            {po.children.length > 0 && (
                               <span className="ml-2">
-                                · {approvedShipments.length}/{po.shipments.length} shipments approved
+                                · {po.children.length} child{po.children.length !== 1 ? "ren" : ""}
                               </span>
                             )}
                           </div>
@@ -556,13 +569,14 @@ export default function PurchaseOrders() {
                         <span className={`badge ${getStatusColor(po.status)}`}>
                           {po.status}
                         </span>
-                        {pendingShipments.length > 0 && (
-                          <span className="badge bg-yellow-100 text-yellow-800">
-                            {pendingShipments.length} pending
-                          </span>
+                        {po.parentPO && (
+                          <span className="badge bg-purple-100 text-purple-800">Child</span>
+                        )}
+                        {po.hasVariance && (
+                          <span className="badge bg-orange-100 text-orange-800">Variance</span>
                         )}
                       </div>
-                      <div className="flex items-center gap-6 text-sm">
+                      <div className="flex items-center gap-4 text-sm">
                         <div className="text-right">
                           <div className="text-gray-500">Submitted</div>
                           <div>{new Date(po.submittedAt).toLocaleDateString()}</div>
@@ -577,13 +591,22 @@ export default function PurchaseOrders() {
                           <div className="text-gray-500">Progress</div>
                           <div>{totalReceived}/{totalOrdered}</div>
                         </div>
-                        {po.status !== "RECEIVED" && po.status !== "APPROVED" && po.status !== "CANCELLED" && (
+                        {po.status === "SUBMITTED" && totalOrdered > 0 && (
                           <Link
-                            to={`/po/${po.id}?new=1`}
+                            to={`/po/${po.id}?split=1`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="btn btn-secondary btn-sm whitespace-nowrap"
+                          >
+                            ↳ Split
+                          </Link>
+                        )}
+                        {po.status === "SUBMITTED" && totalOrdered > 0 && (
+                          <Link
+                            to={`/po/${po.id}?receive=1`}
                             onClick={(e) => e.stopPropagation()}
                             className="btn btn-primary btn-sm whitespace-nowrap"
                           >
-                            + Receive Shipment
+                            + Receive
                           </Link>
                         )}
                         <svg
@@ -605,9 +628,7 @@ export default function PurchaseOrders() {
                               <th className="text-right">Ordered</th>
                               <th className="text-right">Received</th>
                               <th className="text-right">$/unit</th>
-                              {po.status !== "APPROVED" && (
-                                <th className="text-right">Actions</th>
-                              )}
+                              {po.status === "SUBMITTED" && <th className="text-right">Actions</th>}
                             </tr>
                           </thead>
                           <tbody>
@@ -616,7 +637,7 @@ export default function PurchaseOrders() {
                                 <td className="font-mono text-sm">{item.sku.sku.toUpperCase()}</td>
                                 <td>{item.sku.name}</td>
                                 <td className="text-right">
-                                  {po.status !== "APPROVED" ? (
+                                  {po.status === "SUBMITTED" ? (
                                     <Form method="post" className="inline-flex items-center gap-1">
                                       <input type="hidden" name="intent" value="edit-item" />
                                       <input type="hidden" name="poId" value={po.id} />
@@ -633,24 +654,22 @@ export default function PurchaseOrders() {
                                   )}
                                 </td>
                                 <td className="text-right">
-                                  <span
-                                    className={
-                                      item.quantityReceived >= item.quantityOrdered
-                                        ? "text-green-600 font-semibold"
-                                        : item.quantityReceived > 0
-                                        ? "text-orange-600"
-                                        : "text-gray-400"
-                                    }
-                                  >
+                                  <span className={
+                                    item.quantityReceived >= item.quantityOrdered && item.quantityOrdered > 0
+                                      ? "text-green-600 font-semibold"
+                                      : item.quantityReceived > 0
+                                      ? "text-orange-600"
+                                      : "text-gray-400"
+                                  }>
                                     {item.quantityReceived}
                                   </span>
                                 </td>
                                 <td className="text-right">
                                   {item.unitCost != null ? `$${item.unitCost.toFixed(2)}` : <span className="text-gray-400">—</span>}
                                 </td>
-                                {po.status !== "APPROVED" && (
+                                {po.status === "SUBMITTED" && (
                                   <td className="text-right">
-                                    {po.items.length > 1 && item.shipmentItems.every((si) => si.shipment.status !== "APPROVED") && (
+                                    {po.items.length > 1 && (
                                       <Form method="post" className="inline" onSubmit={(e) => {
                                         if (!confirm("Remove this item from the PO?")) e.preventDefault();
                                       }}>
@@ -667,48 +686,42 @@ export default function PurchaseOrders() {
                           </tbody>
                         </table>
 
-                        {po.shipments.length > 0 && (
+                        {po.children.length > 0 && (
                           <div className="mb-4">
-                            <h4 className="text-sm font-semibold text-gray-700 mb-2">Shipments</h4>
+                            <h4 className="text-sm font-semibold text-gray-700 mb-2">Children</h4>
                             <table className="data-table text-sm">
                               <thead>
                                 <tr>
-                                  <th>#</th>
+                                  <th>PO #</th>
                                   <th>Status</th>
+                                  <th className="text-right">Total qty</th>
                                   <th>Tracking</th>
-                                  <th>Received</th>
-                                  <th className="text-right">Tariff</th>
-                                  <th className="text-right">Shipping</th>
+                                  <th>Date</th>
                                   <th></th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {po.shipments.map((s) => (
-                                  <tr key={s.id}>
-                                    <td>#{s.shipmentNumber}</td>
-                                    <td>
-                                      <span className={`badge ${
-                                        s.status === "APPROVED" ? "bg-green-100 text-green-800"
-                                        : s.status === "REJECTED" ? "bg-red-100 text-red-800"
-                                        : "bg-yellow-100 text-yellow-800"
-                                      }`}>
-                                        {s.status}
-                                      </span>
-                                      {s.hasVariance && (
-                                        <span className="ml-1 badge bg-orange-100 text-orange-800">Variance</span>
-                                      )}
-                                    </td>
-                                    <td>{s.trackingNumber || "—"}</td>
-                                    <td>{new Date(s.receivedAt).toLocaleDateString()}</td>
-                                    <td className="text-right">${s.tariffAmount.toFixed(2)}</td>
-                                    <td className="text-right">${s.shippingCost.toFixed(2)}</td>
-                                    <td className="text-right">
-                                      <Link to={`/po/${po.id}#shipment-${s.id}`} className="text-blue-600 hover:underline text-xs">
-                                        View
-                                      </Link>
-                                    </td>
-                                  </tr>
-                                ))}
+                                {po.children.map((c) => {
+                                  const cQty = c.items.reduce((s, i) => s + i.quantityOrdered, 0);
+                                  return (
+                                    <tr key={c.id}>
+                                      <td className="font-mono">
+                                        <Link to={`/po/${c.id}`} onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">
+                                          {c.poNumber}
+                                        </Link>
+                                      </td>
+                                      <td>
+                                        <span className={`badge ${getStatusColor(c.status)}`}>{c.status}</span>
+                                      </td>
+                                      <td className="text-right">{cQty}</td>
+                                      <td>{c.trackingNumber || "—"}</td>
+                                      <td>{new Date(c.submittedAt).toLocaleDateString()}</td>
+                                      <td className="text-right">
+                                        <Link to={`/po/${c.id}`} onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline text-xs">Open →</Link>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -716,12 +729,12 @@ export default function PurchaseOrders() {
 
                         <div className="flex gap-3 flex-wrap">
                           <Link to={`/po/${po.id}`} className="btn btn-primary">
-                            Open PO / Receive Shipment
+                            Open PO
                           </Link>
                           <Link to={`/po/${po.id}/pdf`} className="btn btn-ghost">
                             View PDF
                           </Link>
-                          {po.status !== "APPROVED" && (
+                          {po.status !== "APPROVED" && po.children.length === 0 && (
                             <Form method="post" onSubmit={(e) => {
                               if (!confirm(`Delete ${po.poNumber}? This cannot be undone.`)) e.preventDefault();
                             }}>
@@ -757,42 +770,151 @@ function MasterPOView({
   const [search, setSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [dateMode, setDateMode] = useState<"shipment" | "po">("shipment");
+  const [dateMode, setDateMode] = useState<"received" | "po">("received");
 
+  // Only show roots in master view; children render inside their parent's dropdown
+  const rootPOs = useMemo(
+    () => purchaseOrders.filter((po) => !po.parentPO),
+    [purchaseOrders]
+  );
+
+  // For each root, build a per-SKU rollup across the root and its children
   const allRows = useMemo(
     () =>
-      purchaseOrders.flatMap((po) =>
-        po.items.map((item) => {
-          const approvedShipmentItems = item.shipmentItems.filter(
-            (si) => si.shipment.status === "APPROVED"
-          );
-          const totalReceivedFromShipments = approvedShipmentItems.reduce(
-            (sum, si) => sum + si.quantityReceived,
-            0
-          );
-          const totalCost = approvedShipmentItems.reduce(
-            (sum, si) => sum + (si.actualUnitCost ?? item.unitCost ?? 0) * si.quantityReceived,
+      rootPOs.flatMap((root) => {
+        // Collect every "delivery PO" — root + children
+        type Delivery = {
+          po: {
+            id: string;
+            poNumber: string;
+            status: string;
+            trackingNumber: string | null;
+            carrier: string | null;
+            tariffAmount: number;
+            shippingCost: number;
+            receivedAt: Date | null;
+            hasVariance: boolean;
+            submittedAt: Date;
+          };
+          isRoot: boolean;
+        };
+        const deliveries: Delivery[] = [
+          {
+            po: {
+              id: root.id,
+              poNumber: root.poNumber,
+              status: root.status,
+              trackingNumber: root.trackingNumber,
+              carrier: root.carrier,
+              tariffAmount: root.tariffAmount,
+              shippingCost: root.shippingCost,
+              receivedAt: root.receivedAt,
+              hasVariance: root.hasVariance,
+              submittedAt: root.submittedAt,
+            },
+            isRoot: true,
+          },
+          ...root.children.map((c) => ({
+            po: {
+              id: c.id,
+              poNumber: c.poNumber,
+              status: c.status,
+              trackingNumber: c.trackingNumber,
+              carrier: c.carrier,
+              tariffAmount: c.tariffAmount,
+              shippingCost: c.shippingCost,
+              receivedAt: c.receivedAt,
+              hasVariance: c.hasVariance,
+              submittedAt: c.submittedAt,
+            },
+            isRoot: false,
+          })),
+        ];
+
+        // Group all items (root + children) by SKU
+        type ItemDelivery = {
+          po: Delivery["po"];
+          isRoot: boolean;
+          quantityOrdered: number;
+          quantityReceived: number;
+          unitCost: number | null;
+        };
+        const skuMap = new Map<
+          string,
+          {
+            sku: { sku: string; name: string };
+            manufacturerName: string | null;
+            entries: ItemDelivery[];
+          }
+        >();
+
+        type ItemLike = {
+          skuId: string;
+          quantityOrdered: number;
+          quantityReceived: number;
+          unitCost: number | null;
+          sku: { sku: string; name: string };
+          manufacturer?: { name: string } | null;
+        };
+        const addItems = (items: ItemLike[], d: Delivery) => {
+          for (const item of items) {
+            const key = item.skuId;
+            const existing = skuMap.get(key);
+            const entry: ItemDelivery = {
+              po: d.po,
+              isRoot: d.isRoot,
+              quantityOrdered: item.quantityOrdered,
+              quantityReceived: item.quantityReceived,
+              unitCost: item.unitCost,
+            };
+            if (existing) {
+              existing.entries.push(entry);
+            } else {
+              skuMap.set(key, {
+                sku: { sku: item.sku.sku, name: item.sku.name },
+                manufacturerName:
+                  "manufacturer" in item ? (item.manufacturer?.name ?? null) : null,
+                entries: [entry],
+              });
+            }
+          }
+        };
+        addItems(root.items, deliveries[0]);
+        root.children.forEach((c, idx) => addItems(c.items, deliveries[idx + 1]));
+
+        return Array.from(skuMap.entries()).map(([skuId, data]) => {
+          const totalOrdered = data.entries.reduce((s, e) => s + e.quantityOrdered, 0);
+          const totalReceived = data.entries.reduce((s, e) => s + e.quantityReceived, 0);
+          // Items cost only — tariff/shipping are per-PO, shown per-delivery in the dropdown
+          const totalCost = data.entries.reduce(
+            (s, e) =>
+              e.po.status === "RECEIVED" || e.po.status === "APPROVED"
+                ? s + (e.unitCost ?? 0) * e.quantityReceived
+                : s,
             0
           );
 
           return {
-            rowId: `${po.id}-${item.id}`,
-            po,
-            item,
-            approvedShipmentItems,
-            totalReceivedFromShipments,
+            rowId: `${root.id}-${skuId}`,
+            root,
+            skuId,
+            sku: data.sku,
+            manufacturerName: data.manufacturerName,
+            entries: data.entries,
+            totalOrdered,
+            totalReceived,
             totalCost,
           };
-        })
-      ),
-    [purchaseOrders]
+        });
+      }),
+    [rootPOs]
   );
 
   const fromMs = dateFrom ? new Date(dateFrom).getTime() : null;
-  // Inclusive end-of-day for dateTo so a same-day filter still matches
   const toMs = dateTo ? new Date(dateTo).getTime() + 24 * 60 * 60 * 1000 - 1 : null;
 
-  const inDateRange = (d: Date | string) => {
+  const inDateRange = (d: Date | string | null) => {
+    if (!d) return false;
     const t = new Date(d).getTime();
     if (fromMs != null && t < fromMs) return false;
     if (toMs != null && t > toMs) return false;
@@ -802,13 +924,15 @@ function MasterPOView({
   const searchLower = search.trim().toLowerCase();
   const matchesSearch = (row: (typeof allRows)[number]) => {
     if (!searchLower) return true;
-    if (row.po.poNumber.toLowerCase().includes(searchLower)) return true;
-    if (row.item.sku.sku.toLowerCase().includes(searchLower)) return true;
-    if (row.item.sku.name.toLowerCase().includes(searchLower)) return true;
-    if (row.item.manufacturer?.name?.toLowerCase().includes(searchLower)) return true;
+    if (row.root.poNumber.toLowerCase().includes(searchLower)) return true;
+    if (row.sku.sku.toLowerCase().includes(searchLower)) return true;
+    if (row.sku.name.toLowerCase().includes(searchLower)) return true;
+    if (row.manufacturerName?.toLowerCase().includes(searchLower)) return true;
     if (
-      row.item.shipmentItems.some((si) =>
-        si.shipment.trackingNumber?.toLowerCase().includes(searchLower)
+      row.entries.some(
+        (e) =>
+          e.po.poNumber.toLowerCase().includes(searchLower) ||
+          e.po.trackingNumber?.toLowerCase().includes(searchLower)
       )
     )
       return true;
@@ -817,28 +941,33 @@ function MasterPOView({
 
   const filteredRows = allRows
     .map((row) => {
-      // When filtering by shipment date, narrow the visible shipments inside the dropdown
-      const visibleShipmentItems =
-        dateMode === "shipment" && (fromMs != null || toMs != null)
-          ? row.item.shipmentItems.filter((si) => inDateRange(si.shipment.receivedAt))
-          : row.item.shipmentItems;
-      return { ...row, visibleShipmentItems };
+      const visibleEntries =
+        dateMode === "received" && (fromMs != null || toMs != null)
+          ? row.entries.filter((e) =>
+              e.po.status === "RECEIVED" || e.po.status === "APPROVED"
+                ? inDateRange(e.po.receivedAt)
+                : false
+            )
+          : row.entries;
+      return { ...row, visibleEntries };
     })
     .filter((row) => {
       if (!matchesSearch(row)) return false;
       if (fromMs == null && toMs == null) return true;
-      if (dateMode === "po") return inDateRange(row.po.submittedAt);
-      return row.visibleShipmentItems.length > 0;
+      if (dateMode === "po") {
+        return inDateRange(row.root.submittedAt);
+      }
+      return row.visibleEntries.length > 0;
     });
 
-  const filtersActive =
-    !!searchLower || dateFrom !== "" || dateTo !== "";
+  const filtersActive = !!searchLower || dateFrom !== "" || dateTo !== "";
+  const dateFiltered = dateMode === "received" && (fromMs != null || toMs != null);
 
   const clearFilters = () => {
     setSearch("");
     setDateFrom("");
     setDateTo("");
-    setDateMode("shipment");
+    setDateMode("received");
   };
 
   if (allRows.length === 0) {
@@ -859,7 +988,8 @@ function MasterPOView({
       <div className="card-header">
         <h2 className="card-title">Master PO View</h2>
         <p className="text-sm text-gray-500 mt-1">
-          Every line item across all POs with shipment history. Click a row to expand.
+          One row per PO line item, summed across the parent and its child POs.
+          Click a row to see each delivery (parent receipt + child POs).
         </p>
       </div>
       <div className="card-body border-b">
@@ -878,10 +1008,10 @@ function MasterPOView({
             <label className="form-label">Date filter applies to</label>
             <select
               value={dateMode}
-              onChange={(e) => setDateMode(e.target.value as "shipment" | "po")}
+              onChange={(e) => setDateMode(e.target.value as "received" | "po")}
               className="form-select"
             >
-              <option value="shipment">Shipment received date</option>
+              <option value="received">Receipt date</option>
               <option value="po">PO submitted date</option>
             </select>
           </div>
@@ -920,44 +1050,40 @@ function MasterPOView({
         <table className="data-table">
           <thead>
             <tr>
-              <th>PO</th>
+              <th>Root PO</th>
               <th>SKU</th>
               <th>Name</th>
               <th>Mfr</th>
               <th>Status</th>
               <th className="text-right">Ordered</th>
               <th className="text-right">Received</th>
-              <th className="text-right">$/unit (PO)</th>
-              <th className="text-right">Approved cost</th>
-              <th>Shipments</th>
+              <th className="text-right">Items cost</th>
+              <th>Deliveries</th>
             </tr>
           </thead>
           <tbody>
             {filteredRows.length === 0 && (
               <tr>
-                <td colSpan={10} className="text-center text-gray-500 py-8">
+                <td colSpan={9} className="text-center text-gray-500 py-8">
                   No line items match the current filters.
                 </td>
               </tr>
             )}
             {filteredRows.map((row) => {
               const isOpen = expanded === row.rowId;
-              const allShipmentItems = row.visibleShipmentItems;
-              const dateFiltered =
-                dateMode === "shipment" && (fromMs != null || toMs != null);
-              const visibleApprovedItems = allShipmentItems.filter(
-                (si) => si.shipment.status === "APPROVED"
+              const visibleEntries = row.visibleEntries;
+              const visibleApproved = visibleEntries.filter(
+                (e) => e.po.status === "RECEIVED" || e.po.status === "APPROVED"
               );
-              const visibleApprovedQty = visibleApprovedItems.reduce(
-                (s, si) => s + si.quantityReceived,
-                0
-              );
-              const visibleApprovedCost = visibleApprovedItems.reduce(
-                (s, si) => s + (si.actualUnitCost ?? row.item.unitCost ?? 0) * si.quantityReceived,
-                0
-              );
-              const displayedReceived = dateFiltered ? visibleApprovedQty : row.item.quantityReceived;
-              const displayedCost = dateFiltered ? visibleApprovedCost : row.totalCost;
+              const displayedReceived = dateFiltered
+                ? visibleApproved.reduce((s, e) => s + e.quantityReceived, 0)
+                : row.totalReceived;
+              const displayedCost = dateFiltered
+                ? visibleApproved.reduce(
+                    (s, e) => s + (e.unitCost ?? 0) * e.quantityReceived,
+                    0
+                  )
+                : row.totalCost;
 
               return (
                 <>
@@ -968,25 +1094,25 @@ function MasterPOView({
                   >
                     <td>
                       <Link
-                        to={`/po/${row.po.id}`}
+                        to={`/po/${row.root.id}`}
                         className="font-mono text-sm text-blue-600 hover:underline"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {row.po.poNumber}
+                        {row.root.poNumber}
                       </Link>
                     </td>
-                    <td className="font-mono text-sm">{row.item.sku.sku.toUpperCase()}</td>
-                    <td className="max-w-xs truncate">{row.item.sku.name}</td>
-                    <td className="text-sm">{row.item.manufacturer?.name || "—"}</td>
+                    <td className="font-mono text-sm">{row.sku.sku.toUpperCase()}</td>
+                    <td className="max-w-xs truncate">{row.sku.name}</td>
+                    <td className="text-sm">{row.manufacturerName || "—"}</td>
                     <td>
-                      <span className={`badge ${getStatusColor(row.po.status)}`}>
-                        {row.po.status}
+                      <span className={`badge ${getStatusColor(row.root.status)}`}>
+                        {row.root.status}
                       </span>
                     </td>
-                    <td className="text-right">{row.item.quantityOrdered}</td>
+                    <td className="text-right">{row.totalOrdered}</td>
                     <td className="text-right">
                       <span className={
-                        displayedReceived >= row.item.quantityOrdered
+                        displayedReceived >= row.totalOrdered && row.totalOrdered > 0
                           ? "text-green-600 font-semibold"
                           : displayedReceived > 0
                           ? "text-orange-600"
@@ -996,83 +1122,79 @@ function MasterPOView({
                       </span>
                       {dateFiltered && <span className="ml-1 text-xs text-gray-400">in range</span>}
                     </td>
-                    <td className="text-right">
-                      {row.item.unitCost != null ? `$${row.item.unitCost.toFixed(2)}` : "—"}
-                    </td>
-                    <td className="text-right font-semibold">
-                      ${displayedCost.toFixed(2)}
-                    </td>
+                    <td className="text-right font-semibold">${displayedCost.toFixed(2)}</td>
                     <td>
                       <div className="flex items-center gap-1 text-xs text-gray-600">
-                        {allShipmentItems.length === 0 ? (
-                          <span className="text-gray-400">None yet</span>
-                        ) : (
-                          <>
-                            <span>
-                              {visibleApprovedItems.length}/{allShipmentItems.length} approved
-                            </span>
-                            <svg
-                              className={`w-4 h-4 transition-transform ${isOpen ? "rotate-180" : ""}`}
-                              fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                            </svg>
-                          </>
-                        )}
+                        <span>
+                          {visibleEntries.length} {visibleEntries.length === 1 ? "PO" : "POs"}
+                        </span>
+                        <svg
+                          className={`w-4 h-4 transition-transform ${isOpen ? "rotate-180" : ""}`}
+                          fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                        </svg>
                       </div>
                     </td>
                   </tr>
-                  {isOpen && allShipmentItems.length > 0 && (
+                  {isOpen && visibleEntries.length > 0 && (
                     <tr>
-                      <td colSpan={10} className="bg-gray-50 p-0">
+                      <td colSpan={9} className="bg-gray-50 p-0">
                         <div className="p-4">
                           <table className="w-full text-sm">
                             <thead>
                               <tr className="text-left text-gray-600">
-                                <th className="pb-2">Shipment #</th>
+                                <th className="pb-2">PO</th>
                                 <th className="pb-2">Status</th>
                                 <th className="pb-2">Tracking</th>
                                 <th className="pb-2">Carrier</th>
                                 <th className="pb-2">Date</th>
-                                <th className="pb-2 text-right">Qty</th>
-                                <th className="pb-2 text-right">Actual $/unit</th>
+                                <th className="pb-2 text-right">Ordered</th>
+                                <th className="pb-2 text-right">Received</th>
+                                <th className="pb-2 text-right">$/unit</th>
                                 <th className="pb-2 text-right">Tariff</th>
                                 <th className="pb-2 text-right">Shipping</th>
                                 <th className="pb-2"></th>
                               </tr>
                             </thead>
                             <tbody>
-                              {allShipmentItems.map((si) => (
-                                <tr key={si.id} className="border-t border-gray-200">
-                                  <td className="py-2">#{si.shipment.shipmentNumber}</td>
+                              {visibleEntries.map((e, idx) => (
+                                <tr key={`${e.po.id}-${idx}`} className="border-t border-gray-200">
+                                  <td className="py-2 font-mono">
+                                    {e.po.poNumber}
+                                    {e.isRoot && (
+                                      <span className="ml-1 text-xs text-gray-400">(root)</span>
+                                    )}
+                                  </td>
                                   <td className="py-2">
-                                    <span className={`badge ${
-                                      si.shipment.status === "APPROVED" ? "bg-green-100 text-green-800"
-                                      : si.shipment.status === "REJECTED" ? "bg-red-100 text-red-800"
-                                      : "bg-yellow-100 text-yellow-800"
-                                    }`}>
-                                      {si.shipment.status}
+                                    <span className={`badge ${getStatusColor(e.po.status)}`}>
+                                      {e.po.status}
                                     </span>
-                                    {si.shipment.hasVariance && (
+                                    {e.po.hasVariance && (
                                       <span className="ml-1 badge bg-orange-100 text-orange-800">Var</span>
                                     )}
                                   </td>
-                                  <td className="py-2">{si.shipment.trackingNumber || "—"}</td>
-                                  <td className="py-2">{si.shipment.carrier || "—"}</td>
-                                  <td className="py-2">{new Date(si.shipment.receivedAt).toLocaleDateString()}</td>
-                                  <td className="py-2 text-right">{si.quantityReceived}</td>
-                                  <td className="py-2 text-right">
-                                    {si.actualUnitCost != null ? `$${si.actualUnitCost.toFixed(2)}` : "—"}
+                                  <td className="py-2">{e.po.trackingNumber || "—"}</td>
+                                  <td className="py-2">{e.po.carrier || "—"}</td>
+                                  <td className="py-2">
+                                    {e.po.receivedAt
+                                      ? new Date(e.po.receivedAt).toLocaleDateString()
+                                      : <span className="text-gray-400">not received</span>}
                                   </td>
-                                  <td className="py-2 text-right">${si.shipment.tariffAmount.toFixed(2)}</td>
-                                  <td className="py-2 text-right">${si.shipment.shippingCost.toFixed(2)}</td>
+                                  <td className="py-2 text-right">{e.quantityOrdered}</td>
+                                  <td className="py-2 text-right">{e.quantityReceived}</td>
+                                  <td className="py-2 text-right">
+                                    {e.unitCost != null ? `$${e.unitCost.toFixed(2)}` : "—"}
+                                  </td>
+                                  <td className="py-2 text-right">${e.po.tariffAmount.toFixed(2)}</td>
+                                  <td className="py-2 text-right">${e.po.shippingCost.toFixed(2)}</td>
                                   <td className="py-2 text-right">
                                     <Link
-                                      to={`/po/${row.po.id}#shipment-${si.shipment.id}`}
+                                      to={`/po/${e.po.id}`}
                                       className="text-blue-600 hover:underline text-xs"
-                                      onClick={(e) => e.stopPropagation()}
+                                      onClick={(ev) => ev.stopPropagation()}
                                     >
-                                      Details
+                                      Details →
                                     </Link>
                                   </td>
                                 </tr>

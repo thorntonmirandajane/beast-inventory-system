@@ -22,8 +22,6 @@ model User {
   clockEvents            ClockEvent[]
   purchaseOrdersApproved PurchaseOrder[]   @relation("POApprovedBy")
   purchaseOrdersCreated  PurchaseOrder[]   @relation("POCreatedBy")
-  shipmentsCreated       POShipment[]      @relation("ShipmentCreatedBy")
-  shipmentsApproved      POShipment[]      @relation("ShipmentApprovedBy")
   receivingCreated       ReceivingRecord[] @relation("CreatedBy")
   receivingSignOffs      ReceivingRecord[] @relation("SignedOffBy")
   transfers              Transfer[]
@@ -127,87 +125,58 @@ model InventoryItem {
 }
 
 model PurchaseOrder {
-  id               String        @id @default(cuid())
-  poNumber         String        @unique
+  id               String          @id @default(cuid())
+  poNumber         String          @unique
   vendorName       String
-  status           POStatus      @default(SUBMITTED)
-  submittedAt      DateTime      @default(now())
+  status           POStatus        @default(SUBMITTED)
+  submittedAt      DateTime        @default(now())
   estimatedArrival DateTime?
   receivedAt       DateTime?
   createdById      String
   approvedById     String?
   approvedAt       DateTime?
   notes            String?
-  items            POItem[]
-  shipments        POShipment[]
-  approvedBy       User?         @relation("POApprovedBy", fields: [approvedById], references: [id])
-  createdBy        User          @relation("POCreatedBy", fields: [createdById], references: [id])
+
+  // Parent/child relationship for splits
+  parentPOId String?
+  parentPO   PurchaseOrder?  @relation("POSplit", fields: [parentPOId], references: [id], onDelete: SetNull)
+  children   PurchaseOrder[] @relation("POSplit")
+
+  // Receipt details — populated when this PO is received
+  trackingNumber      String?
+  carrier             String?
+  tariffAmount        Float    @default(0)
+  shippingCost        Float    @default(0)
+  packingSlipImageUrl String?
+  boxImageUrls        String[]
+  varianceNotes       String?
+  hasVariance         Boolean  @default(false)
+
+  items       POItem[]
+  approvedBy  User?    @relation("POApprovedBy", fields: [approvedById], references: [id])
+  createdBy   User     @relation("POCreatedBy", fields: [createdById], references: [id])
 
   @@index([status])
   @@index([poNumber])
+  @@index([parentPOId])
   @@map("purchase_orders")
 }
 
 model POItem {
-  id               String           @id @default(cuid())
+  id               String        @id @default(cuid())
   purchaseOrderId  String
   skuId            String
   quantityOrdered  Int
-  quantityReceived Int              @default(0)
+  quantityReceived Int           @default(0)
   unitCost         Float?
   notes            String?
   manufacturerId   String?
-  manufacturer     Manufacturer?    @relation(fields: [manufacturerId], references: [id])
-  purchaseOrder    PurchaseOrder    @relation(fields: [purchaseOrderId], references: [id])
-  sku              Sku              @relation(fields: [skuId], references: [id])
-  shipmentItems    POShipmentItem[]
+  manufacturer     Manufacturer? @relation(fields: [manufacturerId], references: [id])
+  purchaseOrder    PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  sku              Sku           @relation(fields: [skuId], references: [id])
 
   @@index([purchaseOrderId])
   @@map("po_items")
-}
-
-model POShipment {
-  id                  String           @id @default(cuid())
-  purchaseOrderId     String
-  shipmentNumber      Int
-  trackingNumber      String?
-  carrier             String?
-  tariffAmount        Float            @default(0)
-  shippingCost        Float            @default(0)
-  packingSlipImageUrl String?
-  boxImageUrls        String[]
-  receivedAt          DateTime         @default(now())
-  notes               String?
-  varianceNotes       String?
-  hasVariance         Boolean          @default(false)
-  status              ShipmentStatus   @default(PENDING)
-  createdById         String
-  approvedById        String?
-  approvedAt          DateTime?
-  purchaseOrder       PurchaseOrder    @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  createdBy           User             @relation("ShipmentCreatedBy", fields: [createdById], references: [id])
-  approvedBy          User?            @relation("ShipmentApprovedBy", fields: [approvedById], references: [id])
-  items               POShipmentItem[]
-
-  @@unique([purchaseOrderId, shipmentNumber])
-  @@index([purchaseOrderId])
-  @@index([status])
-  @@map("po_shipments")
-}
-
-model POShipmentItem {
-  id               String     @id @default(cuid())
-  shipmentId       String
-  poItemId         String
-  quantityReceived Int
-  actualUnitCost   Float?
-  varianceNotes    String?
-  shipment         POShipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
-  poItem           POItem     @relation(fields: [poItemId], references: [id], onDelete: Cascade)
-
-  @@index([shipmentId])
-  @@index([poItemId])
-  @@map("po_shipment_items")
 }
 
 model ReceivingRecord {
@@ -574,12 +543,6 @@ enum POStatus {
 }
 
 enum ReceivingStatus {
-  PENDING
-  APPROVED
-  REJECTED
-}
-
-enum ShipmentStatus {
   PENDING
   APPROVED
   REJECTED
