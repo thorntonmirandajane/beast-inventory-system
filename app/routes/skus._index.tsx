@@ -268,6 +268,8 @@ export default function SkusList() {
                 <th>Type</th>
                 <th>Process</th>
                 <th>Category</th>
+                <th className="text-right">Grain</th>
+                <th className="text-right">Diameter</th>
                 <th className="text-right">Inventory</th>
                 <th className="text-right">Components</th>
                 <th className="text-right">Used In</th>
@@ -309,6 +311,20 @@ export default function SkusList() {
                       <span className="badge bg-purple-100 text-purple-800 text-xs">
                         {sku.category.replaceAll("_", " ")}
                       </span>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                  <td className="text-right">
+                    {sku.grain != null ? (
+                      <span className="font-mono text-sm">{sku.grain}g</span>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                  <td className="text-right">
+                    {sku.diameter != null ? (
+                      <span className="font-mono text-sm">{sku.diameter.toFixed(1)}″</span>
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}

@@ -187,6 +187,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       category: sku.category, // Category field contains material type (Aluminum, Titanium, etc.)
       process: sku.material, // Material field contains process type (Tipped, Bladed, Stud Tested, etc.)
       processOrder: sku.processOrder,
+      grain: sku.grain,
+      diameter: sku.diameter,
       raw: byState.RAW,
       // For COMPLETED type, show COMPLETED state. For ASSEMBLY type, show ASSEMBLED state
       assembled: sku.type === "COMPLETED" ? byState.COMPLETED : byState.ASSEMBLED,
@@ -219,6 +221,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       case "category":
         aVal = a.category || "";
         bVal = b.category || "";
+        break;
+      case "grain":
+        aVal = a.grain ?? -1;
+        bVal = b.grain ?? -1;
+        break;
+      case "diameter":
+        aVal = a.diameter ?? -1;
+        bVal = b.diameter ?? -1;
         break;
       case "process":
         aVal = a.process || "";
@@ -683,12 +693,12 @@ export default function Inventory() {
 
     // Raw Materials tab - show RAW, Assembled (where used), and On Order
     if (typeFilter === "raw") {
-      return ["sku", "name", "category", "process", "raw", "assembled", "onOrder"].includes(column);
+      return ["sku", "name", "category", "process", "grain", "diameter", "raw", "assembled", "onOrder"].includes(column);
     }
 
     // Assembly tab - show Order, Type, Assembled columns (includes both ASSEMBLY and COMPLETED)
     if (typeFilter === "assembly") {
-      return ["processOrder", "sku", "name", "category", "type", "process", "assembled"].includes(column);
+      return ["processOrder", "sku", "name", "category", "type", "process", "grain", "diameter", "assembled"].includes(column);
     }
 
     return true;
@@ -1084,6 +1094,26 @@ export default function Inventory() {
                       </div>
                     </th>
                   )}
+                  {shouldShowColumn("grain") && (
+                    <th className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("grain")}>Grain {sortBy === "grain" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("grain"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
+                    </th>
+                  )}
+                  {shouldShowColumn("diameter") && (
+                    <th className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <span className="cursor-pointer" onClick={() => handleSort("diameter")}>Diameter {sortBy === "diameter" && (sortDir === "asc" ? "↑" : "↓")}</span>
+                        <button onClick={(e) => { e.stopPropagation(); toggleColumnVisibility("diameter"); }} className="text-gray-400 hover:text-gray-600" title="Hide column">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                      </div>
+                    </th>
+                  )}
                   {shouldShowColumn("raw") && (
                     <th className="text-right">
                       <div className="flex items-center justify-end gap-2">
@@ -1193,6 +1223,8 @@ export default function Inventory() {
                       </select>
                     </th>
                   )}
+                  {shouldShowColumn("grain") && <th></th>}
+                  {shouldShowColumn("diameter") && <th></th>}
                   {shouldShowColumn("raw") && <th></th>}
                   {shouldShowColumn("assembled") && <th></th>}
                   {shouldShowColumn("inAssembly") && <th></th>}
@@ -1248,6 +1280,24 @@ export default function Inventory() {
                     )}
                     {shouldShowColumn("category") && (
                       <td className="text-sm text-gray-600">{item.category ? item.category.replaceAll("_", " ") : "—"}</td>
+                    )}
+                    {shouldShowColumn("grain") && (
+                      <td className="text-right text-sm">
+                        {item.grain != null ? (
+                          <span className="font-mono">{item.grain}g</span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                    )}
+                    {shouldShowColumn("diameter") && (
+                      <td className="text-right text-sm">
+                        {item.diameter != null ? (
+                          <span className="font-mono">{item.diameter.toFixed(1)}″</span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
                     )}
                     {shouldShowColumn("raw") && (
                       <td className="text-right">

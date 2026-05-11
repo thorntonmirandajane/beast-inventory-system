@@ -339,6 +339,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const upc = formData.get("upc") as string | null;
     const processOrderStr = formData.get("processOrder") as string | null;
     const processOrder = processOrderStr ? parseInt(processOrderStr, 10) : null;
+    const grainStr = formData.get("grain") as string | null;
+    const grain = grainStr ? parseInt(grainStr, 10) : null;
+    const diameterStr = formData.get("diameter") as string | null;
+    const diameter = diameterStr ? parseFloat(diameterStr) : null;
 
     if (!name) {
       return { error: "Name is required" };
@@ -367,6 +371,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         material: material || null,
         upc: upc || null,
         processOrder: processOrder,
+        grain,
+        diameter,
       },
     });
 
@@ -1503,6 +1509,31 @@ export default function SkuDetail() {
                   <p className="text-xs text-gray-500 mt-1">
                     Workflow sequence number for this SKU
                   </p>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Grain</label>
+                  <select
+                    name="grain"
+                    className="form-select"
+                    defaultValue={sku.grain != null ? String(sku.grain) : ""}
+                  >
+                    <option value="">— Not applicable —</option>
+                    <option value="100">100</option>
+                    <option value="125">125</option>
+                    <option value="150">150</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Diameter</label>
+                  <select
+                    name="diameter"
+                    className="form-select"
+                    defaultValue={sku.diameter != null ? String(sku.diameter) : ""}
+                  >
+                    <option value="">— Not applicable —</option>
+                    <option value="2.0">2.0″</option>
+                    <option value="2.3">2.3″</option>
+                  </select>
                 </div>
                 <div className="form-group md:col-span-2">
                   <label className="form-label">Description</label>

@@ -78,6 +78,8 @@ model Sku {
   material            String?
   upc                 String?
   processOrder        Int?
+  grain               Int?
+  diameter            Float?
   usedInBoms          BomComponent[]    @relation("ComponentSku")
   bomComponents       BomComponent[]    @relation("ParentSku")
   inventoryItems      InventoryItem[]
