@@ -38,9 +38,20 @@ export interface FetchOptions {
   shop?: string;
 }
 
+// Short in-memory cache so the Forecast tab (which also needs programmed
+// totals) doesn't hammer the queued-orders service on every page load.
+const TTL_MS = 5 * 60 * 1000;
+const cache = new Map<string, { value: ProgrammedOrdersResponse; at: number }>();
+
 export async function fetchProgrammedOrders(
   opts: FetchOptions
 ): Promise<ProgrammedOrdersResponse> {
+  const key = `${opts.from}|${opts.to}|${opts.shop ?? ""}`;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < TTL_MS) {
+    return hit.value;
+  }
+
   const baseUrl = process.env.QUEUED_ORDERS_API_URL;
   const secret = process.env.BEAST_API_SECRET;
   if (!baseUrl || !secret) {
@@ -63,5 +74,7 @@ export async function fetchProgrammedOrders(
     const body = await res.text();
     throw new Error(`Programmed orders fetch ${res.status}: ${body.slice(0, 300)}`);
   }
-  return (await res.json()) as ProgrammedOrdersResponse;
+  const value = (await res.json()) as ProgrammedOrdersResponse;
+  cache.set(key, { value, at: Date.now() });
+  return value;
 }

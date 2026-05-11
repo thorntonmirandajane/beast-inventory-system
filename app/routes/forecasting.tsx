@@ -121,11 +121,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     console.error("[forecasting] Shopify inventory fetch failed:", shopifyError);
   }
 
-  // Conditional fetches keyed off the active tab so we don't hit Shopify /
-  // queued-orders on every load. Returned as undefined when not loaded.
+  // The Forecast tab now also needs unfulfilled + programmed totals per
+  // SKU for the new columns and the Need-to-Build calculation, so we
+  // fetch them whenever the user is on Forecast, Unfulfilled, or
+  // Programmed. (Caching in the clients keeps repeated visits cheap.)
+  const needsExternalData = tab === "forecast" || tab === "unfulfilled" || tab === "programmed";
+
   let unfulfilledItems: UnfulfilledLineItem[] | null = null;
   let unfulfilledError: string | null = null;
-  if (tab === "unfulfilled") {
+  if (needsExternalData) {
     try {
       unfulfilledItems = await getUnfulfilledLineItems();
     } catch (err) {
@@ -136,7 +140,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   let programmedOrders: ProgrammedOrdersResponse | null = null;
   let programmedError: string | null = null;
-  if (tab === "programmed") {
+  if (needsExternalData) {
     try {
       programmedOrders = await fetchProgrammedOrders({
         from: laborStart.toISOString().split("T")[0],
@@ -145,6 +149,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     } catch (err) {
       programmedError = err instanceof Error ? err.message : String(err);
       console.error("[forecasting] Programmed orders fetch failed:", programmedError);
+    }
+  }
+
+  // Per-SKU rollup maps used by both the Forecast tab columns and the
+  // dedicated tabs. SKU matching is exact string for now.
+  const unfulfilledQtyBySku = new Map<string, number>();
+  if (unfulfilledItems) {
+    for (const it of unfulfilledItems) {
+      unfulfilledQtyBySku.set(it.sku, (unfulfilledQtyBySku.get(it.sku) ?? 0) + it.quantity);
+    }
+  }
+  const programmedQtyBySku = new Map<string, number>();
+  if (programmedOrders) {
+    for (const row of programmedOrders.bySku) {
+      programmedQtyBySku.set(row.sku, row.quantity);
     }
   }
 
@@ -207,6 +226,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     currentCompleted: number;
     currentInGallatin: number;
     forecastedQty: number;
+    unfulfilledQty: number;
+    programmedQty: number;
     needToBuild: number;
     assemblySkusNeeded: Array<{ skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }>;
     rawMaterialsNeeded: Array<{ skuId: string; sku: string; name: string; needed: number; available: number }>;
@@ -223,12 +244,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const liveGallatin = gallatinInventory?.get(sku.sku);
     const currentInGallatin = liveGallatin ?? forecast?.currentInGallatin ?? 0;
     const forecastedQty = forecast?.quantity || 0;
+    const unfulfilledQty = unfulfilledQtyBySku.get(sku.sku) ?? 0;
+    const programmedQty = programmedQtyBySku.get(sku.sku) ?? 0;
 
     // Calculate current completed inventory
     const currentCompleted = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
 
-    // Need to Build = Demand - (Current Completed + Current in Gallatin)
-    const needToBuild = Math.max(0, forecastedQty - (currentCompleted + currentInGallatin));
+    // Need to Build = (Unfulfilled + Programmed) − (Current Completed + Current in Gallatin)
+    // The manual `forecastedQty` is still saved for reference but no longer
+    // drives this calculation — live demand replaces it.
+    const totalDemand = unfulfilledQty + programmedQty;
+    const needToBuild = Math.max(0, totalDemand - (currentCompleted + currentInGallatin));
 
     // Use recursive BOM explosion to find ALL raw materials at any depth
     const rawMaterialsMap = new Map<string, { skuId: string; sku: string; name: string; needed: number; available: number }>();
@@ -268,6 +294,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       currentCompleted,
       currentInGallatin,
       forecastedQty,
+      unfulfilledQty,
+      programmedQty,
       needToBuild,
       assemblySkusNeeded: Array.from(assembliesMap.values()),
       rawMaterialsNeeded: rawMaterialsList,
@@ -564,6 +592,8 @@ function ForecastRow({
     currentCompleted: number;
     currentInGallatin: number;
     forecastedQty: number;
+    unfulfilledQty: number;
+    programmedQty: number;
     needToBuild: number;
     assemblySkusNeeded: Array<{
       skuId: string;
@@ -627,6 +657,22 @@ function ForecastRow({
           </div>
         </td>
         <td className="text-right">
+          <div className="flex items-center justify-end gap-1.5">
+            <span className={item.unfulfilledQty > 0 ? "font-semibold text-orange-600" : "text-gray-400"}>
+              {item.unfulfilledQty}
+            </span>
+            <span className="text-xs text-blue-500" title="Live from Shopify open orders">●</span>
+          </div>
+        </td>
+        <td className="text-right">
+          <div className="flex items-center justify-end gap-1.5">
+            <span className={item.programmedQty > 0 ? "font-semibold text-blue-600" : "text-gray-400"}>
+              {item.programmedQty}
+            </span>
+            <span className="text-xs text-blue-500" title="Queued orders scheduled in the selected date range">●</span>
+          </div>
+        </td>
+        <td className="text-right">
           <input
             type="number"
             name={`forecastedQty_${item.skuId}`}
@@ -634,7 +680,6 @@ function ForecastRow({
             min="0"
             defaultValue={item.forecastedQty}
             placeholder="0"
-            required
           />
         </td>
         <td className="text-right">
@@ -953,6 +998,8 @@ export default function Forecasting() {
                 <th>Product Name</th>
                 <th className="text-right">Current Completed</th>
                 <th className="text-right">Current in Gallatin</th>
+                <th className="text-right" title="Open Shopify orders, unfulfilled qty">Unfulfilled</th>
+                <th className="text-right" title="Queued orders scheduled in the selected date range">Programmed</th>
                 <th className="text-right">Forecasted Demand</th>
                 <th className="text-right">Need to Build</th>
                 <th>Status</th>

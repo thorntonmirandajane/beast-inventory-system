@@ -87,6 +87,23 @@ let cachedGallatinId: string | null = null;
 let cachedAt = 0;
 const LOCATION_TTL_MS = 60 * 60 * 1000; // 1 hour
 
+// Generic in-memory TTL cache for the slower Shopify queries (inventory +
+// unfulfilled). 5 minutes keeps the forecasting page snappy without making
+// stale data a real concern for an internal tool. Survives until the Render
+// service restarts.
+const DATA_TTL_MS = 5 * 60 * 1000;
+const dataCache = new Map<string, { value: unknown; at: number }>();
+
+async function cached<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  const hit = dataCache.get(key);
+  if (hit && Date.now() - hit.at < DATA_TTL_MS) {
+    return hit.value as T;
+  }
+  const value = await fetcher();
+  dataCache.set(key, { value, at: Date.now() });
+  return value;
+}
+
 export async function getGallatinLocationId(): Promise<string> {
   const override = process.env.GALLATIN_LOCATION_ID;
   if (override) return override;
@@ -134,7 +151,7 @@ export async function getInventoryAtLocation(
       `
       query($locationId: ID!, $cursor: String) {
         location(id: $locationId) {
-          inventoryLevels(first: 100, after: $cursor) {
+          inventoryLevels(first: 250, after: $cursor) {
             pageInfo { hasNextPage endCursor }
             edges {
               node {
@@ -171,8 +188,10 @@ export async function getInventoryAtLocation(
 }
 
 export async function getGallatinInventory(): Promise<Map<string, number>> {
-  const locationId = await getGallatinLocationId();
-  return getInventoryAtLocation(locationId);
+  return cached("gallatin-inventory", async () => {
+    const locationId = await getGallatinLocationId();
+    return getInventoryAtLocation(locationId);
+  });
 }
 
 // ============================================================
@@ -194,6 +213,10 @@ export interface UnfulfilledLineItem {
  * (the forecasting page does this so it can also drill into individual orders).
  */
 export async function getUnfulfilledLineItems(): Promise<UnfulfilledLineItem[]> {
+  return cached("unfulfilled-line-items", () => fetchUnfulfilledLineItemsUncached());
+}
+
+async function fetchUnfulfilledLineItemsUncached(): Promise<UnfulfilledLineItem[]> {
   const items: UnfulfilledLineItem[] = [];
   let cursor: string | null = null;
 
@@ -202,7 +225,7 @@ export async function getUnfulfilledLineItems(): Promise<UnfulfilledLineItem[]> 
       `
       query($cursor: String) {
         orders(
-          first: 50,
+          first: 100,
           after: $cursor,
           query: "fulfillment_status:unfulfilled OR fulfillment_status:partial"
         ) {
