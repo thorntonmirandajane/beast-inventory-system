@@ -1,25 +1,25 @@
-// One-time backfill: parse each SKU's code + name to populate the new
-// grain and diameter columns. Idempotent — re-running it will only update
-// rows whose parsed values changed (or were null).
+// One-time backfill: parse each SKU's code (not the name — names can be
+// stale or mismatched) to populate the new grain and diameter columns.
+// Idempotent — re-running it only writes rows whose parsed values differ.
 //
 // Run: npx tsx --env-file=.env scripts/backfill-grain-diameter.ts
 
 import prisma from "../app/db.server";
 
-function parseGrain(sku: string, name: string): number | null {
-  const text = `${sku} ${name}`.toUpperCase();
-  if (/(^|[^0-9])150\s*G/.test(text)) return 150;
-  if (/(^|[^0-9])125\s*G/.test(text)) return 125;
-  if (/(^|[^0-9])100\s*G/.test(text)) return 100;
+export function parseGrain(sku: string): number | null {
+  const s = sku.toUpperCase();
+  if (/(^|[^0-9])150G/.test(s)) return 150;
+  if (/(^|[^0-9])125G/.test(s)) return 125;
+  if (/(^|[^0-9])100G/.test(s)) return 100;
   return null;
 }
 
-function parseDiameter(sku: string, name: string): number | null {
-  const text = `${sku} ${name}`;
-  // 2.3 / 23IN / 2.30 — check first so "2IN" inside "23IN" doesn't false-match
-  if (/2\.3|23\s*IN|2\.30/i.test(text)) return 2.3;
-  // 2.0 / 2IN with word boundaries (hyphens count as boundaries)
-  if (/2\.0|\b2\s*IN\b/i.test(text)) return 2.0;
+export function parseDiameter(sku: string): number | null {
+  const s = sku.toUpperCase();
+  // Check 2.3 / 23IN first so the "2" inside them doesn't false-match below
+  if (/2\.3|(^|[^0-9])23IN/.test(s)) return 2.3;
+  // 2.0 / 2IN with word boundaries — won't match inside 23IN or 2.0IN
+  if (/2\.0|(^|[^0-9])2IN(?![0-9])/.test(s)) return 2.0;
   return null;
 }
 
@@ -34,8 +34,8 @@ async function main() {
   let null_count = 0;
 
   for (const s of skus) {
-    const grain = parseGrain(s.sku, s.name);
-    const diameter = parseDiameter(s.sku, s.name);
+    const grain = parseGrain(s.sku);
+    const diameter = parseDiameter(s.sku);
 
     if (grain === s.grain && diameter === s.diameter) {
       unchanged++;
@@ -49,7 +49,7 @@ async function main() {
     });
     updated++;
     console.log(
-      `  ${s.sku.padEnd(40)} → grain=${grain ?? "-"} diameter=${diameter ?? "-"}`
+      `  ${s.sku.padEnd(40)} grain ${String(s.grain ?? "-").padStart(3)} → ${String(grain ?? "-").padStart(3)}   diameter ${String(s.diameter ?? "-").padStart(3)} → ${String(diameter ?? "-")}`
     );
   }
 
