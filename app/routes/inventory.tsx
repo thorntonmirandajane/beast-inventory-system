@@ -592,6 +592,8 @@ export default function Inventory() {
     type: "",
     category: "",
     process: "",
+    grain: "",
+    diameter: "",
   });
   const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
   const [showHiddenColumnsDropdown, setShowHiddenColumnsDropdown] = useState(false);
@@ -678,6 +680,20 @@ export default function Inventory() {
     if (filters.type && item.type !== filters.type) return false;
     if (filters.category && (!item.category || !item.category.toLowerCase().includes(filters.category.toLowerCase()))) return false;
     if (filters.process && (!item.process || !item.process.toLowerCase().includes(filters.process.toLowerCase()))) return false;
+    if (filters.grain) {
+      if (filters.grain === "none") {
+        if (item.grain != null) return false;
+      } else if (String(item.grain) !== filters.grain) {
+        return false;
+      }
+    }
+    if (filters.diameter) {
+      if (filters.diameter === "none") {
+        if (item.diameter != null) return false;
+      } else if (String(item.diameter) !== filters.diameter) {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -1223,8 +1239,35 @@ export default function Inventory() {
                       </select>
                     </th>
                   )}
-                  {shouldShowColumn("grain") && <th></th>}
-                  {shouldShowColumn("diameter") && <th></th>}
+                  {shouldShowColumn("grain") && (
+                    <th>
+                      <select
+                        value={filters.grain}
+                        onChange={(e) => setFilters({ ...filters, grain: e.target.value })}
+                        className="w-full px-2 py-1 text-xs border rounded"
+                      >
+                        <option value="">All</option>
+                        <option value="100">100</option>
+                        <option value="125">125</option>
+                        <option value="150">150</option>
+                        <option value="none">—</option>
+                      </select>
+                    </th>
+                  )}
+                  {shouldShowColumn("diameter") && (
+                    <th>
+                      <select
+                        value={filters.diameter}
+                        onChange={(e) => setFilters({ ...filters, diameter: e.target.value })}
+                        className="w-full px-2 py-1 text-xs border rounded"
+                      >
+                        <option value="">All</option>
+                        <option value="2">2.0″</option>
+                        <option value="2.3">2.3″</option>
+                        <option value="none">—</option>
+                      </select>
+                    </th>
+                  )}
                   {shouldShowColumn("raw") && <th></th>}
                   {shouldShowColumn("assembled") && <th></th>}
                   {shouldShowColumn("inAssembly") && <th></th>}
