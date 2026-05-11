@@ -1,9 +1,19 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, useFetcher } from "react-router";
+import { useLoaderData, useActionData, Form, Link, useNavigation, useFetcher, useSearchParams } from "react-router";
 import React, { useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import {
+  getGallatinInventory,
+  getUnfulfilledLineItems,
+  aggregateUnfulfilledBySku,
+  type UnfulfilledLineItem,
+} from "../utils/shopify.server";
+import {
+  fetchProgrammedOrders,
+  type ProgrammedOrdersResponse,
+} from "../utils/queued-orders-client.server";
 
 // Recursive function to explode BOM and find all raw materials at any depth
 async function explodeBomRecursively(
@@ -92,10 +102,51 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const startDate = url.searchParams.get("startDate");
   const endDate = url.searchParams.get("endDate");
+  const tab = url.searchParams.get("tab") || "forecast";
 
   // Default to next 7 days if not specified
   const laborStart = startDate ? new Date(startDate) : new Date();
   const laborEnd = endDate ? new Date(endDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+  // Fetch live Gallatin inventory from Shopify. Used to populate
+  // `currentInGallatin` instead of a manually-entered number. Failures
+  // fall back to whatever's stored on the Forecast row so the page still
+  // loads if Shopify is unreachable.
+  let gallatinInventory: Map<string, number> | null = null;
+  let shopifyError: string | null = null;
+  try {
+    gallatinInventory = await getGallatinInventory();
+  } catch (err) {
+    shopifyError = err instanceof Error ? err.message : String(err);
+    console.error("[forecasting] Shopify inventory fetch failed:", shopifyError);
+  }
+
+  // Conditional fetches keyed off the active tab so we don't hit Shopify /
+  // queued-orders on every load. Returned as undefined when not loaded.
+  let unfulfilledItems: UnfulfilledLineItem[] | null = null;
+  let unfulfilledError: string | null = null;
+  if (tab === "unfulfilled") {
+    try {
+      unfulfilledItems = await getUnfulfilledLineItems();
+    } catch (err) {
+      unfulfilledError = err instanceof Error ? err.message : String(err);
+      console.error("[forecasting] Unfulfilled fetch failed:", unfulfilledError);
+    }
+  }
+
+  let programmedOrders: ProgrammedOrdersResponse | null = null;
+  let programmedError: string | null = null;
+  if (tab === "programmed") {
+    try {
+      programmedOrders = await fetchProgrammedOrders({
+        from: laborStart.toISOString().split("T")[0],
+        to: laborEnd.toISOString().split("T")[0],
+      });
+    } catch (err) {
+      programmedError = err instanceof Error ? err.message : String(err);
+      console.error("[forecasting] Programmed orders fetch failed:", programmedError);
+    }
+  }
 
   // Get all COMPLETED SKUs with their forecasts and current inventory
   const completedSkus = await prisma.sku.findMany({
@@ -167,7 +218,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   for (const sku of completedSkus) {
     const forecast = forecastMap.get(sku.id);
-    const currentInGallatin = forecast?.currentInGallatin || 0;
+    // Prefer the live Shopify number when available; fall back to the
+    // stored manual value so the page still calculates if Shopify is down.
+    const liveGallatin = gallatinInventory?.get(sku.sku);
+    const currentInGallatin = liveGallatin ?? forecast?.currentInGallatin ?? 0;
     const forecastedQty = forecast?.quantity || 0;
 
     // Calculate current completed inventory
@@ -274,8 +328,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const totalLaborHoursNeeded = Object.values(totalProcessRequirements).reduce((sum, p) => sum + p.hours, 0);
 
+  // Build a list of Gallatin inventory rows (SKU + live qty) that beast
+  // doesn't otherwise know about — useful as a quick reference on the
+  // Forecast tab. Only include SKUs that exist in beast's catalog.
+  const allCompletedAndRawSkus = await prisma.sku.findMany({
+    where: { isActive: true, type: { in: ["RAW", "ASSEMBLY", "COMPLETED"] } },
+    select: { id: true, sku: true, name: true, type: true },
+    orderBy: { sku: "asc" },
+  });
+  const gallatinRows = gallatinInventory
+    ? allCompletedAndRawSkus
+        .map((s) => ({
+          sku: s.sku,
+          name: s.name,
+          type: s.type,
+          available: gallatinInventory!.get(s.sku) ?? null,
+        }))
+        .filter((r) => r.available !== null) as { sku: string; name: string; type: string; available: number }[]
+    : [];
+
+  // Aggregate unfulfilled line items by SKU for the Unfulfilled tab
+  const unfulfilledBySku = unfulfilledItems
+    ? Array.from(aggregateUnfulfilledBySku(unfulfilledItems).entries())
+        .map(([sku, agg]) => ({ sku, ...agg }))
+        .sort((a, b) => b.quantity - a.quantity)
+    : [];
+
   return {
     user,
+    tab,
     forecastData,
     totalProcessRequirements,
     allRawMaterialShortages: Object.values(allRawMaterialShortages),
@@ -285,6 +366,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     totalLaborHoursNeeded,
     daysDiff,
     templates,
+    // Integration data
+    gallatinRows,
+    shopifyError,
+    unfulfilledItems,
+    unfulfilledBySku,
+    unfulfilledError,
+    programmedOrders,
+    programmedError,
   };
 };
 
@@ -523,14 +612,19 @@ function ForecastRow({
         </td>
         <td className="text-right">
           <input
-            type="number"
+            type="hidden"
             name={`currentInGallatin_${item.skuId}`}
-            className="form-input w-24 text-sm text-right"
-            min="0"
-            defaultValue={item.currentInGallatin}
-            placeholder="0"
-            required
+            value={item.currentInGallatin}
           />
+          <div className="flex items-center justify-end gap-1.5">
+            <span className="font-semibold text-gray-900">{item.currentInGallatin}</span>
+            <span
+              className="text-xs text-blue-500"
+              title="Live value from Shopify Gallatin location"
+            >
+              ●
+            </span>
+          </div>
         </td>
         <td className="text-right">
           <input
@@ -715,6 +809,7 @@ function ForecastRow({
 export default function Forecasting() {
   const {
     user,
+    tab,
     forecastData,
     totalProcessRequirements,
     allRawMaterialShortages,
@@ -724,14 +819,28 @@ export default function Forecasting() {
     totalLaborHoursNeeded,
     daysDiff,
     templates,
+    gallatinRows,
+    shopifyError,
+    unfulfilledItems,
+    unfulfilledBySku,
+    unfulfilledError,
+    programmedOrders,
+    programmedError,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  const [searchParams] = useSearchParams();
 
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
 
   const laborCapacitySufficient = availableLaborHours >= totalLaborHoursNeeded;
+
+  const buildTabUrl = (nextTab: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", nextTab);
+    return `/forecasting?${next.toString()}`;
+  };
 
   return (
     <Layout user={user}>
@@ -746,6 +855,86 @@ export default function Forecasting() {
       {actionData?.success && (
         <div className="alert alert-success">{actionData.message}</div>
       )}
+
+      {/* Date range — drives both labor calc and programmed orders */}
+      <div className="card mb-4">
+        <div className="card-body">
+          <Form method="get" className="flex items-end gap-3 flex-wrap">
+            <input type="hidden" name="tab" value={tab} />
+            <div className="form-group mb-0">
+              <label className="form-label">From</label>
+              <input
+                type="date"
+                name="startDate"
+                className="form-input"
+                defaultValue={laborStart}
+              />
+            </div>
+            <div className="form-group mb-0">
+              <label className="form-label">To</label>
+              <input
+                type="date"
+                name="endDate"
+                className="form-input"
+                defaultValue={laborEnd}
+              />
+            </div>
+            <button type="submit" className="btn btn-secondary">Apply</button>
+            <span className="text-xs text-gray-500 ml-2">
+              {daysDiff} day{daysDiff !== 1 ? "s" : ""} · range filters Programmed Orders and labor capacity
+            </span>
+          </Form>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs mb-4">
+        <Link to={buildTabUrl("forecast")} className={`tab ${tab === "forecast" ? "active" : ""}`}>
+          Forecast
+        </Link>
+        <Link to={buildTabUrl("unfulfilled")} className={`tab ${tab === "unfulfilled" ? "active" : ""}`}>
+          Unfulfilled
+          {unfulfilledBySku.length > 0 && (
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs">
+              {unfulfilledBySku.length}
+            </span>
+          )}
+        </Link>
+        <Link to={buildTabUrl("programmed")} className={`tab ${tab === "programmed" ? "active" : ""}`}>
+          Programmed Orders
+          {programmedOrders && programmedOrders.count > 0 && (
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs">
+              {programmedOrders.count}
+            </span>
+          )}
+        </Link>
+      </div>
+
+      {shopifyError && tab === "forecast" && (
+        <div className="alert alert-warning text-sm">
+          Shopify unavailable — Current in Gallatin numbers may be stale. ({shopifyError})
+        </div>
+      )}
+
+      {tab === "unfulfilled" && (
+        <UnfulfilledTab
+          items={unfulfilledItems}
+          bySku={unfulfilledBySku}
+          error={unfulfilledError}
+        />
+      )}
+
+      {tab === "programmed" && (
+        <ProgrammedOrdersTab
+          data={programmedOrders}
+          error={programmedError}
+          from={laborStart}
+          to={laborEnd}
+        />
+      )}
+
+      {tab === "forecast" && (
+      <>
 
       {/* Forecast Input Table */}
       <div className="card mb-6">
@@ -1027,6 +1216,284 @@ export default function Forecasting() {
           </div>
         </div>
       </div>
+
+      </>
+      )}
     </Layout>
+  );
+}
+
+// ============================================================
+// Unfulfilled tab — Shopify orders with remaining unfulfilled qty
+// ============================================================
+
+function UnfulfilledTab({
+  items,
+  bySku,
+  error,
+}: {
+  items: UnfulfilledLineItem[] | null;
+  bySku: { sku: string; quantity: number; orderCount: number }[];
+  error: string | null;
+}) {
+  const [expandedSku, setExpandedSku] = useState<string | null>(null);
+
+  if (error) {
+    return (
+      <div className="card">
+        <div className="card-body">
+          <div className="alert alert-error">
+            Couldn't load unfulfilled line items from Shopify: {error}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (!items) {
+    return (
+      <div className="card">
+        <div className="card-body text-gray-500 text-sm">Loading…</div>
+      </div>
+    );
+  }
+  if (bySku.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-body">
+          <div className="empty-state">
+            <h3 className="empty-state-title">No unfulfilled line items</h3>
+            <p className="empty-state-description">
+              Every open Shopify order is fulfilled. Nice.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h2 className="card-title">Unfulfilled Line Items</h2>
+        <p className="text-sm text-gray-500">
+          Live from Shopify · {items.length} line item{items.length !== 1 ? "s" : ""} across {bySku.length} SKU{bySku.length !== 1 ? "s" : ""}
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>SKU</th>
+              <th className="text-right">Total Unfulfilled</th>
+              <th className="text-right">Order Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bySku.map((row) => {
+              const isOpen = expandedSku === row.sku;
+              const skuItems = items.filter((i) => i.sku === row.sku);
+              return (
+                <React.Fragment key={row.sku}>
+                  <tr
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => setExpandedSku(isOpen ? null : row.sku)}
+                  >
+                    <td className="w-12 text-center">
+                      <span className="text-lg font-bold">{isOpen ? "−" : "+"}</span>
+                    </td>
+                    <td className="font-mono text-sm">{row.sku.toUpperCase()}</td>
+                    <td className="text-right font-semibold text-orange-600">
+                      {row.quantity}
+                    </td>
+                    <td className="text-right">{row.orderCount}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={4} className="bg-gray-50 p-0">
+                        <div className="p-4">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-gray-600">
+                                <th className="pb-2">Order</th>
+                                <th className="pb-2">Title</th>
+                                <th className="pb-2">Created</th>
+                                <th className="pb-2 text-right">Qty unfulfilled</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {skuItems.map((li, idx) => (
+                                <tr key={`${li.orderId}-${idx}`} className="border-t border-gray-200">
+                                  <td className="py-2 font-mono">{li.orderName}</td>
+                                  <td className="py-2">{li.title}</td>
+                                  <td className="py-2">
+                                    {new Date(li.orderCreatedAt).toLocaleDateString()}
+                                  </td>
+                                  <td className="py-2 text-right">{li.quantity}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Programmed Orders tab — queued-orders within date range
+// ============================================================
+
+function ProgrammedOrdersTab({
+  data,
+  error,
+  from,
+  to,
+}: {
+  data: ProgrammedOrdersResponse | null;
+  error: string | null;
+  from: string;
+  to: string;
+}) {
+  const [expandedSku, setExpandedSku] = useState<string | null>(null);
+
+  if (error) {
+    return (
+      <div className="card">
+        <div className="card-body">
+          <div className="alert alert-error">
+            Couldn't load programmed orders: {error}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (!data) {
+    return (
+      <div className="card">
+        <div className="card-body text-gray-500 text-sm">Loading…</div>
+      </div>
+    );
+  }
+  if (data.count === 0) {
+    return (
+      <div className="card">
+        <div className="card-body">
+          <div className="empty-state">
+            <h3 className="empty-state-title">No programmed orders</h3>
+            <p className="empty-state-description">
+              No queued orders scheduled between {from} and {to}.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="card mb-4">
+        <div className="card-header">
+          <h2 className="card-title">Programmed Orders ({from} → {to})</h2>
+          <p className="text-sm text-gray-500">
+            {data.count} order{data.count !== 1 ? "s" : ""} · {data.totalUnits} unit{data.totalUnits !== 1 ? "s" : ""} · ${data.totalAmount.toFixed(2)}
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>SKU</th>
+                <th className="text-right">Programmed Qty</th>
+                <th className="text-right">Orders</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.bySku.map((row) => {
+                const isOpen = expandedSku === row.sku;
+                const ordersWithSku = data.orders.filter((o) =>
+                  o.lineItems.some((li) => (li.sku || "(no SKU)") === row.sku)
+                );
+                return (
+                  <React.Fragment key={row.sku}>
+                    <tr
+                      className="cursor-pointer hover:bg-gray-50"
+                      onClick={() => setExpandedSku(isOpen ? null : row.sku)}
+                    >
+                      <td className="w-12 text-center">
+                        <span className="text-lg font-bold">{isOpen ? "−" : "+"}</span>
+                      </td>
+                      <td className="font-mono text-sm">{row.sku.toUpperCase()}</td>
+                      <td className="text-right font-semibold text-blue-600">
+                        {row.quantity}
+                      </td>
+                      <td className="text-right">{row.orderCount}</td>
+                    </tr>
+                    {isOpen && (
+                      <tr>
+                        <td colSpan={4} className="bg-gray-50 p-0">
+                          <div className="p-4">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="text-left text-gray-600">
+                                  <th className="pb-2">Customer</th>
+                                  <th className="pb-2">PO #</th>
+                                  <th className="pb-2">Scheduled</th>
+                                  <th className="pb-2 text-right">Qty</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {ordersWithSku.map((o) => {
+                                  const qty = o.lineItems
+                                    .filter((li) => (li.sku || "(no SKU)") === row.sku)
+                                    .reduce((s, li) => s + li.quantity, 0);
+                                  return (
+                                    <tr key={o.id} className="border-t border-gray-200">
+                                      <td className="py-2">
+                                        {o.customerName}
+                                        {o.companyName && (
+                                          <span className="text-xs text-gray-500 ml-1">
+                                            ({o.companyName})
+                                          </span>
+                                        )}
+                                        {o.holdAutoConvert && (
+                                          <span className="ml-1 badge bg-yellow-100 text-yellow-800 text-xs">
+                                            Hold
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="py-2 font-mono text-xs">
+                                        {o.poNumber || "—"}
+                                      </td>
+                                      <td className="py-2">
+                                        {new Date(o.scheduledDate).toLocaleDateString()}
+                                      </td>
+                                      <td className="py-2 text-right">{qty}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
   );
 }

@@ -1,0 +1,67 @@
+// Read-only client for the queued-orders app's /api/programmed-orders endpoint.
+// Used on the forecasting page to surface upcoming/scheduled orders by SKU.
+//
+// CONSTRAINT: read-only — only GET requests, no POST/PUT/DELETE.
+
+export interface ProgrammedOrderLineItem {
+  sku: string | null;
+  productTitle: string;
+  variantTitle: string | null;
+  quantity: number;
+}
+
+export interface ProgrammedOrder {
+  id: string;
+  scheduledDate: string;
+  customerName: string;
+  companyName: string | null;
+  poNumber: string | null;
+  totalAmount: number;
+  holdAutoConvert: boolean;
+  lineItems: ProgrammedOrderLineItem[];
+}
+
+export interface ProgrammedOrdersResponse {
+  from: string;
+  to: string;
+  shop_filter: string | null;
+  count: number;
+  totalUnits: number;
+  totalAmount: number;
+  bySku: { sku: string; quantity: number; orderCount: number }[];
+  orders: ProgrammedOrder[];
+}
+
+export interface FetchOptions {
+  from: string; // YYYY-MM-DD
+  to: string; // YYYY-MM-DD
+  shop?: string;
+}
+
+export async function fetchProgrammedOrders(
+  opts: FetchOptions
+): Promise<ProgrammedOrdersResponse> {
+  const baseUrl = process.env.QUEUED_ORDERS_API_URL;
+  const secret = process.env.BEAST_API_SECRET;
+  if (!baseUrl || !secret) {
+    throw new Error(
+      "Programmed orders feed not configured: set QUEUED_ORDERS_API_URL and BEAST_API_SECRET"
+    );
+  }
+
+  const url = new URL("/api/programmed-orders", baseUrl);
+  url.searchParams.set("from", opts.from);
+  url.searchParams.set("to", opts.to);
+  if (opts.shop) url.searchParams.set("shop", opts.shop);
+
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    headers: { "x-beast-secret": secret },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Programmed orders fetch ${res.status}: ${body.slice(0, 300)}`);
+  }
+  return (await res.json()) as ProgrammedOrdersResponse;
+}
