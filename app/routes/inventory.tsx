@@ -851,17 +851,28 @@ export default function Inventory() {
     return processDisplayMap[raw] || raw;
   };
 
+  // Items eligible to populate the filter dropdowns — narrowed to the
+  // current tab so e.g. processes only used by RAW SKUs don't appear in
+  // the Assembly tab's dropdown. Intentionally does NOT respect the user's
+  // own filter inputs, otherwise the dropdown would collapse as the user
+  // types and they couldn't see other options anymore.
+  const tabEligibleInventory = inventory.filter((item) => {
+    if (typeFilter === "all") return true;
+    if (typeFilter === "assembly") return item.type === "ASSEMBLY" || item.type === "COMPLETED";
+    return item.type === typeFilter.toUpperCase();
+  });
+
   // Get unique values for filter dropdowns
   const getUniqueValues = (key: keyof typeof filteredInventory[0]) => {
     if (key === "process") {
       const values = new Set<string>();
-      for (const item of inventory) {
+      for (const item of tabEligibleInventory) {
         const v = processDisplay(item.process as string | null);
         if (v) values.add(v);
       }
       return Array.from(values).sort();
     }
-    const values = new Set(inventory.map((item) => item[key]).filter(Boolean));
+    const values = new Set(tabEligibleInventory.map((item) => item[key]).filter(Boolean));
     return Array.from(values).sort();
   };
 
