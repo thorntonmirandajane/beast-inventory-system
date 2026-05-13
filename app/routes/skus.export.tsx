@@ -87,18 +87,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Mirror the inventory dashboard's display rules so the CSV doesn't
     // look like a different system:
-    //   - RAW items always read "N/A" for category
-    //   - Other types show the stored category with underscores replaced
-    //   - Process uses ProcessConfig.displayName when available
+    //   - Category: RAW → "N/A"; other types → stored value with
+    //     underscores replaced
+    //   - Process:  RAW → "N/A" (dashboard hides process for RAW even if
+    //     something is stored in sku.material, which it sometimes is from
+    //     historical bad data); COMPLETED → "Completed Packs"; ASSEMBLY →
+    //     ProcessConfig.displayName when available, else the raw value
     const categoryDisplay =
       sku.type === "RAW"
         ? "N/A"
         : sku.category
         ? sku.category.replaceAll("_", " ")
         : "";
-    const processDisplay = sku.material
-      ? processDisplayMap.get(sku.material) ?? sku.material
-      : "";
+    const processDisplay =
+      sku.type === "RAW"
+        ? "N/A"
+        : sku.type === "COMPLETED"
+        ? "Completed Packs"
+        : sku.material
+        ? processDisplayMap.get(sku.material) ?? sku.material
+        : "";
 
     csvRows.push([
       sku.processOrder != null ? String(sku.processOrder) : "",
