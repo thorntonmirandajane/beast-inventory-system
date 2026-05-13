@@ -71,7 +71,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         rootSku,
         rootName,
         depth,
-        tree: `${"  ".repeat(depth)}└─ ${sku.sku} (CYCLE — skipping)`,
+        tree: `${"  ".repeat(depth)}- ${sku.sku} (CYCLE - skipping)`,
         sku: sku.sku,
         name: sku.name,
         type: sku.type,
@@ -88,7 +88,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       rootSku,
       rootName,
       depth,
-      tree: depth === 0 ? sku.sku : `${"  ".repeat(depth)}└─ ${sku.sku}`,
+      // Plain ASCII tree — survives Excel encoding quirks and any tool
+      // that doesn't honour a UTF-8 BOM. Two leading spaces per depth
+      // plus a trailing "- " marker.
+      tree: depth === 0 ? sku.sku : `${"  ".repeat(depth)}- ${sku.sku}`,
       sku: sku.sku,
       name: sku.name,
       type: sku.type,
@@ -168,10 +171,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     );
   }
 
-  const csv = csvRows.join("\n");
+  // ﻿ = UTF-8 byte-order mark — tells Excel to treat this as UTF-8
+  // so any unicode characters (en-dashes in names, etc.) render correctly.
+  const csv = "﻿" + csvRows.join("\n");
   return new Response(csv, {
     headers: {
-      "Content-Type": "text/csv",
+      "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="bom-tree-export-${new Date().toISOString().split("T")[0]}.csv"`,
     },
   });

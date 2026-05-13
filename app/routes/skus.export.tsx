@@ -38,13 +38,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Build CSV data
   const csvRows: string[] = [];
 
-  // Headers
+  // Headers — column order mirrors the inventory dashboard so the export
+  // and the on-screen table tell the same story.
   csvRows.push([
+    "Process Order",
     "SKU",
     "Name",
     "Type",
-    "Category",
     "Process",
+    "Category",
+    "Grain",
+    "Diameter",
     "UPC",
     "Description",
     "Is Active",
@@ -97,11 +101,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       : "";
 
     csvRows.push([
+      sku.processOrder != null ? String(sku.processOrder) : "",
       escapeCsv(sku.sku),
       escapeCsv(sku.name),
       sku.type,
-      escapeCsv(categoryDisplay),
       escapeCsv(processDisplay),
+      escapeCsv(categoryDisplay),
+      sku.grain != null ? String(sku.grain) : "",
+      sku.diameter != null ? sku.diameter.toFixed(1) : "",
       sku.upc || "",
       escapeCsv(sku.description || ""),
       sku.isActive ? "Yes" : "No",
@@ -113,11 +120,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ].join(","));
   }
 
-  const csv = csvRows.join("\n");
+  // ﻿ = UTF-8 byte-order mark — tells Excel to read this as UTF-8 so any
+  // non-ASCII characters (en dashes in names, etc.) don't get mangled.
+  const csv = "﻿" + csvRows.join("\n");
 
   return new Response(csv, {
     headers: {
-      "Content-Type": "text/csv",
+      "Content-Type": "text/csv; charset=utf-8",
       "Content-Disposition": `attachment; filename="skus-export-${new Date().toISOString().split("T")[0]}.csv"`,
     },
   });
