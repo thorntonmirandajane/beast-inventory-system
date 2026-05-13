@@ -291,6 +291,7 @@ model ProcessConfig {
   isActive       Boolean         @default(true)
   consumesState  InventoryState?
   producesState  InventoryState?
+  processOrder   Int?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 

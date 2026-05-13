@@ -1322,7 +1322,13 @@ export default function Inventory() {
                       </td>
                     )}
                     {shouldShowColumn("category") && (
-                      <td className="text-sm text-gray-600">{item.category ? item.category.replaceAll("_", " ") : "—"}</td>
+                      <td className="text-sm text-gray-600">
+                        {item.type === "RAW"
+                          ? "N/A"
+                          : item.category
+                          ? item.category.replaceAll("_", " ")
+                          : "—"}
+                      </td>
                     )}
                     {shouldShowColumn("grain") && (
                       <td className="text-right text-sm">

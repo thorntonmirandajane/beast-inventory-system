@@ -28,6 +28,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
+  // Map raw process names ("STUD_TESTING") to display names ("Stud Tested")
+  // so the CSV matches what the inventory dashboard shows.
+  const processConfigs = await prisma.processConfig.findMany({
+    select: { processName: true, displayName: true },
+  });
+  const processDisplayMap = new Map(processConfigs.map((p) => [p.processName, p.displayName]));
+
   // Build CSV data
   const csvRows: string[] = [];
 
@@ -74,12 +81,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       })
       .join(";");
 
+    // Mirror the inventory dashboard's display rules so the CSV doesn't
+    // look like a different system:
+    //   - RAW items always read "N/A" for category
+    //   - Other types show the stored category with underscores replaced
+    //   - Process uses ProcessConfig.displayName when available
+    const categoryDisplay =
+      sku.type === "RAW"
+        ? "N/A"
+        : sku.category
+        ? sku.category.replaceAll("_", " ")
+        : "";
+    const processDisplay = sku.material
+      ? processDisplayMap.get(sku.material) ?? sku.material
+      : "";
+
     csvRows.push([
       escapeCsv(sku.sku),
       escapeCsv(sku.name),
       sku.type,
-      sku.category || "",
-      sku.material || "",
+      escapeCsv(categoryDisplay),
+      escapeCsv(processDisplay),
       sku.upc || "",
       escapeCsv(sku.description || ""),
       sku.isActive ? "Yes" : "No",
