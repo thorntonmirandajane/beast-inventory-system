@@ -277,16 +277,32 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     console.log(`[Inventory Loader] Sample items being returned:`, rawMaterialsWithInAssembly.slice(0, 3).map(i => ({ sku: i.sku, inAssembly: i.inAssembly })));
   }
 
-  // Load process configs to map processName -> displayName
+  // Load active process configs to map processName -> displayName. The
+  // dropdown will be filtered to only show entries that resolve to a value
+  // in this map so stale or miscategorised entries (e.g. category names
+  // accidentally stored in sku.material) don't pollute the Process filter.
   const processConfigs = await prisma.processConfig.findMany({
+    where: { isActive: true },
     select: { processName: true, displayName: true },
   });
   const processDisplayMap: Record<string, string> = {};
+  const canonicalProcessDisplayNames: string[] = [];
   for (const config of processConfigs) {
     processDisplayMap[config.processName] = config.displayName;
+    canonicalProcessDisplayNames.push(config.displayName);
   }
 
-  return { user, inventory, counts, typeFilter, search, sortBy, sortDir, processDisplayMap };
+  return {
+    user,
+    inventory,
+    counts,
+    typeFilter,
+    search,
+    sortBy,
+    sortDir,
+    processDisplayMap,
+    canonicalProcessDisplayNames,
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -584,7 +600,8 @@ function EditableCell({
 }
 
 export default function Inventory() {
-  const { user, inventory, counts, typeFilter, search, sortBy, sortDir, processDisplayMap } = useLoaderData<typeof loader>();
+  const { user, inventory, counts, typeFilter, search, sortBy, sortDir, processDisplayMap, canonicalProcessDisplayNames } = useLoaderData<typeof loader>();
+  const canonicalProcessSet = new Set(canonicalProcessDisplayNames);
   const [searchParams, setSearchParams] = useSearchParams();
   const [filters, setFilters] = useState({
     sku: "",
@@ -865,10 +882,15 @@ export default function Inventory() {
   // Get unique values for filter dropdowns
   const getUniqueValues = (key: keyof typeof filteredInventory[0]) => {
     if (key === "process") {
+      // Two filters at once: only show values that
+      //   (a) at least one item in the current tab actually uses, AND
+      //   (b) resolve to a real active ProcessConfig.displayName.
+      // (b) drops bad data — e.g. SKUs whose `material` got set to a
+      // category name like "Aluminum" or "Stainless Steel".
       const values = new Set<string>();
       for (const item of tabEligibleInventory) {
         const v = processDisplay(item.process as string | null);
-        if (v) values.add(v);
+        if (v && canonicalProcessSet.has(v)) values.add(v);
       }
       return Array.from(values).sort();
     }
