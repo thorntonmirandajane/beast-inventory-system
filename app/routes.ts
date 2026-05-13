@@ -13,6 +13,7 @@ export default [
   route("skus/new", "routes/skus.new.tsx"),
   route("skus/import", "routes/skus.import.tsx"),
   route("skus/export", "routes/skus.export.tsx"),
+  route("skus/export-bom", "routes/skus.export-bom.tsx"),
   route("skus/print", "routes/skus.print.tsx"),
   route("skus/:id", "routes/skus.$id.tsx"),
   route("build", "routes/build.tsx"),
