@@ -679,7 +679,12 @@ export default function Inventory() {
     if (filters.name && !item.name.toLowerCase().includes(filters.name.toLowerCase())) return false;
     if (filters.type && item.type !== filters.type) return false;
     if (filters.category && (!item.category || !item.category.toLowerCase().includes(filters.category.toLowerCase()))) return false;
-    if (filters.process && (!item.process || !item.process.toLowerCase().includes(filters.process.toLowerCase()))) return false;
+    if (filters.process) {
+      // Compare on the translated value so "STUD_TESTING" and "Stud Tested"
+      // both match a dropdown choice of "Stud Tested".
+      const itemDisplay = item.process ? (processDisplayMap[item.process] || item.process) : "";
+      if (itemDisplay !== filters.process) return false;
+    }
     if (filters.grain) {
       if (filters.grain === "none") {
         if (item.grain != null) return false;
@@ -837,8 +842,25 @@ export default function Inventory() {
     return () => window.removeEventListener("mouseup", handleMouseUp);
   }, [dragFillState]);
 
+  // Translate a stored material/process value to its display name when one
+  // exists. Used by both the dropdown and the filter comparison so raw
+  // values like "STUD_TESTING" and display values like "Stud Tested"
+  // collapse to a single dropdown entry.
+  const processDisplay = (raw: string | null | undefined) => {
+    if (!raw) return "";
+    return processDisplayMap[raw] || raw;
+  };
+
   // Get unique values for filter dropdowns
   const getUniqueValues = (key: keyof typeof filteredInventory[0]) => {
+    if (key === "process") {
+      const values = new Set<string>();
+      for (const item of inventory) {
+        const v = processDisplay(item.process as string | null);
+        if (v) values.add(v);
+      }
+      return Array.from(values).sort();
+    }
     const values = new Set(inventory.map((item) => item[key]).filter(Boolean));
     return Array.from(values).sort();
   };

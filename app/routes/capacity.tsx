@@ -93,15 +93,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     );
   }
 
-  // Get unique categories for management
-  const uniqueCategories = await prisma.sku.findMany({
+  // Get unique categories for management plus a per-category count that
+  // includes ALL active SKUs (not just ASSEMBLY/COMPLETED — categories like
+  // "Blades" or "Ferrules" are typically applied to RAW items, so counting
+  // off `allSkus` would always show 0 for those).
+  const categorySkus = await prisma.sku.findMany({
     where: { category: { not: null }, isActive: true },
     select: { category: true },
-    distinct: ["category"],
-    orderBy: { category: "asc" },
   });
-
-  const categories = uniqueCategories.map(c => c.category).filter(Boolean) as string[];
+  const categoryCountMap = new Map<string, number>();
+  for (const s of categorySkus) {
+    if (!s.category) continue;
+    categoryCountMap.set(s.category, (categoryCountMap.get(s.category) ?? 0) + 1);
+  }
+  const categories = Array.from(categoryCountMap.keys()).sort((a, b) => a.localeCompare(b));
+  const categoryCounts: Record<string, number> = Object.fromEntries(categoryCountMap);
 
   return {
     user,
@@ -112,6 +118,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scheduledWorkers,
     categoryInventory,
     categories,
+    categoryCounts,
   };
 };
 
@@ -363,6 +370,7 @@ export default function Capacity() {
     scheduledWorkers,
     categoryInventory,
     categories,
+    categoryCounts,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -621,7 +629,7 @@ export default function Capacity() {
             ) : (
               <div className="space-y-4">
                 {categories.map((category) => {
-                  const skuCount = Object.values(allSkus).filter(s => s.category === category).length;
+                  const skuCount = categoryCounts[category] ?? 0;
                   return (
                     <div key={category} className="flex items-center justify-between p-4 bg-gray-50 rounded border">
                       <div className="flex-1">
