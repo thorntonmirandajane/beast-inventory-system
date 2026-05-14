@@ -294,36 +294,57 @@ export async function approveTimeEntry(
         details.push(`  Transition: produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
         console.log(`[Approve] Transition found: consumes ${transition.consumes}, produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
 
-        // Deduct inventory - either from BOM raw materials or from specific state
+        // Deduct inventory - either from direct BOM components or from a
+        // specific state on the output SKU itself.
         if (transition.consumesRawFromBom) {
-          // Explode BOM and deduct all RAW materials
-          console.log(`[Approve] Exploding BOM for SKU ${line.skuId} to find raw materials`);
-          const rawMaterials = new Map<string, { skuId: string; sku: string; needed: number }>();
-          await explodeBomForRawMaterials(line.skuId, finalQuantity, rawMaterials);
+          // Deduct only the SKU's DIRECT BOM components (not their nested
+          // sub-components). Each component is pulled from the state
+          // appropriate to its SKU type:
+          //   RAW       -> ["RAW"]
+          //   ASSEMBLY  -> ["ASSEMBLED", "COMPLETED"]  (assemblies that
+          //                have already passed stud-testing live in
+          //                COMPLETED, so allow either)
+          //   COMPLETED -> ["COMPLETED"]
+          // This matches how the production workflow actually flows —
+          // each step consumes its upstream step's output instead of
+          // re-deducting the raw materials those steps already used.
+          const directComponents = await tx.bomComponent.findMany({
+            where: { parentSkuId: line.skuId },
+            include: { componentSku: true },
+          });
 
-          details.push(`  BOM explosion found ${rawMaterials.size} raw materials`);
-          console.log(`[Approve] Found ${rawMaterials.size} raw materials to deduct`);
+          details.push(`  Found ${directComponents.length} direct BOM components`);
+          console.log(`[Approve] Found ${directComponents.length} direct components`);
 
-          for (const [rawSkuId, rawMaterial] of rawMaterials) {
-            details.push(`    Deducting ${rawMaterial.needed} of ${rawMaterial.sku}`);
-            console.log(`[Approve] Deducting ${rawMaterial.needed} units of RAW ${rawMaterial.sku} (${rawSkuId})`);
+          for (const bom of directComponents) {
+            const comp = bom.componentSku;
+            const needed = bom.quantity * finalQuantity;
+            const states: InventoryState[] =
+              comp.type === "RAW"
+                ? ["RAW"]
+                : comp.type === "ASSEMBLY"
+                ? ["ASSEMBLED", "COMPLETED"]
+                : ["COMPLETED"];
+
+            details.push(`    Deducting ${needed} of ${comp.sku} (${comp.type}) from ${states.join("/")}`);
+            console.log(`[Approve] Deducting ${needed} units of ${comp.sku} (${comp.type}) from ${states.join("/")}`);
             const deductResult = await deductInventory(
-              rawSkuId,
-              rawMaterial.needed,
-              ["RAW"], // Always deduct from RAW state for raw materials
+              comp.id,
+              needed,
+              states,
               entry.id,
               "TIME_ENTRY",
               line.processName,
               entry.userId,
-              tx // Pass transaction client
+              tx
             );
 
             if (!deductResult.success) {
               details.push(`    FAILED: ${deductResult.error}`);
-              console.error(`[Approve] Deduction of raw material ${rawMaterial.sku} failed: ${deductResult.error}`);
-              throw new Error(`Failed to deduct raw material ${rawMaterial.sku}: ${deductResult.error}`);
+              console.error(`[Approve] Deduction of ${comp.sku} failed: ${deductResult.error}`);
+              throw new Error(`Failed to deduct ${comp.sku}: ${deductResult.error}`);
             }
-            console.log(`[Approve] Deduction of ${rawMaterial.sku} successful`);
+            console.log(`[Approve] Deduction of ${comp.sku} successful`);
           }
         } else if (transition.consumes) {
           // Legacy behavior: deduct from specific inventory state
