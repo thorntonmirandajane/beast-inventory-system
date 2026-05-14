@@ -97,7 +97,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const endOfDay = new Date(selectedDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const clockInEvent = await prisma.clockEvent.findFirst({
+    let clockInEvent = await prisma.clockEvent.findFirst({
       where: {
         userId: workerId,
         type: "CLOCK_IN",
@@ -109,8 +109,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       orderBy: { timestamp: "desc" },
     });
 
+    // If the worker wasn't clocked in on the selected date, fabricate a
+    // CLOCK_IN at noon so the WorkerTimeEntry foreign key still resolves.
+    // The note flags it as admin-created so it's distinguishable in any
+    // audit-like view of the clock log.
     if (!clockInEvent) {
-      return { error: "No clock-in found for this worker on the selected date" };
+      clockInEvent = await prisma.clockEvent.create({
+        data: {
+          userId: workerId,
+          type: "CLOCK_IN",
+          timestamp: selectedDate,
+          notes: `Auto-created by admin task submission (no actual clock-in on ${date})`,
+        },
+      });
     }
 
     // Get or create time entry
@@ -348,7 +359,8 @@ export default function AdminSubmitWorkerTask() {
                   required
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  Worker must have clocked in on this date
+                  If the worker wasn't clocked in, a placeholder time entry
+                  will be created for this date.
                 </p>
               </div>
             </div>
