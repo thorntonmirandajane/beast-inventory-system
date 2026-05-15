@@ -917,32 +917,36 @@ export default function SkuDetail() {
                         Component SKU
                       </label>
                       <input
-                        type="hidden"
-                        name="componentSkuId"
-                        id="componentSkuId"
-                        value={selectedComponentId}
-                      />
-                      <input
                         type="text"
                         id="componentSkuSearch"
-                        className="form-input"
-                        list="component-sku-options"
-                        placeholder="Type to search..."
-                        required
+                        className="form-input mb-2"
+                        placeholder="Filter by SKU or name..."
                         value={componentSearch}
-                        onChange={(e) => {
-                          setComponentSearch(e.target.value);
-                          const match = allSkus.find(
-                            (s) => `${s.sku} | ${s.name} (${s.type})` === e.target.value
-                          );
-                          setSelectedComponentId(match ? match.id : "");
-                        }}
+                        onChange={(e) => setComponentSearch(e.target.value)}
                       />
-                      <datalist id="component-sku-options">
-                        {allSkus.map((s) => (
-                          <option key={s.id} value={`${s.sku} | ${s.name} (${s.type})`} />
-                        ))}
-                      </datalist>
+                      <select
+                        name="componentSkuId"
+                        value={selectedComponentId}
+                        onChange={(e) => setSelectedComponentId(e.target.value)}
+                        className="form-select"
+                        required
+                      >
+                        <option value="">Select a component...</option>
+                        {allSkus
+                          .filter((s) => {
+                            if (!componentSearch) return true;
+                            const q = componentSearch.toLowerCase();
+                            return (
+                              s.sku.toLowerCase().includes(q) ||
+                              s.name.toLowerCase().includes(q)
+                            );
+                          })
+                          .map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.sku} | {s.name} ({s.type})
+                            </option>
+                          ))}
+                      </select>
                     </div>
                     <div>
                       <label htmlFor="bom-quantity" className="form-label">
@@ -960,7 +964,7 @@ export default function SkuDetail() {
                         <button
                           type="submit"
                           className="btn btn-primary"
-                          disabled={isSubmitting}
+                          disabled={isSubmitting || !selectedComponentId}
                         >
                           Add
                         </button>
