@@ -257,13 +257,6 @@ export async function approveTimeEntry(
         details.push(`Processing: ${line.processName} for ${skuName}`);
         console.log(`[Approve] Processing line: ${line.processName}, SKU: ${line.skuId}, isRejected: ${line.isRejected}, isMisc: ${line.isMisc}`);
 
-        // Skip rejected lines for inventory updates
-        if (line.isRejected) {
-          details.push(`  SKIPPED: line is rejected`);
-          console.log(`[Approve] Skipping rejected line`);
-          continue;
-        }
-
         // Skip MISC tasks (no inventory impact)
         if (line.isMisc || !line.skuId) {
           details.push(`  SKIPPED: MISC task or no SKU`);
@@ -271,17 +264,22 @@ export async function approveTimeEntry(
           continue;
         }
 
-        // Calculate final quantity: (admin adjusted OR submitted) minus rejected
+        // Calculate base + rejected. A whole-line rejection (isRejected=true)
+        // is treated as 100% rejected — the worker still attempted the work,
+        // so the components were consumed and the rejected portion (the
+        // whole batch) should land in the rejection tray for cherry-picking.
         const baseQuantity = line.adminAdjustedQuantity ?? line.quantityCompleted;
-        const rejectedQuantity = line.rejectionQuantity ?? 0;
+        const rejectedQuantity = line.isRejected
+          ? baseQuantity
+          : line.rejectionQuantity ?? 0;
         const finalQuantity = baseQuantity - rejectedQuantity;
         details.push(`  Quantity: ${finalQuantity} (base: ${baseQuantity}, rejected: ${rejectedQuantity})`);
-        console.log(`[Approve] Final quantity: ${finalQuantity} (base: ${baseQuantity}, rejected: ${rejectedQuantity})`);
+        console.log(`[Approve] Final quantity: ${finalQuantity} (base: ${baseQuantity}, rejected: ${rejectedQuantity}, wholeLineRejected: ${line.isRejected})`);
 
-        if (finalQuantity === 0) {
-          details.push(`  SKIPPED: zero quantity`);
-          console.log(`[Approve] Skipping zero quantity line`);
-          continue; // Skip if fully rejected/adjusted to zero
+        if (baseQuantity === 0) {
+          details.push(`  SKIPPED: zero base quantity`);
+          console.log(`[Approve] Skipping zero base quantity line`);
+          continue;
         }
 
         const transition = PROCESS_TRANSITIONS[line.processName];
@@ -402,8 +400,10 @@ export async function approveTimeEntry(
           console.log(`[Approve] Deduction successful`);
         }
 
-        // Add produced inventory
-        if (transition.produces) {
+        // Add produced inventory — only when there's actually something
+        // accepted. A 100%-rejected line still ran the deduct + tray flow
+        // above but produces no output.
+        if (transition.produces && finalQuantity > 0) {
           details.push(`  Adding ${finalQuantity} ${transition.produces} to ${skuName}`);
           console.log(`[Approve] Adding ${finalQuantity} units of ${transition.produces} to SKU ${line.skuId}`);
           try {

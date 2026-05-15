@@ -97,48 +97,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const endOfDay = new Date(selectedDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    let clockInEvent = await prisma.clockEvent.findFirst({
-      where: {
+    // Every admin submission gets its own synthetic CLOCK_IN event and its
+    // own WorkerTimeEntry, so each batch is independently approvable.
+    // Reusing the day's existing clock-in caused all prior admin-submitted
+    // lines to ride along with whatever entry was next approved.
+    const clockInEvent = await prisma.clockEvent.create({
+      data: {
         userId: workerId,
         type: "CLOCK_IN",
-        timestamp: {
-          gte: startOfDay,
-          lte: endOfDay,
-        },
+        timestamp: selectedDate,
+        notes: `Auto-created by admin task submission for ${date}`,
       },
-      orderBy: { timestamp: "desc" },
     });
 
-    // If the worker wasn't clocked in on the selected date, fabricate a
-    // CLOCK_IN at noon so the WorkerTimeEntry foreign key still resolves.
-    // The note flags it as admin-created so it's distinguishable in any
-    // audit-like view of the clock log.
-    if (!clockInEvent) {
-      clockInEvent = await prisma.clockEvent.create({
-        data: {
-          userId: workerId,
-          type: "CLOCK_IN",
-          timestamp: selectedDate,
-          notes: `Auto-created by admin task submission (no actual clock-in on ${date})`,
-        },
-      });
-    }
-
-    // Get or create time entry
-    let timeEntry = await prisma.workerTimeEntry.findUnique({
-      where: { clockInEventId: clockInEvent.id },
+    const timeEntry = await prisma.workerTimeEntry.create({
+      data: {
+        userId: workerId,
+        clockInEventId: clockInEvent.id,
+        clockInTime: clockInEvent.timestamp,
+        status: "DRAFT",
+      },
     });
-
-    if (!timeEntry) {
-      timeEntry = await prisma.workerTimeEntry.create({
-        data: {
-          userId: workerId,
-          clockInEventId: clockInEvent.id,
-          clockInTime: clockInEvent.timestamp,
-          status: "DRAFT",
-        },
-      });
-    }
 
     // Create all TimeEntryLine records
     let totalExpectedSeconds = 0;
