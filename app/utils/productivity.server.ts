@@ -313,12 +313,21 @@ export async function approveTimeEntry(
             include: { componentSku: true },
           });
 
-          details.push(`  Found ${directComponents.length} direct BOM components`);
-          console.log(`[Approve] Found ${directComponents.length} direct components`);
+          // Deduct for the FULL attempted quantity (baseQuantity), not
+          // just the accepted portion — rejected attempts still physically
+          // consume their components. The rejected portion gets parked in
+          // the rejection tray below for admin cherry-picking.
+          const consumeQuantity = baseQuantity;
+          details.push(
+            `  Found ${directComponents.length} direct BOM components (consuming ${consumeQuantity}-unit worth — ${finalQuantity} accepted + ${rejectedQuantity} rejected)`
+          );
+          console.log(
+            `[Approve] Found ${directComponents.length} direct components; consuming ${consumeQuantity}-unit worth`
+          );
 
           for (const bom of directComponents) {
             const comp = bom.componentSku;
-            const needed = bom.quantity * finalQuantity;
+            const needed = bom.quantity * consumeQuantity;
             const states: InventoryState[] =
               comp.type === "RAW"
                 ? ["RAW"]
@@ -345,6 +354,30 @@ export async function approveTimeEntry(
               throw new Error(`Failed to deduct ${comp.sku}: ${deductResult.error}`);
             }
             console.log(`[Approve] Deduction of ${comp.sku} successful`);
+          }
+
+          // Park the rejected portion's worth of components in the
+          // Rejection Tray so an admin can cherry-pick what's salvageable.
+          if (rejectedQuantity > 0 && directComponents.length > 0) {
+            await tx.rejectionTray.create({
+              data: {
+                timeEntryLineId: line.id,
+                outputSkuId: line.skuId,
+                rejectedQty: rejectedQuantity,
+                processName: line.processName,
+                rejectionReason: line.rejectionReason,
+                createdById: approvedById,
+                items: {
+                  create: directComponents.map((bom) => ({
+                    componentSkuId: bom.componentSku.id,
+                    quantity: bom.quantity * rejectedQuantity,
+                  })),
+                },
+              },
+            });
+            details.push(
+              `  Parked ${directComponents.length} component type(s) in Rejection Tray for ${rejectedQuantity} rejected unit(s)`
+            );
           }
         } else if (transition.consumes) {
           // Legacy behavior: deduct from specific inventory state

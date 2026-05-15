@@ -34,6 +34,7 @@ model User {
   timeOffRequests        TimeOffRequest[]  @relation("TimeOffRequests")
   approvedTimeOffRequests TimeOffRequest[] @relation("ApprovedTimeOffRequests")
   forecastTemplates      ForecastTemplate[]
+  rejectionTraysCreated  RejectionTray[]   @relation("RejectionTrayCreatedBy")
 
   @@map("users")
 }
@@ -93,6 +94,8 @@ model Sku {
   workerTasks         WorkerTask[]      @relation("TaskSku")
   forecastTemplateItems ForecastTemplateItem[]
   inventoryLogs       InventoryLog[]
+  rejectionTraysAsOutput RejectionTray[]     @relation("RejectionTrayOutput")
+  rejectionTrayItems   RejectionTrayItem[]   @relation("RejectionTrayItemSku")
 
   @@map("skus")
 }
@@ -484,9 +487,54 @@ model TimeEntryLine {
   sku                   Sku?            @relation("TimeEntryLineSku", fields: [skuId], references: [id])
   timeEntry             WorkerTimeEntry @relation(fields: [timeEntryId], references: [id], onDelete: Cascade)
   workerTask            WorkerTask?     @relation(fields: [workerTaskId], references: [id])
+  rejectionTrays        RejectionTray[]
 
   @@index([timeEntryId])
   @@map("time_entry_lines")
+}
+
+// When a worker task is approved with rejections (rejectionQuantity > 0),
+// the components that went into the rejected attempts get parked here
+// instead of vanishing. An admin can later "cherry pick" salvageable
+// components back into inventory or mark them as truly disposed.
+model RejectionTray {
+  id              String              @id @default(cuid())
+  timeEntryLineId String?
+  timeEntryLine   TimeEntryLine?      @relation(fields: [timeEntryLineId], references: [id], onDelete: SetNull)
+  outputSkuId     String
+  outputSku       Sku                 @relation("RejectionTrayOutput", fields: [outputSkuId], references: [id])
+  rejectedQty     Int
+  processName     String
+  rejectionReason String?
+  status          RejectionTrayStatus @default(PENDING)
+  createdAt       DateTime            @default(now())
+  resolvedAt      DateTime?
+  createdById     String?
+  createdBy       User?               @relation("RejectionTrayCreatedBy", fields: [createdById], references: [id])
+  items           RejectionTrayItem[]
+
+  @@index([status])
+  @@index([outputSkuId])
+  @@map("rejection_trays")
+}
+
+model RejectionTrayItem {
+  id              String        @id @default(cuid())
+  rejectionTrayId String
+  rejectionTray   RejectionTray @relation(fields: [rejectionTrayId], references: [id], onDelete: Cascade)
+  componentSkuId  String
+  componentSku    Sku           @relation("RejectionTrayItemSku", fields: [componentSkuId], references: [id])
+  quantity        Int
+  recoveredQty    Int           @default(0)
+  disposedQty     Int           @default(0)
+
+  @@index([rejectionTrayId])
+  @@map("rejection_tray_items")
+}
+
+enum RejectionTrayStatus {
+  PENDING
+  RESOLVED
 }
 
 model AuditLog {

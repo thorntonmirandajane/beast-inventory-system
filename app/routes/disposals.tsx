@@ -4,7 +4,8 @@ import { useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
-import { logInventoryMovement } from "../utils/inventory.server";
+import { addInventory, logInventoryMovement } from "../utils/inventory.server";
+import type { InventoryState } from "@prisma/client";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -48,7 +49,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 50,
   });
 
-  return { user, skusWithInventory, recentDisposals };
+  // Pending rejection trays — components parked here after a task approval
+  // with rejections, awaiting a human to decide what's recoverable.
+  const pendingTrays = await prisma.rejectionTray.findMany({
+    where: { status: "PENDING" },
+    include: {
+      outputSku: { select: { sku: true, name: true } },
+      createdBy: { select: { firstName: true, lastName: true } },
+      items: {
+        include: {
+          componentSku: { select: { id: true, sku: true, name: true, type: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return { user, skusWithInventory, recentDisposals, pendingTrays };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -128,11 +145,143 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
+  // Cherry-pick a portion of a rejected component back into inventory.
+  if (intent === "recover-tray-item") {
+    const itemId = formData.get("itemId") as string;
+    const qtyRaw = parseInt(formData.get("quantity") as string, 10);
+    const qty = isNaN(qtyRaw) ? 0 : qtyRaw;
+
+    if (!itemId || qty <= 0) {
+      return { error: "Quantity must be greater than zero" };
+    }
+
+    const item = await prisma.rejectionTrayItem.findUnique({
+      where: { id: itemId },
+      include: {
+        componentSku: { select: { id: true, sku: true, type: true } },
+        rejectionTray: { select: { id: true, processName: true } },
+      },
+    });
+    if (!item) return { error: "Tray item not found" };
+
+    const remaining = item.quantity - item.recoveredQty - item.disposedQty;
+    if (qty > remaining) {
+      return { error: `Only ${remaining} unresolved — can't recover ${qty}` };
+    }
+
+    // Components go back to the state they were originally consumed from.
+    const targetState: InventoryState =
+      item.componentSku.type === "RAW" ? "RAW" : "ASSEMBLED";
+
+    await prisma.$transaction(async (tx) => {
+      await addInventory(
+        item.componentSku.id,
+        qty,
+        targetState,
+        undefined,
+        `Recovered from rejection tray (${item.rejectionTray.processName})`,
+        item.rejectionTray.id,
+        "REJECTION_TRAY",
+        undefined,
+        user.id,
+        tx
+      );
+      await tx.rejectionTrayItem.update({
+        where: { id: itemId },
+        data: { recoveredQty: { increment: qty } },
+      });
+      await maybeResolveTray(tx, item.rejectionTray.id);
+    });
+
+    await createAuditLog(user.id, "RECOVER_REJECTION", "RejectionTrayItem", itemId, {
+      sku: item.componentSku.sku,
+      quantity: qty,
+      state: targetState,
+    });
+    return { success: true, message: `Recovered ${qty} of ${item.componentSku.sku}` };
+  }
+
+  // Mark a portion as truly disposed — same effect as the existing manual
+  // disposal flow, but tied to a rejection-tray item for record keeping.
+  if (intent === "dispose-tray-item") {
+    const itemId = formData.get("itemId") as string;
+    const qtyRaw = parseInt(formData.get("quantity") as string, 10);
+    const qty = isNaN(qtyRaw) ? 0 : qtyRaw;
+
+    if (!itemId || qty <= 0) {
+      return { error: "Quantity must be greater than zero" };
+    }
+
+    const item = await prisma.rejectionTrayItem.findUnique({
+      where: { id: itemId },
+      include: {
+        componentSku: { select: { id: true, sku: true } },
+        rejectionTray: { select: { id: true, processName: true } },
+      },
+    });
+    if (!item) return { error: "Tray item not found" };
+
+    const remaining = item.quantity - item.recoveredQty - item.disposedQty;
+    if (qty > remaining) {
+      return { error: `Only ${remaining} unresolved — can't dispose ${qty}` };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Disposal here is bookkeeping only — the inventory was already
+      // deducted when the task was approved (the full attempted qty is
+      // consumed up front). We just log it so it shows in the recent
+      // disposals list and the audit log.
+      await tx.inventoryLog.create({
+        data: {
+          skuId: item.componentSku.id,
+          action: "DISPOSED",
+          quantity: qty,
+          relatedResource: item.rejectionTray.id,
+          relatedResourceType: "REJECTION_TRAY",
+          processName: item.rejectionTray.processName,
+          notes: "Disposed from rejection tray",
+          performedById: user.id,
+        },
+      });
+      await tx.rejectionTrayItem.update({
+        where: { id: itemId },
+        data: { disposedQty: { increment: qty } },
+      });
+      await maybeResolveTray(tx, item.rejectionTray.id);
+    });
+
+    await createAuditLog(user.id, "DISPOSE_REJECTION", "RejectionTrayItem", itemId, {
+      sku: item.componentSku.sku,
+      quantity: qty,
+    });
+    return { success: true, message: `Disposed ${qty} of ${item.componentSku.sku}` };
+  }
+
   return { error: "Invalid action" };
 };
 
+// If every item in the tray has been fully recovered or disposed, mark the
+// tray RESOLVED so it drops off the pending list.
+async function maybeResolveTray(
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  trayId: string
+) {
+  const items = await tx.rejectionTrayItem.findMany({
+    where: { rejectionTrayId: trayId },
+  });
+  const fullyResolved = items.every(
+    (i) => i.recoveredQty + i.disposedQty >= i.quantity
+  );
+  if (fullyResolved) {
+    await tx.rejectionTray.update({
+      where: { id: trayId },
+      data: { status: "RESOLVED", resolvedAt: new Date() },
+    });
+  }
+}
+
 export default function Disposals() {
-  const { user, skusWithInventory, recentDisposals } = useLoaderData<typeof loader>();
+  const { user, skusWithInventory, recentDisposals, pendingTrays } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -187,6 +336,131 @@ export default function Disposals() {
 
       {actionData?.success && (
         <div className="alert alert-success mb-4">{actionData.message}</div>
+      )}
+
+      {/* Rejection Tray — pending components from rejected task attempts */}
+      {pendingTrays.length > 0 && (
+        <div className="card mb-6 border-2 border-orange-300">
+          <div className="card-header bg-orange-50">
+            <h2 className="card-title text-orange-900">Rejection Tray ({pendingTrays.length})</h2>
+            <p className="text-sm text-orange-800 mt-1">
+              Components from rejected task attempts. Recover what's still usable,
+              dispose of what isn't. Once every line is fully accounted for, the
+              tray entry resolves and drops off this list.
+            </p>
+          </div>
+          <div className="card-body space-y-6">
+            {pendingTrays.map((tray) => (
+              <div key={tray.id} className="border rounded p-4 bg-gray-50">
+                <div className="flex items-baseline justify-between mb-3 flex-wrap gap-2">
+                  <div>
+                    <div className="font-semibold">
+                      <span className="font-mono">{tray.outputSku.sku}</span>{" "}
+                      <span className="text-gray-600">— {tray.outputSku.name}</span>
+                    </div>
+                    <div className="text-sm text-gray-500">
+                      {tray.rejectedQty} unit{tray.rejectedQty !== 1 ? "s" : ""} rejected
+                      from <span className="font-mono">{tray.processName}</span>
+                      {" · "}
+                      {new Date(tray.createdAt).toLocaleDateString()}
+                      {tray.createdBy && (
+                        <> · approved by {tray.createdBy.firstName} {tray.createdBy.lastName}</>
+                      )}
+                    </div>
+                    {tray.rejectionReason && (
+                      <div className="text-xs text-gray-600 mt-1 italic">
+                        Reason: {tray.rejectionReason}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Component</th>
+                      <th className="text-right">In tray</th>
+                      <th className="text-right">Recovered</th>
+                      <th className="text-right">Disposed</th>
+                      <th className="text-right">Remaining</th>
+                      <th className="text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tray.items.map((item) => {
+                      const remaining = item.quantity - item.recoveredQty - item.disposedQty;
+                      return (
+                        <tr key={item.id}>
+                          <td>
+                            <div className="font-mono text-sm">{item.componentSku.sku}</div>
+                            <div className="text-xs text-gray-500">{item.componentSku.name}</div>
+                            <span className="text-xs text-gray-400">{item.componentSku.type}</span>
+                          </td>
+                          <td className="text-right">{item.quantity}</td>
+                          <td className="text-right text-green-700">
+                            {item.recoveredQty > 0 ? item.recoveredQty : <span className="text-gray-400">—</span>}
+                          </td>
+                          <td className="text-right text-red-700">
+                            {item.disposedQty > 0 ? item.disposedQty : <span className="text-gray-400">—</span>}
+                          </td>
+                          <td className="text-right font-semibold">
+                            {remaining}
+                          </td>
+                          <td className="text-right">
+                            {remaining > 0 ? (
+                              <div className="flex items-center justify-end gap-2 flex-wrap">
+                                <Form method="post" className="inline-flex items-center gap-1">
+                                  <input type="hidden" name="intent" value="recover-tray-item" />
+                                  <input type="hidden" name="itemId" value={item.id} />
+                                  <input
+                                    type="number"
+                                    name="quantity"
+                                    min="1"
+                                    max={remaining}
+                                    defaultValue={remaining}
+                                    className="form-input w-16 text-sm text-right"
+                                  />
+                                  <button
+                                    type="submit"
+                                    className="btn btn-xs btn-primary"
+                                    disabled={isSubmitting}
+                                    title={`Add back to ${item.componentSku.type === "RAW" ? "RAW" : "ASSEMBLED"} inventory`}
+                                  >
+                                    Recover
+                                  </button>
+                                </Form>
+                                <Form method="post" className="inline-flex items-center gap-1">
+                                  <input type="hidden" name="intent" value="dispose-tray-item" />
+                                  <input type="hidden" name="itemId" value={item.id} />
+                                  <input
+                                    type="number"
+                                    name="quantity"
+                                    min="1"
+                                    max={remaining}
+                                    defaultValue={remaining}
+                                    className="form-input w-16 text-sm text-right"
+                                  />
+                                  <button
+                                    type="submit"
+                                    className="btn btn-xs btn-error"
+                                    disabled={isSubmitting}
+                                  >
+                                    Dispose
+                                  </button>
+                                </Form>
+                              </div>
+                            ) : (
+                              <span className="badge bg-green-100 text-green-700 text-xs">Resolved</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Disposal Form */}
