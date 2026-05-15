@@ -14,114 +14,56 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw new Response("Unauthorized", { status: 403 });
   }
 
-  // Get all active SKUs with their current inventory
   const skus = await prisma.sku.findMany({
     where: { isActive: true },
     include: {
-      inventoryItems: {
-        where: { quantity: { gt: 0 } },
+      inventoryItems: { where: { quantity: { gt: 0 } } },
+    },
+    orderBy: [{ type: "asc" }, { sku: "asc" }],
+  });
+
+  const skusWithInventory = skus.map((sku) => ({
+    ...sku,
+    totalInventory: sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0),
+  }));
+
+  // Recent disposals (last 30 days) — includes both manual disposals and
+  // the per-component DISPOSED entries auto-logged when a worker task is
+  // approved with rejections.
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const recentDisposals = await prisma.inventoryLog.findMany({
+    where: { action: "DISPOSED", createdAt: { gte: thirtyDaysAgo } },
+    include: {
+      sku: { select: { sku: true, name: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+
+  // Assembly + Completed SKUs with their direct BOM components, used as a
+  // reference panel — gives the admin a quick "what's inside each
+  // assembly?" lookup when deciding what to add back from the physical
+  // rejection tray.
+  const buildableSkus = await prisma.sku.findMany({
+    where: {
+      isActive: true,
+      type: { in: ["ASSEMBLY", "COMPLETED"] },
+      bomComponents: { some: {} },
+    },
+    include: {
+      bomComponents: {
+        include: {
+          componentSku: { select: { id: true, sku: true, name: true, type: true } },
+        },
+        orderBy: { id: "asc" },
       },
     },
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
-  // Calculate total inventory for each SKU
-  const skusWithInventory = skus.map(sku => ({
-    ...sku,
-    totalInventory: sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0),
-  }));
-
-  // Get recent disposals (last 30 days)
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-  const recentDisposals = await prisma.inventoryLog.findMany({
-    where: {
-      action: "DISPOSED",
-      createdAt: { gte: thirtyDaysAgo },
-    },
-    include: {
-      sku: {
-        select: { sku: true, name: true },
-      },
-    },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
-
-  // Pending rejection trays — components parked here after a task approval
-  // with rejections, awaiting a human to decide what's recoverable.
-  const pendingTrays = await prisma.rejectionTray.findMany({
-    where: { status: "PENDING" },
-    include: {
-      outputSku: { select: { sku: true, name: true } },
-      createdBy: { select: { firstName: true, lastName: true } },
-      items: {
-        include: {
-          componentSku: { select: { id: true, sku: true, name: true, type: true } },
-        },
-      },
-    },
-    orderBy: { createdAt: "asc" },
-  });
-
-  // Aggregated view across every pending tray entry — one row per
-  // component SKU, summing the remaining qty across every rejection.
-  // This is the main interaction surface: cherry-pick by component, not
-  // by which specific task it came from.
-  type AggRow = {
-    skuId: string;
-    sku: string;
-    name: string;
-    type: string;
-    inTray: number;
-    recovered: number;
-    disposed: number;
-    brokenApart: number;
-    remaining: number;
-    sourceTrayCount: number;
-  };
-  const aggMap = new Map<string, AggRow>();
-  for (const tray of pendingTrays) {
-    for (const item of tray.items) {
-      const remaining =
-        item.quantity - item.recoveredQty - item.disposedQty - item.brokenApartQty;
-      if (remaining <= 0) continue;
-      const c = item.componentSku;
-      const row = aggMap.get(c.id);
-      if (row) {
-        row.inTray += item.quantity;
-        row.recovered += item.recoveredQty;
-        row.disposed += item.disposedQty;
-        row.brokenApart += item.brokenApartQty;
-        row.remaining += remaining;
-        row.sourceTrayCount += 1;
-      } else {
-        aggMap.set(c.id, {
-          skuId: c.id,
-          sku: c.sku,
-          name: c.name,
-          type: c.type,
-          inTray: item.quantity,
-          recovered: item.recoveredQty,
-          disposed: item.disposedQty,
-          brokenApart: item.brokenApartQty,
-          remaining,
-          sourceTrayCount: 1,
-        });
-      }
-    }
-  }
-  const aggregated = Array.from(aggMap.values()).sort((a, b) => {
-    // Assemblies first (so user sees what's break-apart-able at the top)
-    if (a.type !== b.type) {
-      if (a.type === "ASSEMBLY") return -1;
-      if (b.type === "ASSEMBLY") return 1;
-    }
-    return a.sku.localeCompare(b.sku);
-  });
-
-  return { user, skusWithInventory, recentDisposals, pendingTrays, aggregated };
+  return { user, skusWithInventory, recentDisposals, buildableSkus };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -144,13 +86,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "All fields are required" };
     }
 
-    // Check if there's enough inventory in the specified state
     const inventoryItem = await prisma.inventoryItem.findFirst({
-      where: {
-        skuId,
-        state,
-        quantity: { gte: quantity },
-      },
+      where: { skuId, state, quantity: { gte: quantity } },
     });
 
     if (!inventoryItem) {
@@ -159,13 +96,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       };
     }
 
-    // Deduct from inventory
     const newQuantity = inventoryItem.quantity - quantity;
-
     if (newQuantity === 0) {
-      await prisma.inventoryItem.delete({
-        where: { id: inventoryItem.id },
-      });
+      await prisma.inventoryItem.delete({ where: { id: inventoryItem.id } });
     } else {
       await prisma.inventoryItem.update({
         where: { id: inventoryItem.id },
@@ -173,7 +106,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
     }
 
-    // Log the disposal
     await logInventoryMovement(
       skuId,
       "DISPOSED",
@@ -187,7 +119,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       user.id
     );
 
-    // Create audit log
     await createAuditLog(user.id, "DISPOSE_INVENTORY", "InventoryItem", inventoryItem.id, {
       skuId,
       quantity,
@@ -195,464 +126,307 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       reason,
     });
 
-    return {
-      success: true,
-      message: `Successfully disposed ${quantity} units`,
-    };
+    return { success: true, message: `Successfully disposed ${quantity} units` };
   }
 
-  // Aggregated cherry-pick actions — operate on a component SKU across
-  // ALL pending tray entries at once, FIFO consuming through them by
-  // tray creation date.
-  if (
-    intent === "recover-by-sku" ||
-    intent === "dispose-by-sku" ||
-    intent === "break-apart-by-sku"
-  ) {
+  // Add salvaged components back to inventory — used after physically
+  // sorting through a tray of rejected materials and pulling out the
+  // pieces that are still good. State is inferred from SKU type.
+  if (intent === "add-back") {
     const skuId = formData.get("skuId") as string;
     const qtyRaw = parseInt(formData.get("quantity") as string, 10);
     const qty = isNaN(qtyRaw) ? 0 : qtyRaw;
+    const reason = (formData.get("reason") as string)?.trim() || "Recovered from rejection tray";
 
     if (!skuId || qty <= 0) {
-      return { error: "Quantity must be greater than zero" };
+      return { error: "Pick a SKU and enter a quantity greater than zero" };
     }
 
     const sku = await prisma.sku.findUnique({
       where: { id: skuId },
-      select: { id: true, sku: true, name: true, type: true },
+      select: { id: true, sku: true, type: true },
     });
-    if (!sku) return { error: "Component SKU not found" };
+    if (!sku) return { error: "SKU not found" };
 
-    if (intent === "break-apart-by-sku" && sku.type === "RAW") {
-      return { error: "Raw materials can't be broken apart further" };
-    }
+    const targetState: InventoryState =
+      sku.type === "RAW" ? "RAW" : sku.type === "ASSEMBLY" ? "ASSEMBLED" : "COMPLETED";
 
-    try {
-      await prisma.$transaction(async (tx) => {
-        const column =
-          intent === "recover-by-sku"
-            ? ("recoveredQty" as const)
-            : intent === "dispose-by-sku"
-            ? ("disposedQty" as const)
-            : ("brokenApartQty" as const);
+    await addInventory(
+      sku.id,
+      qty,
+      targetState,
+      undefined,
+      reason,
+      undefined,
+      "ADD_BACK",
+      undefined,
+      user.id
+    );
 
-        const consumed = await consumeTrayItemsFifo(tx, skuId, qty, column);
-
-        // Side effects depending on intent
-        if (intent === "recover-by-sku") {
-          // Components return to inventory in the state they were
-          // originally consumed from — RAW for raws, ASSEMBLED for
-          // assemblies (the most common state for assemblies pre-stud-test).
-          const state: InventoryState = sku.type === "RAW" ? "RAW" : "ASSEMBLED";
-          await addInventory(
-            skuId,
-            qty,
-            state,
-            undefined,
-            `Recovered ${qty} from rejection tray`,
-            consumed[0]?.trayId ?? null,
-            "REJECTION_TRAY",
-            undefined,
-            user.id,
-            tx
-          );
-        } else if (intent === "dispose-by-sku") {
-          // Inventory was already deducted at approval time — this is
-          // bookkeeping so the disposal shows up in the recent-disposals
-          // table and audit log.
-          await tx.inventoryLog.create({
-            data: {
-              skuId,
-              action: "DISPOSED",
-              quantity: qty,
-              relatedResource: consumed[0]?.trayId ?? null,
-              relatedResourceType: "REJECTION_TRAY",
-              notes: "Disposed from rejection tray",
-              performedById: user.id,
-            },
-          });
-        } else {
-          // Break apart: consume `qty` of the assembly from the tray and
-          // add `qty * componentQty` of each direct child as new tray
-          // items. The new items inherit the source tray's id so the
-          // chain of ownership is preserved for resolution.
-          const directChildren = await tx.bomComponent.findMany({
-            where: { parentSkuId: skuId },
-          });
-          if (directChildren.length === 0) {
-            throw new Error(`${sku.sku} has no BOM components to break apart into`);
-          }
-
-          // Spread the new children across the source trays in proportion
-          // to how much we consumed from each. Simplest correct approach:
-          // attach to the first tray we touched (consumed[0]).
-          const targetTrayId = consumed[0]?.trayId;
-          if (!targetTrayId) throw new Error("No source tray to attach broken-apart children to");
-
-          for (const child of directChildren) {
-            await tx.rejectionTrayItem.create({
-              data: {
-                rejectionTrayId: targetTrayId,
-                componentSkuId: child.componentSkuId,
-                quantity: child.quantity * qty,
-              },
-            });
-          }
-        }
-
-        // Re-evaluate the affected trays — any that are now fully
-        // resolved get marked RESOLVED and drop off the pending list.
-        const trayIds = Array.from(new Set(consumed.map((c) => c.trayId)));
-        for (const trayId of trayIds) {
-          await maybeResolveTray(tx, trayId);
-        }
-      });
-    } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
-    }
-
-    const verb =
-      intent === "recover-by-sku"
-        ? "Recovered"
-        : intent === "dispose-by-sku"
-        ? "Disposed"
-        : "Broke apart";
-    await createAuditLog(user.id, intent.toUpperCase().replace(/-/g, "_"), "Sku", skuId, {
+    await createAuditLog(user.id, "ADD_BACK_INVENTORY", "Sku", sku.id, {
       sku: sku.sku,
       quantity: qty,
+      state: targetState,
+      reason,
     });
-    return { success: true, message: `${verb} ${qty} of ${sku.sku}` };
+
+    return { success: true, message: `Added ${qty} ${sku.sku} back to ${targetState}` };
   }
 
   return { error: "Invalid action" };
 };
 
-// FIFO across pending tray items for a given component SKU. Increments the
-// provided column (recoveredQty / disposedQty / brokenApartQty) on each
-// item up to the requested quantity. Throws if the tray doesn't hold
-// enough unresolved units.
-async function consumeTrayItemsFifo(
-  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-  componentSkuId: string,
-  qty: number,
-  column: "recoveredQty" | "disposedQty" | "brokenApartQty"
-): Promise<{ id: string; qty: number; trayId: string }[]> {
-  const items = await tx.rejectionTrayItem.findMany({
-    where: {
-      componentSkuId,
-      rejectionTray: { status: "PENDING" },
-    },
-    include: { rejectionTray: { select: { id: true, createdAt: true } } },
-    orderBy: { rejectionTray: { createdAt: "asc" } },
-  });
-
-  let remaining = qty;
-  const consumed: { id: string; qty: number; trayId: string }[] = [];
-  for (const item of items) {
-    if (remaining <= 0) break;
-    const available =
-      item.quantity - item.recoveredQty - item.disposedQty - item.brokenApartQty;
-    if (available <= 0) continue;
-    const take = Math.min(available, remaining);
-    await tx.rejectionTrayItem.update({
-      where: { id: item.id },
-      data: { [column]: { increment: take } },
-    });
-    consumed.push({ id: item.id, qty: take, trayId: item.rejectionTrayId });
-    remaining -= take;
-  }
-  if (remaining > 0) {
-    throw new Error(`Tray doesn't hold enough of this SKU — short by ${remaining}`);
-  }
-  return consumed;
-}
-
-// If every item in the tray has been fully recovered/disposed/broken-apart,
-// mark the tray RESOLVED so it drops off the pending list.
-async function maybeResolveTray(
-  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
-  trayId: string
-) {
-  const items = await tx.rejectionTrayItem.findMany({
-    where: { rejectionTrayId: trayId },
-  });
-  const fullyResolved = items.every(
-    (i) => i.recoveredQty + i.disposedQty + i.brokenApartQty >= i.quantity
-  );
-  if (fullyResolved) {
-    await tx.rejectionTray.update({
-      where: { id: trayId },
-      data: { status: "RESOLVED", resolvedAt: new Date() },
-    });
-  }
-}
-
 export default function Disposals() {
-  const { user, skusWithInventory, recentDisposals, pendingTrays, aggregated } = useLoaderData<typeof loader>();
-  const [showSources, setShowSources] = useState(false);
+  const { user, skusWithInventory, recentDisposals, buildableSkus } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
+  // Dispose form state
   const [selectedSku, setSelectedSku] = useState("");
   const [quantity, setQuantity] = useState(0);
   const [selectedState, setSelectedState] = useState("");
   const [reason, setReason] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Filter SKUs based on search term
-  const filteredSkus = skusWithInventory.filter(sku => {
+  // Add-back form state
+  const [addBackSku, setAddBackSku] = useState("");
+  const [addBackSearch, setAddBackSearch] = useState("");
+
+  // BOM reference panel state
+  const [bomSearch, setBomSearch] = useState("");
+  const [expandedBom, setExpandedBom] = useState<string | null>(null);
+
+  const filteredSkus = skusWithInventory.filter((sku) => {
     if (!searchTerm) return true;
     const search = searchTerm.toLowerCase();
-    return (
-      sku.sku.toLowerCase().includes(search) ||
-      sku.name.toLowerCase().includes(search)
-    );
+    return sku.sku.toLowerCase().includes(search) || sku.name.toLowerCase().includes(search);
   });
 
-  // Get selected SKU details
-  const selectedSkuData = skusWithInventory.find(s => s.id === selectedSku);
+  const selectedSkuData = skusWithInventory.find((s) => s.id === selectedSku);
+  const availableStates =
+    selectedSkuData?.inventoryItems.map((item) => ({
+      state: item.state,
+      quantity: item.quantity,
+    })) || [];
 
-  // Get available states for selected SKU
-  const availableStates = selectedSkuData?.inventoryItems.map(item => ({
-    state: item.state,
-    quantity: item.quantity,
-  })) || [];
+  // Add-back picker — every active SKU is eligible (raw or assembly).
+  const addBackChoices = skusWithInventory.filter((sku) => {
+    if (!addBackSearch) return true;
+    const search = addBackSearch.toLowerCase();
+    return sku.sku.toLowerCase().includes(search) || sku.name.toLowerCase().includes(search);
+  });
 
-  const handleSubmit = () => {
-    if (!selectedSku || !quantity || !selectedState || !reason) {
-      return;
-    }
-
-    setSelectedSku("");
-    setQuantity(0);
-    setSelectedState("");
-    setReason("");
-    setSearchTerm("");
-  };
+  // BOM reference: filter by SKU code/name match in the assembly itself.
+  const filteredBoms = buildableSkus.filter((sku) => {
+    if (!bomSearch) return true;
+    const search = bomSearch.toLowerCase();
+    return sku.sku.toLowerCase().includes(search) || sku.name.toLowerCase().includes(search);
+  });
 
   return (
     <Layout user={user}>
       <div className="page-header">
         <h1 className="page-title">Inventory Disposals</h1>
-        <p className="page-subtitle">Record damaged or discarded inventory</p>
+        <p className="page-subtitle">
+          Record damaged or discarded inventory, and add back salvaged components
+          from the rejection tray.
+        </p>
       </div>
 
       {actionData?.error && (
         <div className="alert alert-error mb-4">{actionData.error}</div>
       )}
-
       {actionData?.success && (
         <div className="alert alert-success mb-4">{actionData.message}</div>
       )}
 
-      {/* Rejection Tray — aggregated cherry-pick view across every pending
-          rejection. One row per component SKU; act on it once and the
-          quantity gets consumed FIFO across the underlying tray entries. */}
-      {aggregated.length > 0 && (
-        <div className="card mb-6 border-2 border-orange-300">
-          <div className="card-header bg-orange-50">
-            <h2 className="card-title text-orange-900">
-              Rejection Tray
-              <span className="ml-2 text-sm font-normal text-orange-800">
-                ({aggregated.length} component type{aggregated.length !== 1 ? "s" : ""} across {pendingTrays.length} rejection{pendingTrays.length !== 1 ? "s" : ""})
-              </span>
-            </h2>
-            <p className="text-sm text-orange-800 mt-1">
-              Everything sitting in the rejection tray, rolled up by component.
-              Recover what's still usable, dispose of what isn't. Break apart
-              an assembly to access the sub-components inside (e.g. the tip
-              from a tipped ferrule).
-            </p>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Component</th>
-                  <th>Type</th>
-                  <th className="text-right">Remaining</th>
-                  <th className="text-right">Recovered</th>
-                  <th className="text-right">Disposed</th>
-                  <th className="text-right">Broken apart</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {aggregated.map((row) => (
-                  <tr key={row.skuId}>
-                    <td>
-                      <div className="font-mono text-sm">{row.sku}</div>
-                      <div className="text-xs text-gray-500">{row.name}</div>
-                      {row.sourceTrayCount > 1 && (
-                        <div className="text-xs text-gray-400">
-                          from {row.sourceTrayCount} rejections
-                        </div>
-                      )}
-                    </td>
-                    <td>
-                      <span className={`badge text-xs ${
-                        row.type === "RAW"
-                          ? "bg-gray-100 text-gray-700"
-                          : row.type === "ASSEMBLY"
-                          ? "bg-blue-100 text-blue-800"
-                          : "bg-green-100 text-green-800"
-                      }`}>
-                        {row.type}
-                      </span>
-                    </td>
-                    <td className="text-right font-semibold text-lg">{row.remaining}</td>
-                    <td className="text-right text-green-700">
-                      {row.recovered > 0 ? row.recovered : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="text-right text-red-700">
-                      {row.disposed > 0 ? row.disposed : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="text-right text-blue-700">
-                      {row.brokenApart > 0 ? row.brokenApart : <span className="text-gray-300">—</span>}
-                    </td>
-                    <td>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Form method="post" className="inline-flex items-center gap-1">
-                          <input type="hidden" name="intent" value="recover-by-sku" />
-                          <input type="hidden" name="skuId" value={row.skuId} />
-                          <input
-                            type="number"
-                            name="quantity"
-                            min="1"
-                            max={row.remaining}
-                            defaultValue={row.remaining}
-                            className="form-input w-16 text-sm text-right"
-                          />
-                          <button
-                            type="submit"
-                            className="btn btn-xs btn-primary"
-                            disabled={isSubmitting}
-                            title={`Add back to ${row.type === "RAW" ? "RAW" : "ASSEMBLED"} inventory`}
-                          >
-                            Recover
-                          </button>
-                        </Form>
-                        <Form method="post" className="inline-flex items-center gap-1">
-                          <input type="hidden" name="intent" value="dispose-by-sku" />
-                          <input type="hidden" name="skuId" value={row.skuId} />
-                          <input
-                            type="number"
-                            name="quantity"
-                            min="1"
-                            max={row.remaining}
-                            defaultValue={row.remaining}
-                            className="form-input w-16 text-sm text-right"
-                          />
-                          <button
-                            type="submit"
-                            className="btn btn-xs btn-error"
-                            disabled={isSubmitting}
-                          >
-                            Dispose
-                          </button>
-                        </Form>
-                        {row.type !== "RAW" && (
-                          <Form method="post" className="inline-flex items-center gap-1">
-                            <input type="hidden" name="intent" value="break-apart-by-sku" />
-                            <input type="hidden" name="skuId" value={row.skuId} />
-                            <input
-                              type="number"
-                              name="quantity"
-                              min="1"
-                              max={row.remaining}
-                              defaultValue={row.remaining}
-                              className="form-input w-16 text-sm text-right"
-                            />
-                            <button
-                              type="submit"
-                              className="btn btn-xs btn-secondary"
-                              disabled={isSubmitting}
-                              title="Disassemble these units and put their direct sub-components into the tray"
-                            >
-                              Break apart
-                            </button>
-                          </Form>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      {/* Add Back to Inventory — used after sorting through the physical
+          tray of rejected materials and recovering whatever's still good. */}
+      <div className="card mb-6 border-2 border-green-300">
+        <div className="card-header bg-green-50">
+          <h2 className="card-title text-green-900">Add Back to Inventory</h2>
+          <p className="text-sm text-green-800 mt-1">
+            Salvaged something from the physical rejection tray? Pick the SKU
+            (raw material or assembly) and the quantity. State is set
+            automatically based on the SKU's type.
+          </p>
+        </div>
+        <div className="card-body">
+          <Form method="post">
+            <input type="hidden" name="intent" value="add-back" />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="form-group md:col-span-2">
+                <label className="form-label">SKU *</label>
+                <input
+                  type="text"
+                  placeholder="Search by SKU code or name..."
+                  value={addBackSearch}
+                  onChange={(e) => setAddBackSearch(e.target.value)}
+                  className="form-input mb-2"
+                />
+                <select
+                  name="skuId"
+                  value={addBackSku}
+                  onChange={(e) => setAddBackSku(e.target.value)}
+                  className="form-select"
+                  required
+                >
+                  <option value="">Select SKU...</option>
+                  {addBackChoices.map((sku) => (
+                    <option key={sku.id} value={sku.id}>
+                      [{sku.type}] {sku.sku} — {sku.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Quantity *</label>
+                <input
+                  type="number"
+                  name="quantity"
+                  min="1"
+                  className="form-input"
+                  placeholder="0"
+                  required
+                />
+              </div>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Reason / note (optional)</label>
+              <input
+                type="text"
+                name="reason"
+                className="form-input"
+                placeholder="Recovered from rejection tray"
+              />
+            </div>
+            <div className="flex gap-2 mt-2">
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isSubmitting || !addBackSku}
+              >
+                {isSubmitting ? "Adding..." : "Add to Inventory"}
+              </button>
+            </div>
+          </Form>
+        </div>
+      </div>
 
-          {/* Source rejections — audit drilldown */}
-          <div className="border-t bg-gray-50">
-            <button
-              type="button"
-              onClick={() => setShowSources((v) => !v)}
-              className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center justify-between"
-            >
-              <span>
-                {showSources ? "▾" : "▸"} Source rejections ({pendingTrays.length})
-              </span>
-              <span className="text-xs text-gray-500">audit detail</span>
-            </button>
-            {showSources && (
-              <div className="px-4 pb-4 space-y-3">
-                {pendingTrays.map((tray) => (
-                  <div key={tray.id} className="bg-white border rounded p-3 text-sm">
-                    <div className="flex items-baseline justify-between flex-wrap gap-2">
-                      <div>
-                        <span className="font-mono font-semibold">{tray.outputSku.sku}</span>{" "}
-                        <span className="text-gray-600">— {tray.outputSku.name}</span>
+      {/* Assembly Component Reference — quick lookup of "what's inside" each
+          assembly so an admin can decide what's worth pulling out of the
+          physical tray. */}
+      <div className="card mb-6">
+        <div className="card-header">
+          <h2 className="card-title">Assembly Component Reference</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Click an assembly to see its direct components. Useful when
+            deciding what to add back from a physical tray of rejected
+            material.
+          </p>
+        </div>
+        <div className="card-body">
+          <input
+            type="text"
+            placeholder="Filter assemblies..."
+            value={bomSearch}
+            onChange={(e) => setBomSearch(e.target.value)}
+            className="form-input mb-3"
+          />
+          {filteredBoms.length === 0 ? (
+            <div className="text-sm text-gray-500 py-4 text-center">
+              No assemblies match.
+            </div>
+          ) : (
+            <div className="divide-y border rounded">
+              {filteredBoms.map((sku) => {
+                const isOpen = expandedBom === sku.id;
+                return (
+                  <div key={sku.id}>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedBom(isOpen ? null : sku.id)}
+                      className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-gray-500">{isOpen ? "▾" : "▸"}</span>
+                        <span className="font-mono text-sm">{sku.sku}</span>
+                        <span className="text-sm text-gray-600">{sku.name}</span>
                       </div>
-                      <div className="text-xs text-gray-500">
-                        {tray.rejectedQty} rejected · {tray.processName} ·{" "}
-                        {new Date(tray.createdAt).toLocaleDateString()}
-                        {tray.createdBy && (
-                          <> · {tray.createdBy.firstName} {tray.createdBy.lastName}</>
-                        )}
+                      <div className="flex items-center gap-2">
+                        <span className={`badge text-xs ${
+                          sku.type === "ASSEMBLY"
+                            ? "bg-blue-100 text-blue-800"
+                            : "bg-green-100 text-green-800"
+                        }`}>
+                          {sku.type}
+                        </span>
+                        <span className="text-xs text-gray-400">
+                          {sku.bomComponents.length} component{sku.bomComponents.length !== 1 ? "s" : ""}
+                        </span>
                       </div>
-                    </div>
-                    {tray.rejectionReason && (
-                      <div className="text-xs text-gray-600 italic mt-1">
-                        Reason: {tray.rejectionReason}
+                    </button>
+                    {isOpen && (
+                      <div className="px-4 pb-3 pl-12 bg-gray-50">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-gray-600">
+                              <th className="py-1">Component SKU</th>
+                              <th className="py-1">Name</th>
+                              <th className="py-1">Type</th>
+                              <th className="py-1 text-right">Qty per unit</th>
+                              <th className="py-1 text-right"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sku.bomComponents.map((bom) => (
+                              <tr key={bom.id} className="border-t border-gray-200">
+                                <td className="py-1 font-mono text-xs">{bom.componentSku.sku}</td>
+                                <td className="py-1 text-xs text-gray-600">{bom.componentSku.name}</td>
+                                <td className="py-1">
+                                  <span className="text-xs text-gray-500">{bom.componentSku.type}</span>
+                                </td>
+                                <td className="py-1 text-right">{bom.quantity}</td>
+                                <td className="py-1 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setAddBackSku(bom.componentSku.id);
+                                      // Scroll to the form
+                                      window.scrollTo({ top: 0, behavior: "smooth" });
+                                    }}
+                                    className="text-blue-600 hover:underline text-xs"
+                                  >
+                                    Add back →
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
                     )}
-                    <div className="mt-2 text-xs text-gray-700">
-                      {tray.items.map((item) => {
-                        const remaining =
-                          item.quantity - item.recoveredQty - item.disposedQty - item.brokenApartQty;
-                        return (
-                          <span
-                            key={item.id}
-                            className="inline-block mr-3 mb-1"
-                          >
-                            <span className="font-mono">{item.componentSku.sku}</span>:{" "}
-                            {remaining}/{item.quantity} remaining
-                          </span>
-                        );
-                      })}
-                    </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
-      {/* Disposal Form */}
+      {/* Manual Disposal Form */}
       <div className="card mb-6">
         <div className="card-header bg-red-50">
           <h2 className="card-title text-red-900">Dispose of Damaged Inventory</h2>
           <p className="text-sm text-red-700 mt-1">
-            This will permanently remove items from inventory
+            This will permanently remove items from inventory.
           </p>
         </div>
         <div className="card-body">
-          <Form method="post" onSubmit={handleSubmit}>
+          <Form method="post">
             <input type="hidden" name="intent" value="dispose" />
-
             <div className="space-y-4">
-              {/* SKU Selection */}
               <div className="form-group">
                 <label className="form-label">SKU *</label>
                 <input
@@ -680,15 +454,11 @@ export default function Disposals() {
                     </option>
                   ))}
                 </select>
-                {filteredSkus.length === 0 && searchTerm && (
-                  <p className="text-sm text-gray-500 mt-1">No SKUs match your search</p>
-                )}
               </div>
 
-              {/* State Selection */}
-              {selectedSku && (
+              {selectedSkuData && (
                 <div className="form-group">
-                  <label className="form-label">Inventory State *</label>
+                  <label className="form-label">Inventory state *</label>
                   <select
                     name="state"
                     value={selectedState}
@@ -697,67 +467,51 @@ export default function Disposals() {
                     required
                   >
                     <option value="">Select state...</option>
-                    {availableStates.map((item) => (
-                      <option key={item.state} value={item.state}>
-                        {item.state} (Available: {item.quantity})
+                    {availableStates.map((s) => (
+                      <option key={s.state} value={s.state}>
+                        {s.state} ({s.quantity} available)
                       </option>
                     ))}
                   </select>
-                  {availableStates.length === 0 && (
-                    <p className="text-sm text-red-600 mt-1">
-                      No inventory available for this SKU
-                    </p>
-                  )}
                 </div>
               )}
 
-              {/* Quantity */}
-              {selectedState && (
-                <div className="form-group">
-                  <label className="form-label">Quantity to Dispose *</label>
-                  <input
-                    type="number"
-                    name="quantity"
-                    value={quantity}
-                    onChange={(e) => setQuantity(parseInt(e.target.value, 10) || 0)}
-                    className="form-input"
-                    min="1"
-                    max={availableStates.find(s => s.state === selectedState)?.quantity || 0}
-                    required
-                  />
-                  <p className="text-sm text-gray-500 mt-1">
-                    Max: {availableStates.find(s => s.state === selectedState)?.quantity || 0} units available
-                  </p>
-                </div>
-              )}
-
-              {/* Reason */}
               <div className="form-group">
-                <label className="form-label">Reason for Disposal *</label>
-                <textarea
+                <label className="form-label">Quantity *</label>
+                <input
+                  type="number"
+                  name="quantity"
+                  min="1"
+                  value={quantity || ""}
+                  onChange={(e) => setQuantity(parseInt(e.target.value, 10) || 0)}
+                  className="form-input"
+                  placeholder="0"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Reason *</label>
+                <input
+                  type="text"
                   name="reason"
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
-                  className="form-textarea"
-                  rows={3}
-                  placeholder="e.g., Damaged during production, Quality defect, Expired material..."
+                  className="form-input"
+                  placeholder="Damage description, broken in handling, etc."
                   required
                 />
-                <p className="text-sm text-gray-500 mt-1">
-                  Describe why this inventory is being disposed
-                </p>
               </div>
 
-              {/* Submit Button */}
-              <div className="flex gap-3">
+              <div className="flex gap-2">
                 <button
                   type="submit"
-                  className="btn bg-red-600 text-white hover:bg-red-700"
-                  disabled={isSubmitting || !selectedSku || !selectedState || !quantity || !reason}
+                  className="btn btn-error"
+                  disabled={isSubmitting || !selectedSku || !quantity || !selectedState || !reason}
                 >
-                  {isSubmitting ? "Disposing..." : "Dispose Inventory"}
+                  {isSubmitting ? "Disposing..." : "Dispose"}
                 </button>
-                {(selectedSku || quantity || reason) && (
+                {selectedSku && (
                   <button
                     type="button"
                     onClick={() => {
@@ -778,11 +532,14 @@ export default function Disposals() {
         </div>
       </div>
 
-      {/* Recent Disposals */}
+      {/* Recent disposals — covers manual disposals AND auto-logged
+          per-component disposals from approved-with-rejections tasks. */}
       <div className="card">
         <div className="card-header">
           <h2 className="card-title">Recent Disposals</h2>
-          <p className="text-sm text-gray-500">Last 30 days</p>
+          <p className="text-sm text-gray-500">
+            Last 30 days · includes rejections from worker task approvals
+          </p>
         </div>
         <div className="card-body">
           {recentDisposals.length === 0 ? (
@@ -818,7 +575,7 @@ export default function Disposals() {
                       </td>
                       <td>
                         <span className="badge bg-gray-100 text-gray-700 text-xs">
-                          {disposal.fromState}
+                          {disposal.fromState ?? "—"}
                         </span>
                       </td>
                       <td className="max-w-xs text-sm">

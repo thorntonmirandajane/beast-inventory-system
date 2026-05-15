@@ -354,27 +354,31 @@ export async function approveTimeEntry(
             console.log(`[Approve] Deduction of ${comp.sku} successful`);
           }
 
-          // Park the rejected portion's worth of components in the
-          // Rejection Tray so an admin can cherry-pick what's salvageable.
+          // Log a DISPOSED entry per direct component for the rejected
+          // portion. The inventory was already deducted above as CONSUMED;
+          // these extra log rows make the rejection visible in the recent-
+          // disposals list so an admin can decide what (if anything) to
+          // physically pull from the tray and add back via the Disposals
+          // page's "Add Back to Inventory" form.
           if (rejectedQuantity > 0 && directComponents.length > 0) {
-            await tx.rejectionTray.create({
-              data: {
-                timeEntryLineId: line.id,
-                outputSkuId: line.skuId,
-                rejectedQty: rejectedQuantity,
-                processName: line.processName,
-                rejectionReason: line.rejectionReason,
-                createdById: approvedById,
-                items: {
-                  create: directComponents.map((bom) => ({
-                    componentSkuId: bom.componentSku.id,
-                    quantity: bom.quantity * rejectedQuantity,
-                  })),
+            for (const bom of directComponents) {
+              await tx.inventoryLog.create({
+                data: {
+                  skuId: bom.componentSku.id,
+                  action: "DISPOSED",
+                  quantity: bom.quantity * rejectedQuantity,
+                  relatedResource: entry.id,
+                  relatedResourceType: "TIME_ENTRY",
+                  processName: line.processName,
+                  notes:
+                    `Rejected during ${line.processName} of ${line.sku?.sku ?? "?"} (${rejectedQuantity} unit${rejectedQuantity !== 1 ? "s" : ""})` +
+                    (line.rejectionReason ? ` — ${line.rejectionReason}` : ""),
+                  performedById: approvedById ?? null,
                 },
-              },
-            });
+              });
+            }
             details.push(
-              `  Parked ${directComponents.length} component type(s) in Rejection Tray for ${rejectedQuantity} rejected unit(s)`
+              `  Logged ${directComponents.length} disposal entries for ${rejectedQuantity} rejected unit(s)`
             );
           }
         } else if (transition.consumes) {
