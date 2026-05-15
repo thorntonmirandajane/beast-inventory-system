@@ -527,8 +527,14 @@ model RejectionTrayItem {
   quantity        Int
   recoveredQty    Int           @default(0)
   disposedQty     Int           @default(0)
+  // "Broken apart" means the user decided to disassemble the unit so they
+  // can act on its sub-components individually. The original line stays in
+  // the tray as a record, but a new tray item is created for each direct
+  // child of the broken-apart assembly.
+  brokenApartQty  Int           @default(0)
 
   @@index([rejectionTrayId])
+  @@index([componentSkuId])
   @@map("rejection_tray_items")
 }
 
