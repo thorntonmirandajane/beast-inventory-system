@@ -552,6 +552,7 @@ export default function Disposals() {
                 <thead>
                   <tr>
                     <th>Date/Time</th>
+                    <th>Source</th>
                     <th>SKU</th>
                     <th>Quantity</th>
                     <th>State</th>
@@ -559,30 +560,50 @@ export default function Disposals() {
                   </tr>
                 </thead>
                 <tbody>
-                  {recentDisposals.map((disposal) => (
-                    <tr key={disposal.id}>
-                      <td className="text-sm whitespace-nowrap">
-                        {new Date(disposal.createdAt).toLocaleString()}
-                      </td>
-                      <td>
-                        <div>
+                  {recentDisposals.map((disposal) => {
+                    // InventoryLog rows from task-approval rejections carry
+                    // relatedResourceType = "TIME_ENTRY". Manual disposals
+                    // come from the form above with type "DISPOSAL".
+                    const isRejection = disposal.relatedResourceType === "TIME_ENTRY";
+                    return (
+                      <tr key={disposal.id} className={isRejection ? "bg-orange-50/50" : undefined}>
+                        <td className="text-sm whitespace-nowrap">
+                          {new Date(disposal.createdAt).toLocaleString()}
+                        </td>
+                        <td>
+                          {isRejection ? (
+                            <span className="badge bg-orange-100 text-orange-800 text-xs">
+                              Rejection
+                            </span>
+                          ) : (
+                            <span className="badge bg-gray-100 text-gray-700 text-xs">
+                              Manual
+                            </span>
+                          )}
+                          {disposal.processName && (
+                            <div className="text-xs text-gray-500 mt-0.5 font-mono">
+                              {disposal.processName}
+                            </div>
+                          )}
+                        </td>
+                        <td>
                           <div className="font-mono text-sm">{disposal.sku.sku}</div>
                           <div className="text-xs text-gray-500">{disposal.sku.name}</div>
-                        </div>
-                      </td>
-                      <td className="font-semibold text-red-600">
-                        {disposal.quantity.toLocaleString()}
-                      </td>
-                      <td>
-                        <span className="badge bg-gray-100 text-gray-700 text-xs">
-                          {disposal.fromState ?? "—"}
-                        </span>
-                      </td>
-                      <td className="max-w-xs text-sm">
-                        {disposal.notes || <span className="text-gray-400">—</span>}
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="font-semibold text-red-600">
+                          {disposal.quantity.toLocaleString()}
+                        </td>
+                        <td>
+                          <span className="badge bg-gray-100 text-gray-700 text-xs">
+                            {disposal.fromState ?? "—"}
+                          </span>
+                        </td>
+                        <td className="max-w-xs text-sm">
+                          {disposal.notes || <span className="text-gray-400">—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
