@@ -348,17 +348,12 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       return { error: "Name is required" };
     }
 
-    // Parse BOM components
-    const components: { skuId: string; quantity: number }[] = [];
-    let i = 0;
-    while (formData.get(`components[${i}][skuId]`)) {
-      const componentSkuId = formData.get(`components[${i}][skuId]`) as string;
-      const quantity = parseInt(formData.get(`components[${i}][quantity]`) as string, 10);
-      if (componentSkuId && quantity > 0) {
-        components.push({ skuId: componentSkuId, quantity });
-      }
-      i++;
-    }
+    // NOTE: This handler used to also wipe + recreate BOM components from
+    // `components[N][skuId]` form fields, but the Edit SKU form on this
+    // page no longer renders those inputs (BOM editing moved to the
+    // Bill of Materials card with its own add/update/remove intents).
+    // The old code silently deleted the entire BOM every time the user
+    // clicked "Save Changes" on the Edit SKU form. Removed.
 
     // Update SKU
     await prisma.sku.update({
@@ -376,22 +371,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       },
     });
 
-    // Update BOM - delete all and recreate
-    await prisma.bomComponent.deleteMany({ where: { parentSkuId: id } });
-    if (components.length > 0) {
-      await prisma.bomComponent.createMany({
-        data: components.map((c) => ({
-          parentSkuId: id!,
-          componentSkuId: c.skuId,
-          quantity: c.quantity,
-        })),
-      });
-    }
-
     await createAuditLog(user.id, "UPDATE_SKU", "Sku", id!, {
       name,
       isActive,
-      componentCount: components.length,
     });
 
     return { success: true, message: "SKU updated successfully" };
