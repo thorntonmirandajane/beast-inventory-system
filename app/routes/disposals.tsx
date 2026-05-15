@@ -42,26 +42,82 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 100,
   });
 
-  // Assembly + Completed SKUs with their direct BOM components, used as a
-  // reference panel — gives the admin a quick "what's inside each
-  // assembly?" lookup when deciding what to add back from the physical
-  // rejection tray.
-  const buildableSkus = await prisma.sku.findMany({
-    where: {
-      isActive: true,
-      type: { in: ["ASSEMBLY", "COMPLETED"] },
-      bomComponents: { some: {} },
-    },
-    include: {
+  // Pull every active SKU + its direct BOM rows once, then build full
+  // recursive trees in memory below. Avoids N+1 query thrash on a
+  // small-ish catalog.
+  const allSkusWithBom = await prisma.sku.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      sku: true,
+      name: true,
+      type: true,
       bomComponents: {
-        include: {
-          componentSku: { select: { id: true, sku: true, name: true, type: true } },
-        },
+        select: { componentSkuId: true, quantity: true },
         orderBy: { id: "asc" },
       },
     },
-    orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
+  const skuMap = new Map(allSkusWithBom.map((s) => [s.id, s]));
+
+  // For each Assembly/Completed root SKU, emit the full descendant tree
+  // (one row per node at every depth). The admin uses this to decide
+  // what to add back: maybe the tipped-ferrule is bent but the tip
+  // inside is still good.
+  type TreeNode = {
+    id: string;
+    sku: string;
+    name: string;
+    type: string;
+    depth: number;
+    qtyPerParent: number;
+    qtyPerRoot: number;
+    isCycle?: boolean;
+  };
+
+  function walk(rootId: string, multiplier: number, depth: number, visited: Set<string>, out: TreeNode[]) {
+    const sku = skuMap.get(rootId);
+    if (!sku) return;
+    for (const bom of sku.bomComponents) {
+      const child = skuMap.get(bom.componentSkuId);
+      if (!child) continue;
+      const qtyPerRoot = bom.quantity * multiplier;
+      const isCycle = visited.has(child.id);
+      out.push({
+        id: child.id,
+        sku: child.sku,
+        name: child.name,
+        type: child.type,
+        depth: depth + 1,
+        qtyPerParent: bom.quantity,
+        qtyPerRoot,
+        isCycle: isCycle || undefined,
+      });
+      if (!isCycle) {
+        const next = new Set(visited);
+        next.add(child.id);
+        walk(child.id, qtyPerRoot, depth + 1, next, out);
+      }
+    }
+  }
+
+  const buildableSkus = allSkusWithBom
+    .filter((s) => (s.type === "ASSEMBLY" || s.type === "COMPLETED") && s.bomComponents.length > 0)
+    .sort((a, b) => {
+      if (a.type !== b.type) return a.type === "ASSEMBLY" ? -1 : 1;
+      return a.sku.localeCompare(b.sku);
+    })
+    .map((root) => {
+      const tree: TreeNode[] = [];
+      walk(root.id, 1, 0, new Set([root.id]), tree);
+      return {
+        id: root.id,
+        sku: root.sku,
+        name: root.name,
+        type: root.type,
+        tree,
+      };
+    });
 
   return { user, skusWithInventory, recentDisposals, buildableSkus };
 };
@@ -217,11 +273,16 @@ export default function Disposals() {
     return sku.sku.toLowerCase().includes(search) || sku.name.toLowerCase().includes(search);
   });
 
-  // BOM reference: filter by SKU code/name match in the assembly itself.
-  const filteredBoms = buildableSkus.filter((sku) => {
+  // BOM reference: filter by SKU code/name match on the assembly itself
+  // OR on any descendant in its tree (so searching "tip" surfaces every
+  // assembly that uses TIP-STEEL deep in its tree).
+  const filteredBoms = buildableSkus.filter((root) => {
     if (!bomSearch) return true;
-    const search = bomSearch.toLowerCase();
-    return sku.sku.toLowerCase().includes(search) || sku.name.toLowerCase().includes(search);
+    const s = bomSearch.toLowerCase();
+    if (root.sku.toLowerCase().includes(s) || root.name.toLowerCase().includes(s)) return true;
+    return root.tree.some(
+      (node) => node.sku.toLowerCase().includes(s) || node.name.toLowerCase().includes(s)
+    );
   });
 
   return (
@@ -363,7 +424,7 @@ export default function Disposals() {
                           {sku.type}
                         </span>
                         <span className="text-xs text-gray-400">
-                          {sku.bomComponents.length} component{sku.bomComponents.length !== 1 ? "s" : ""}
+                          {sku.tree.length} node{sku.tree.length !== 1 ? "s" : ""} in tree
                         </span>
                       </div>
                     </button>
@@ -372,34 +433,76 @@ export default function Disposals() {
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="text-left text-gray-600">
-                              <th className="py-1">Component SKU</th>
-                              <th className="py-1">Name</th>
+                              <th className="py-1">Component</th>
                               <th className="py-1">Type</th>
-                              <th className="py-1 text-right">Qty per unit</th>
-                              <th className="py-1 text-right"></th>
+                              <th className="py-1 text-right">Qty per parent</th>
+                              <th className="py-1 text-right">Qty per {sku.sku}</th>
+                              <th className="py-1 text-right">Add back</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {sku.bomComponents.map((bom) => (
-                              <tr key={bom.id} className="border-t border-gray-200">
-                                <td className="py-1 font-mono text-xs">{bom.componentSku.sku}</td>
-                                <td className="py-1 text-xs text-gray-600">{bom.componentSku.name}</td>
+                            {sku.tree.map((node, idx) => (
+                              <tr key={`${sku.id}-${idx}`} className="border-t border-gray-200">
                                 <td className="py-1">
-                                  <span className="text-xs text-gray-500">{bom.componentSku.type}</span>
-                                </td>
-                                <td className="py-1 text-right">{bom.quantity}</td>
-                                <td className="py-1 text-right">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setAddBackSku(bom.componentSku.id);
-                                      // Scroll to the form
-                                      window.scrollTo({ top: 0, behavior: "smooth" });
-                                    }}
-                                    className="text-blue-600 hover:underline text-xs"
+                                  <div
+                                    className="font-mono text-xs"
+                                    style={{ paddingLeft: `${(node.depth - 1) * 16}px` }}
                                   >
-                                    Add back →
-                                  </button>
+                                    {node.depth > 1 && <span className="text-gray-400">└─ </span>}
+                                    {node.sku}
+                                    {node.isCycle && (
+                                      <span className="ml-1 text-orange-600">(cycle)</span>
+                                    )}
+                                  </div>
+                                  <div
+                                    className="text-xs text-gray-500"
+                                    style={{ paddingLeft: `${(node.depth - 1) * 16 + (node.depth > 1 ? 16 : 0)}px` }}
+                                  >
+                                    {node.name}
+                                  </div>
+                                </td>
+                                <td className="py-1">
+                                  <span className={`badge text-xs ${
+                                    node.type === "RAW"
+                                      ? "bg-gray-100 text-gray-700"
+                                      : node.type === "ASSEMBLY"
+                                      ? "bg-blue-100 text-blue-800"
+                                      : "bg-green-100 text-green-800"
+                                  }`}>
+                                    {node.type}
+                                  </span>
+                                </td>
+                                <td className="py-1 text-right">{node.qtyPerParent}</td>
+                                <td className="py-1 text-right text-gray-600">{node.qtyPerRoot}</td>
+                                <td className="py-1 text-right">
+                                  {node.isCycle ? (
+                                    <span className="text-xs text-gray-400">—</span>
+                                  ) : (
+                                    <Form method="post" className="inline-flex items-center gap-1 justify-end">
+                                      <input type="hidden" name="intent" value="add-back" />
+                                      <input type="hidden" name="skuId" value={node.id} />
+                                      <input
+                                        type="hidden"
+                                        name="reason"
+                                        value={`Recovered from ${sku.sku} rejection`}
+                                      />
+                                      <input
+                                        type="number"
+                                        name="quantity"
+                                        min="1"
+                                        defaultValue={1}
+                                        className="form-input w-16 text-xs text-right"
+                                        required
+                                      />
+                                      <button
+                                        type="submit"
+                                        className="btn btn-xs btn-primary"
+                                        disabled={isSubmitting}
+                                      >
+                                        Add back
+                                      </button>
+                                    </Form>
+                                  )}
                                 </td>
                               </tr>
                             ))}
