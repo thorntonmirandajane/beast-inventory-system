@@ -258,7 +258,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // stored manual value so the page still calculates if Shopify is down.
     const skuKey = normSku(sku.sku);
     const liveGallatin = gallatinQtyByNormSku.get(skuKey);
-    const currentInGallatin = liveGallatin ?? forecast?.currentInGallatin ?? 0;
+    // Floor at 0 — Shopify reports negative "available" for oversold items,
+    // but we never show negative on-hand inventory.
+    const currentInGallatin = Math.max(0, liveGallatin ?? forecast?.currentInGallatin ?? 0);
     const forecastedQty = forecast?.quantity || 0;
     const unfulfilledQty = unfulfilledQtyBySku.get(skuKey) ?? 0;
     const programmedQty = programmedQtyBySku.get(skuKey) ?? 0;
@@ -382,12 +384,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
   const gallatinRows = gallatinInventory
     ? allCompletedAndRawSkus
-        .map((s) => ({
-          sku: s.sku,
-          name: s.name,
-          type: s.type,
-          available: gallatinInventory!.get(s.sku) ?? null,
-        }))
+        .map((s) => {
+          // Normalized lookup (Shopify SKU casing differs from ours) and floor
+          // at 0 so oversold items never display as negative inventory.
+          const v = gallatinQtyByNormSku.get(normSku(s.sku));
+          return {
+            sku: s.sku,
+            name: s.name,
+            type: s.type,
+            available: v == null ? null : Math.max(0, v),
+          };
+        })
         .filter((r) => r.available !== null) as { sku: string; name: string; type: string; available: number }[]
     : [];
 
