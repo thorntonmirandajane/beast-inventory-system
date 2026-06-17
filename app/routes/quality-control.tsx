@@ -39,7 +39,53 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       select: { processName: true, displayName: true },
     });
 
-    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs, justApproved: false };
+    // Preview of what inventory WILL change on approval: each accepted line
+    // produces its output SKU and consumes its immediate BOM children. Wrapped
+    // so a preview hiccup can never break the review page.
+    let movementPreview: {
+      output: { sku: string; name: string; qty: number };
+      consumes: { sku: string; name: string; qty: number }[];
+    }[] = [];
+    try {
+      if (timeEntry) {
+        const lineSkuIds = [
+          ...new Set(
+            timeEntry.lines.filter((l) => !l.isMisc && l.skuId).map((l) => l.skuId as string)
+          ),
+        ];
+        const boms = await prisma.bomComponent.findMany({
+          where: { parentSkuId: { in: lineSkuIds } },
+          include: { componentSku: { select: { sku: true, name: true } } },
+        });
+        const bomByParent = new Map<string, typeof boms>();
+        for (const b of boms) {
+          const arr = bomByParent.get(b.parentSkuId) ?? [];
+          arr.push(b);
+          bomByParent.set(b.parentSkuId, arr);
+        }
+        for (const line of timeEntry.lines) {
+          if (line.isMisc || !line.skuId || !line.sku) continue;
+          const base = line.adminAdjustedQuantity ?? line.quantityCompleted;
+          const rejected = line.isRejected ? base : line.rejectionQuantity ?? 0;
+          const accepted = base - rejected;
+          if (accepted <= 0) continue;
+          const children = bomByParent.get(line.skuId) ?? [];
+          movementPreview.push({
+            output: { sku: line.sku.sku, name: line.sku.name, qty: accepted },
+            consumes: children.map((c) => ({
+              sku: c.componentSku.sku,
+              name: c.componentSku.name,
+              qty: c.quantity * accepted,
+            })),
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[QC] movement preview failed:", e);
+      movementPreview = [];
+    }
+
+    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs, justApproved: false, movementPreview };
   }
 
   // List view
@@ -96,7 +142,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Check if we just approved an entry
   const justApproved = url.searchParams.get("approved") === "true";
 
-  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs, justApproved };
+  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs, justApproved, movementPreview: [] };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -393,7 +439,7 @@ function RejectTaskModal({
 }
 
 export default function QualityControl() {
-  const { user, timeEntries, timeEntry, tab, entryId, processConfigs, justApproved } = useLoaderData<typeof loader>();
+  const { user, timeEntries, timeEntry, tab, entryId, processConfigs, justApproved, movementPreview } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -627,6 +673,40 @@ export default function QualityControl() {
                         </div>
                       )
                   )}
+                </div>
+              )}
+
+              {timeEntry.status === "PENDING" && movementPreview.length > 0 && (
+                <div className="card mt-6">
+                  <div className="card-header">
+                    <h3 className="card-title">On approval, inventory will change</h3>
+                  </div>
+                  <div className="card-body space-y-3 text-sm">
+                    {movementPreview.map((m, i) => (
+                      <div key={i} className="border-b last:border-0 pb-2">
+                        <div className="font-medium text-green-700">
+                          + {m.output.qty.toLocaleString()} × {m.output.sku}{" "}
+                          <span className="text-gray-500 font-normal">({m.output.name})</span>
+                        </div>
+                        {m.consumes.length > 0 ? (
+                          <ul className="mt-1 ml-4 list-disc text-gray-600">
+                            {m.consumes.map((c, j) => (
+                              <li key={j}>
+                                − {c.qty.toLocaleString()} × {c.sku}{" "}
+                                <span className="text-gray-400">({c.name})</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="ml-4 text-xs text-gray-400">No BOM components configured</div>
+                        )}
+                      </div>
+                    ))}
+                    <p className="text-xs text-gray-500">
+                      Components are consumed from stock. If any go negative, you'll see a warning
+                      after approving.
+                    </p>
+                  </div>
                 </div>
               )}
 
