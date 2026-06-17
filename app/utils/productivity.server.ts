@@ -1,6 +1,6 @@
 import type { InventoryState, TimeEntryLine, WorkerTimeEntry } from "@prisma/client";
 import prisma from "../db.server";
-import { addInventory, deductInventory } from "./inventory.server";
+import { applyProduction } from "./inventory.server";
 import { createAuditLog } from "./auth.server";
 
 // Process-to-inventory transition mapping
@@ -292,144 +292,60 @@ export async function approveTimeEntry(
         details.push(`  Transition: produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
         console.log(`[Approve] Transition found: consumes ${transition.consumes}, produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
 
-        // Deduct inventory - either from direct BOM components or from a
-        // specific state on the output SKU itself.
-        if (transition.consumesRawFromBom) {
-          // Deduct only the SKU's DIRECT BOM components (not their nested
-          // sub-components). Each component is pulled from the state
-          // appropriate to its SKU type:
-          //   RAW       -> ["RAW"]
-          //   ASSEMBLY  -> ["ASSEMBLED", "COMPLETED"]  (assemblies that
-          //                have already passed stud-testing live in
-          //                COMPLETED, so allow either)
-          //   COMPLETED -> ["COMPLETED"]
-          // This matches how the production workflow actually flows —
-          // each step consumes its upstream step's output instead of
-          // re-deducting the raw materials those steps already used.
-          const directComponents = await tx.bomComponent.findMany({
-            where: { parentSkuId: line.skuId },
-            include: { componentSku: true },
-          });
-
-          // Deduct for the FULL attempted quantity (baseQuantity), not
-          // just the accepted portion — rejected attempts still physically
-          // consume their components. The rejected portion gets parked in
-          // the rejection tray below for admin cherry-picking.
-          const consumeQuantity = baseQuantity;
-          details.push(
-            `  Found ${directComponents.length} direct BOM components (consuming ${consumeQuantity}-unit worth — ${finalQuantity} accepted + ${rejectedQuantity} rejected)`
-          );
-          console.log(
-            `[Approve] Found ${directComponents.length} direct components; consuming ${consumeQuantity}-unit worth`
-          );
-
-          for (const bom of directComponents) {
-            const comp = bom.componentSku;
-            const needed = bom.quantity * consumeQuantity;
-            const states: InventoryState[] =
-              comp.type === "RAW"
-                ? ["RAW"]
-                : comp.type === "ASSEMBLY"
-                ? ["ASSEMBLED", "COMPLETED"]
-                : ["COMPLETED"];
-
-            details.push(`    Deducting ${needed} of ${comp.sku} (${comp.type}) from ${states.join("/")}`);
-            console.log(`[Approve] Deducting ${needed} units of ${comp.sku} (${comp.type}) from ${states.join("/")}`);
-            const deductResult = await deductInventory(
-              comp.id,
-              needed,
-              states,
-              entry.id,
-              "TIME_ENTRY",
-              line.processName,
-              entry.userId,
-              tx
-            );
-
-            if (!deductResult.success) {
-              details.push(`    FAILED: ${deductResult.error}`);
-              console.error(`[Approve] Deduction of ${comp.sku} failed: ${deductResult.error}`);
-              throw new Error(`Failed to deduct ${comp.sku}: ${deductResult.error}`);
-            }
-            console.log(`[Approve] Deduction of ${comp.sku} successful`);
-          }
-
-          // Log a DISPOSED entry per direct component for the rejected
-          // portion. The inventory was already deducted above as CONSUMED;
-          // these extra log rows make the rejection visible in the recent-
-          // disposals list so an admin can decide what (if anything) to
-          // physically pull from the tray and add back via the Disposals
-          // page's "Add Back to Inventory" form.
-          if (rejectedQuantity > 0 && directComponents.length > 0) {
-            for (const bom of directComponents) {
-              await tx.inventoryLog.create({
-                data: {
-                  skuId: bom.componentSku.id,
-                  action: "DISPOSED",
-                  quantity: bom.quantity * rejectedQuantity,
-                  relatedResource: entry.id,
-                  relatedResourceType: "TIME_ENTRY",
-                  processName: line.processName,
-                  notes:
-                    `Rejected during ${line.processName} of ${line.sku?.sku ?? "?"} (${rejectedQuantity} unit${rejectedQuantity !== 1 ? "s" : ""})` +
-                    (line.rejectionReason ? ` — ${line.rejectionReason}` : ""),
-                  performedById: approvedById ?? null,
-                },
-              });
-            }
-            details.push(
-              `  Logged ${directComponents.length} disposal entries for ${rejectedQuantity} rejected unit(s)`
-            );
-          }
-        } else if (transition.consumes) {
-          // Legacy behavior: deduct from specific inventory state
-          details.push(`  Deducting ${finalQuantity} ${transition.consumes} from ${skuName}`);
-          console.log(`[Approve] Deducting ${finalQuantity} units of ${transition.consumes} from SKU ${line.skuId}`);
-          const deductResult = await deductInventory(
-            line.skuId,
-            finalQuantity,
-            [transition.consumes],
-            entry.id,
-            "TIME_ENTRY",
-            line.processName,
-            entry.userId,
-            tx // Pass transaction client
-          );
-
-          if (!deductResult.success) {
-            details.push(`  FAILED: ${deductResult.error}`);
-            console.error(`[Approve] Deduction failed: ${deductResult.error}`);
-            throw new Error(`Failed to deduct inventory: ${deductResult.error}`);
-          }
-          console.log(`[Approve] Deduction successful`);
+        // Move inventory through the SINGLE production engine
+        // (app/utils/production.ts → applyProduction). Accepted units consume
+        // their immediate BOM children and produce the output; the output state
+        // is derived from the output SKU's type, so STUD_TESTING correctly lands
+        // broadheads in ASSEMBLED (not COMPLETED). No recursive BOM explosion —
+        // that was the double-deduction bug.
+        const accepted = await applyProduction(
+          line.skuId,
+          finalQuantity,
+          {
+            produce: true,
+            relatedResource: entry.id,
+            relatedResourceType: "TIME_ENTRY",
+            processName: line.processName,
+            performedById: entry.userId,
+          },
+          tx
+        );
+        if (!accepted.success) {
+          details.push(`  FAILED: ${accepted.error}`);
+          throw new Error(accepted.error ?? "Production failed");
+        }
+        details.push(`  Produced ${finalQuantity} ${skuName}, consumed its direct components`);
+        for (const w of accepted.warnings) {
+          details.push(`  WARNING: ${w}`);
+          console.warn(`[Approve] ${line.processName}: ${w}`);
         }
 
-        // Add produced inventory — only when there's actually something
-        // accepted. A 100%-rejected line still ran the deduct + tray flow
-        // above but produces no output.
-        if (transition.produces && finalQuantity > 0) {
-          details.push(`  Adding ${finalQuantity} ${transition.produces} to ${skuName}`);
-          console.log(`[Approve] Adding ${finalQuantity} units of ${transition.produces} to SKU ${line.skuId}`);
-          try {
-            await addInventory(
-              line.skuId,
-              finalQuantity,
-              transition.produces,
-              undefined,
-              undefined,
-              entry.id,
-              "TIME_ENTRY",
-              line.processName,
-              entry.userId,
-              tx // Pass transaction client
-            );
-            details.push(`  SUCCESS: Added ${finalQuantity} ${transition.produces}`);
-            console.log(`[Approve] Addition successful`);
-          } catch (addError) {
-            console.error(`[Approve] ERROR in addInventory:`, addError);
-            details.push(`  ERROR adding inventory: ${addError instanceof Error ? addError.message : String(addError)}`);
-            throw addError; // Re-throw to fail the transaction
+        // Rejected attempts physically consumed their children too, but yield
+        // no good output — for now they are scrapped (DISPOSED) and surface in
+        // the disposals list for add-back. PRODUCTION-PROCESS.md §4 (Phase 2)
+        // replaces this with per-component recover-or-scrap.
+        if (rejectedQuantity > 0) {
+          const rejected = await applyProduction(
+            line.skuId,
+            rejectedQuantity,
+            {
+              produce: false,
+              consumeAction: "DISPOSED",
+              relatedResource: entry.id,
+              relatedResourceType: "TIME_ENTRY",
+              processName: line.processName,
+              performedById: approvedById ?? entry.userId,
+              notes:
+                `Rejected during ${line.processName} of ${line.sku?.sku ?? "?"} (${rejectedQuantity} unit${rejectedQuantity !== 1 ? "s" : ""})` +
+                (line.rejectionReason ? ` — ${line.rejectionReason}` : ""),
+            },
+            tx
+          );
+          if (!rejected.success) {
+            details.push(`  FAILED (reject): ${rejected.error}`);
+            throw new Error(rejected.error ?? "Reject teardown failed");
           }
+          details.push(`  Scrapped ${rejectedQuantity} rejected unit(s) of ${skuName}`);
         }
 
         // Mark linked task as completed if any

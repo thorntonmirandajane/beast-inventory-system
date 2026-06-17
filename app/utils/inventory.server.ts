@@ -1,5 +1,6 @@
 import prisma from "../db.server";
 import type { InventoryState, SkuType, Prisma } from "@prisma/client";
+import { planProduction, type DirectBomLine } from "./production";
 
 // Type for Prisma client or transaction
 type PrismaClientOrTx = typeof prisma | Prisma.TransactionClient;
@@ -558,6 +559,11 @@ export async function deductInventory(
 
 /**
  * Execute a build - consume components and create output
+ *
+ * @deprecated Production should move inventory through ONE path: applyProduction()
+ * on QC approval (see PRODUCTION-PROCESS.md §1). This work-order path is a second
+ * way to record the same production and can double-count. Kept for now; to be
+ * rewired or retired in the path-consolidation step.
  */
 export async function executeBuild(
   workOrderId: string,
@@ -691,6 +697,157 @@ export async function executeBuild(
 }
 
 // ============================================
+// PRODUCTION ENGINE (single source of truth)
+// ============================================
+
+/** Add `qty` of a SKU into one state (merging into the default-location row). */
+async function addStock(
+  db: PrismaClientOrTx,
+  skuId: string,
+  qty: number,
+  state: InventoryState
+): Promise<void> {
+  const existing = await db.inventoryItem.findFirst({
+    where: { skuId, state, location: null },
+  });
+  if (existing) {
+    await db.inventoryItem.update({
+      where: { id: existing.id },
+      data: { quantity: existing.quantity + qty },
+    });
+  } else {
+    await db.inventoryItem.create({ data: { skuId, quantity: qty, state } });
+  }
+}
+
+/**
+ * FIFO-deduct `qty` of a SKU from one state. Allows going negative (a negative
+ * means a real discrepancy we want to SEE, not block the floor over) but
+ * reports how short it was so the caller can warn.
+ */
+async function deductStockFifo(
+  db: PrismaClientOrTx,
+  skuId: string,
+  qty: number,
+  state: InventoryState
+): Promise<{ shortBy: number }> {
+  const items = await db.inventoryItem.findMany({
+    where: { skuId, state, quantity: { gt: 0 } },
+    orderBy: { createdAt: "asc" },
+  });
+  const available = items.reduce((sum, i) => sum + i.quantity, 0);
+
+  let remaining = qty;
+  for (const item of items) {
+    if (remaining <= 0) break;
+    const toDeduct = Math.min(item.quantity, remaining);
+    const newQty = item.quantity - toDeduct;
+    if (newQty === 0) {
+      await db.inventoryItem.delete({ where: { id: item.id } });
+    } else {
+      await db.inventoryItem.update({ where: { id: item.id }, data: { quantity: newQty } });
+    }
+    remaining -= toDeduct;
+  }
+
+  if (remaining > 0) {
+    const anyRow = await db.inventoryItem.findFirst({ where: { skuId, state } });
+    if (anyRow) {
+      await db.inventoryItem.update({
+        where: { id: anyRow.id },
+        data: { quantity: anyRow.quantity - remaining },
+      });
+    } else {
+      await db.inventoryItem.create({ data: { skuId, quantity: -remaining, state } });
+    }
+  }
+
+  return { shortBy: Math.max(0, qty - available) };
+}
+
+export interface ApplyProductionResult {
+  success: boolean;
+  error?: string;
+  /** Non-fatal notices, e.g. a component that went negative. */
+  warnings: string[];
+}
+
+/**
+ * THE single inventory-movement path for production. Producing `qty` of an
+ * assembly consumes ONLY its immediate BOM children (each from the state its
+ * type dictates) and adds the output to its own state. No recursive BOM
+ * explosion here — that belongs to planning, and mixing the two is the
+ * double-deduction bug this engine replaces.
+ *
+ * @param opts.produce  set false to consume children without producing output
+ *                      (used for rejected/scrapped attempts — see PRODUCTION-PROCESS.md §4).
+ * @param opts.consumeAction  ledger action for the consume rows (CONSUMED for good
+ *                            production, DISPOSED for scrap).
+ */
+export async function applyProduction(
+  outputSkuId: string,
+  qty: number,
+  opts: {
+    produce?: boolean;
+    consumeAction?: "CONSUMED" | "DISPOSED";
+    relatedResource?: string;
+    relatedResourceType?: string;
+    processName?: string;
+    performedById?: string;
+    notes?: string;
+  },
+  client?: PrismaClientOrTx
+): Promise<ApplyProductionResult> {
+  const db = client || prisma;
+  const warnings: string[] = [];
+  if (qty <= 0) return { success: true, warnings };
+
+  const produce = opts.produce !== false;
+  const consumeAction = opts.consumeAction ?? "CONSUMED";
+
+  const output = await db.sku.findUnique({
+    where: { id: outputSkuId },
+    include: { bomComponents: { include: { componentSku: true } } },
+  });
+  if (!output) return { success: false, error: `SKU not found: ${outputSkuId}`, warnings };
+  if (output.bomComponents.length === 0) {
+    return { success: false, error: `SKU ${output.sku} has no BOM; cannot produce it`, warnings };
+  }
+
+  const directBom: DirectBomLine[] = output.bomComponents.map((b) => ({
+    componentSkuId: b.componentSkuId,
+    componentType: b.componentSku.type,
+    quantity: b.quantity,
+  }));
+
+  const moves = planProduction({ skuId: output.id, type: output.type }, qty, directBom);
+
+  for (const move of moves) {
+    if (move.reason === "PRODUCED") {
+      if (!produce) continue;
+      await addStock(db, move.skuId, move.delta, move.state);
+      await logInventoryMovement(
+        move.skuId, "PRODUCED", move.delta, undefined, move.state,
+        opts.relatedResource, opts.relatedResourceType, opts.processName, opts.notes, opts.performedById, db
+      );
+    } else {
+      const amount = -move.delta;
+      const { shortBy } = await deductStockFifo(db, move.skuId, amount, move.state);
+      if (shortBy > 0) {
+        const comp = output.bomComponents.find((b) => b.componentSkuId === move.skuId);
+        warnings.push(`${comp?.componentSku.sku ?? move.skuId} went negative by ${shortBy} in ${move.state}`);
+      }
+      await logInventoryMovement(
+        move.skuId, consumeAction, amount, move.state, undefined,
+        opts.relatedResource, opts.relatedResourceType, opts.processName, opts.notes, opts.performedById, db
+      );
+    }
+  }
+
+  return { success: true, warnings };
+}
+
+// ============================================
 // AUTO-DEDUCTION (for Spreadsheet UI)
 // ============================================
 
@@ -744,6 +901,12 @@ async function explodeBOM(
  * Automatically deduct BOM components when assembled/completed quantity increases
  * RECURSIVELY deducts all raw materials, even those in sub-assemblies
  * Called from inventory route when user edits quantity inline
+ *
+ * @deprecated This is the recursive "explode to raw" path that double-counts
+ * against the single-level production engine (applyProduction) — see
+ * test-production-engine.ts for the reproduction and PRODUCTION-PROCESS.md §1.
+ * Inventory-grid edits should become manual ADJUSTED corrections, not BOM
+ * deductions. Pending the path-consolidation decision; not yet removed.
  */
 export async function autoDeductRawMaterials(
   assemblySkuId: string,
