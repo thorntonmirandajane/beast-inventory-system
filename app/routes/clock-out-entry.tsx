@@ -110,6 +110,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Get process configs
   const processConfigs = await getAllProcessConfigs();
 
+  // Output SKUs a worker can report producing (assemblies + finished packs)
+  const skus = await prisma.sku.findMany({
+    where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } },
+    select: { id: true, sku: true, name: true, type: true },
+    orderBy: [{ type: "asc" }, { sku: "asc" }],
+  });
+
   // Calculate total hours worked
   const totalMinutes = Math.round(
     (clockOutEvent.timestamp.getTime() - clockInEvent.timestamp.getTime()) /
@@ -128,6 +135,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     breakMinutes,
     totalMinutes,
     workedMinutes,
+    skus,
     processTransitions: PROCESS_TRANSITIONS,
   };
 };
@@ -174,13 +182,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
-interface LineEntry {
+interface StagedLine {
+  id: string;
   processName: string;
-  skuId: string | null;
+  processDisplayName: string;
+  skuId: string;
+  skuLabel: string;
   quantityCompleted: number;
   secondsPerUnit: number;
-  workerTaskId: string | null;
-  notes: string | null;
 }
 
 export default function ClockOutEntry() {
@@ -192,47 +201,66 @@ export default function ClockOutEntry() {
     activeTasks,
     processConfigs,
     breakMinutes,
-    totalMinutes,
     workedMinutes,
-    processTransitions,
+    skus,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
-  // Initialize lines with one entry per process config
-  const initialLines: LineEntry[] = processConfigs.map((config) => ({
-    processName: config.processName,
-    skuId: null,
-    quantityCompleted: 0,
-    secondsPerUnit: config.secondsPerUnit,
-    workerTaskId: null,
-    notes: null,
-  }));
+  // Staged lines: one per (process + SKU + qty) the worker completed.
+  const [staged, setStaged] = useState<StagedLine[]>([]);
+  const [proc, setProc] = useState("");
+  const [skuId, setSkuId] = useState("");
+  const [qty, setQty] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
 
-  const [lines, setLines] = useState<LineEntry[]>(initialLines);
-
-  const updateLine = (index: number, field: keyof LineEntry, value: any) => {
-    const newLines = [...lines];
-    newLines[index] = { ...newLines[index], [field]: value };
-    setLines(newLines);
+  const addLine = () => {
+    if (!proc) return setFormError("Pick a process.");
+    if (!skuId) return setFormError("Pick the SKU you completed.");
+    const q = parseInt(qty, 10);
+    if (!q || q <= 0) return setFormError("Enter a quantity greater than 0.");
+    const config = processConfigs.find((c) => c.processName === proc);
+    const sku = skus.find((s) => s.id === skuId);
+    setStaged([
+      ...staged,
+      {
+        id: crypto.randomUUID(),
+        processName: proc,
+        processDisplayName: config?.displayName || proc,
+        skuId,
+        skuLabel: sku ? `${sku.sku} — ${sku.name}` : skuId,
+        quantityCompleted: q,
+        secondsPerUnit: config?.secondsPerUnit || 60,
+      },
+    ]);
+    setFormError(null);
+    setSkuId("");
+    setQty("");
   };
 
-  // Calculate expected time
-  const totalExpectedSeconds = lines.reduce(
-    (sum, line) => sum + line.quantityCompleted * line.secondsPerUnit,
+  const removeLine = (id: string) =>
+    setStaged(staged.filter((s) => s.id !== id));
+
+  const linesJson = JSON.stringify(
+    staged.map((s) => ({
+      processName: s.processName,
+      skuId: s.skuId,
+      quantityCompleted: s.quantityCompleted,
+      secondsPerUnit: s.secondsPerUnit,
+    }))
+  );
+
+  const totalExpectedSeconds = staged.reduce(
+    (sum, l) => sum + l.quantityCompleted * l.secondsPerUnit,
     0
   );
   const expectedMinutes = totalExpectedSeconds / 60;
   const efficiency =
     workedMinutes > 0 ? (expectedMinutes / workedMinutes) * 100 : 0;
 
-  const formatTime = (date: Date | string) => {
-    return new Date(date).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
+  const formatTime = (date: Date | string) =>
+    new Date(date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   const formatMinutes = (minutes: number) => {
     const h = Math.floor(minutes / 60);
@@ -249,14 +277,14 @@ export default function ClockOutEntry() {
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">Clock Out - Enter Work Completed</h1>
+        <h1 className="page-title">Clock Out — Log What You Completed</h1>
         <p className="page-subtitle">
-          Record what you accomplished during this shift
+          Add each item you finished (process + SKU + quantity), then submit for QC.
         </p>
       </div>
 
       {actionData?.error && (
-        <div className="alert alert-error">{actionData.error}</div>
+        <div className="alert alert-error mb-6">{actionData.error}</div>
       )}
 
       {/* Shift Summary */}
@@ -268,205 +296,210 @@ export default function ClockOutEntry() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <div className="text-sm text-gray-500">Clock In</div>
-              <div className="text-xl font-semibold">
-                {formatTime(clockInEvent.timestamp)}
-              </div>
+              <div className="text-xl font-semibold">{formatTime(clockInEvent.timestamp)}</div>
             </div>
             <div>
               <div className="text-sm text-gray-500">Clock Out</div>
-              <div className="text-xl font-semibold">
-                {formatTime(clockOutEvent.timestamp)}
-              </div>
+              <div className="text-xl font-semibold">{formatTime(clockOutEvent.timestamp)}</div>
             </div>
             <div>
               <div className="text-sm text-gray-500">Break Time</div>
-              <div className="text-xl font-semibold">
-                {formatMinutes(breakMinutes)}
-              </div>
+              <div className="text-xl font-semibold">{formatMinutes(breakMinutes)}</div>
             </div>
             <div>
               <div className="text-sm text-gray-500">Work Time</div>
-              <div className="text-xl font-semibold">
-                {formatMinutes(workedMinutes)}
-              </div>
+              <div className="text-xl font-semibold">{formatMinutes(workedMinutes)}</div>
             </div>
           </div>
         </div>
       </div>
 
+      {/* Add a completed item */}
+      <div className="card mb-6">
+        <div className="card-header">
+          <h2 className="card-title">Add Completed Work</h2>
+        </div>
+        <div className="card-body">
+          {formError && <div className="alert alert-error mb-4">{formError}</div>}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+            <div className="form-group mb-0">
+              <label htmlFor="proc" className="form-label text-sm">Process</label>
+              <select
+                id="proc"
+                value={proc}
+                onChange={(e) => setProc(e.target.value)}
+                className="form-input"
+              >
+                <option value="">Select…</option>
+                {processConfigs.map((c) => (
+                  <option key={c.processName} value={c.processName}>
+                    {c.displayName}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group mb-0 md:col-span-2">
+              <label htmlFor="sku" className="form-label text-sm">SKU completed</label>
+              <select
+                id="sku"
+                value={skuId}
+                onChange={(e) => setSkuId(e.target.value)}
+                className="form-input"
+              >
+                <option value="">Select…</option>
+                {skus.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.sku} — {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group mb-0">
+              <label htmlFor="qty" className="form-label text-sm">Quantity</label>
+              <input
+                id="qty"
+                type="number"
+                inputMode="numeric"
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+                className="form-input text-center text-lg"
+                min="1"
+                step="1"
+              />
+            </div>
+          </div>
+          <button type="button" onClick={addLine} className="btn btn-secondary mt-4">
+            + Add item
+          </button>
+        </div>
+      </div>
+
+      {/* Staged items */}
+      <div className="card mb-6">
+        <div className="card-header">
+          <h2 className="card-title">Items to Submit ({staged.length})</h2>
+        </div>
+        <div className="card-body">
+          {staged.length === 0 ? (
+            <p className="text-sm text-gray-500">
+              No items added yet. Add what you completed above.
+            </p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  <th className="py-2 pr-4">Process</th>
+                  <th className="py-2 pr-4">SKU</th>
+                  <th className="py-2 pr-4 text-right">Qty</th>
+                  <th className="py-2 pr-4 text-right">Expected</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {staged.map((l) => (
+                  <tr key={l.id} className="border-b last:border-0">
+                    <td className="py-2 pr-4">{l.processDisplayName}</td>
+                    <td className="py-2 pr-4 font-mono">{l.skuLabel}</td>
+                    <td className="py-2 pr-4 text-right">{l.quantityCompleted}</td>
+                    <td className="py-2 pr-4 text-right">
+                      {formatMinutes((l.quantityCompleted * l.secondsPerUnit) / 60)}
+                    </td>
+                    <td className="py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => removeLine(l.id)}
+                        className="btn btn-ghost btn-sm text-red-600"
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {/* Active Tasks Reference */}
+      {activeTasks.length > 0 && (
+        <div className="card mb-6">
+          <div className="card-header">
+            <h2 className="card-title">Your Assigned Tasks</h2>
+            <p className="text-sm text-gray-500">Reference for what you were working on</p>
+          </div>
+          <div className="card-body">
+            <div className="space-y-2">
+              {activeTasks.map((task) => (
+                <div key={task.id} className="p-2 rounded border bg-gray-50 border-gray-200">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">
+                      {processConfigs.find((p) => p.processName === task.processName)?.displayName ||
+                        task.processName}
+                    </span>
+                    {task.sku && (
+                      <span className="text-sm text-gray-500 font-mono">({task.sku.sku})</span>
+                    )}
+                    {task.targetQuantity && (
+                      <span className="text-sm text-gray-500">Target: {task.targetQuantity}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Efficiency Preview */}
+      <div className="card mb-6">
+        <div className="card-header">
+          <h2 className="card-title">Efficiency Preview</h2>
+        </div>
+        <div className="card-body">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <div className="text-sm text-gray-500">Expected Time</div>
+              <div className="text-xl font-semibold">{formatMinutes(expectedMinutes)}</div>
+            </div>
+            <div>
+              <div className="text-sm text-gray-500">Actual Time</div>
+              <div className="text-xl font-semibold">{formatMinutes(workedMinutes)}</div>
+            </div>
+            <div className="md:col-span-2">
+              <div className="text-sm text-gray-500">Efficiency</div>
+              <div
+                className={`text-3xl font-bold px-4 py-2 rounded inline-block ${getEfficiencyColor()}`}
+              >
+                {efficiency.toFixed(0)}%
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Estimate — subject to QC review.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Submit */}
       <Form method="post">
         <input type="hidden" name="timeEntryId" value={timeEntry.id} />
         <input type="hidden" name="clockOutEventId" value={clockOutEvent.id} />
-        <input
-          type="hidden"
-          name="clockOutTime"
-          value={clockOutEvent.timestamp.toString()}
-        />
+        <input type="hidden" name="clockOutTime" value={clockOutEvent.timestamp.toString()} />
         <input type="hidden" name="breakMinutes" value={breakMinutes} />
-        <input type="hidden" name="linesJson" value={JSON.stringify(lines)} />
-
-        {/* Work Entry */}
-        <div className="card mb-6">
-          <div className="card-header">
-            <h2 className="card-title">Work Completed</h2>
-            <p className="text-sm text-gray-500">
-              Enter quantities for each process you worked on
-            </p>
-          </div>
-          <div className="card-body">
-            <div className="space-y-4">
-              {lines.map((line, index) => {
-                const config = processConfigs.find(
-                  (c) => c.processName === line.processName
-                );
-                const transition = processTransitions[line.processName];
-
-                return (
-                  <div
-                    key={line.processName}
-                    className="p-4 rounded border bg-gray-50"
-                  >
-                    <div className="flex flex-col md:flex-row md:items-center gap-4">
-                      <div className="flex-1">
-                        <div className="font-semibold text-lg">
-                          {config?.displayName || line.processName}
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          {config?.secondsPerUnit} seconds per unit
-                          {transition && (
-                            <span className="ml-2 text-xs">
-                              ({transition.description})
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-4">
-                        <div className="form-group mb-0">
-                          <label className="form-label text-sm">Quantity</label>
-                          <input
-                            type="number"
-                            value={line.quantityCompleted}
-                            onChange={(e) =>
-                              updateLine(
-                                index,
-                                "quantityCompleted",
-                                parseInt(e.target.value, 10) || 0
-                              )
-                            }
-                            className="form-input w-32 text-center text-lg"
-                            min="0"
-                            step="1"
-                          />
-                        </div>
-                        {line.quantityCompleted > 0 && (
-                          <div className="text-right">
-                            <div className="text-sm text-gray-500">
-                              Expected Time
-                            </div>
-                            <div className="font-medium">
-                              {formatMinutes(
-                                (line.quantityCompleted * line.secondsPerUnit) / 60
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        {/* Active Tasks Reference */}
-        {activeTasks.length > 0 && (
-          <div className="card mb-6">
-            <div className="card-header">
-              <h2 className="card-title">Your Assigned Tasks</h2>
-              <p className="text-sm text-gray-500">Reference for what you were working on</p>
-            </div>
-            <div className="card-body">
-              <div className="space-y-2">
-                {activeTasks.map((task) => (
-                  <div
-                    key={task.id}
-                    className="p-2 rounded border bg-gray-50 border-gray-200"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">
-                        {processConfigs.find(
-                          (p) => p.processName === task.processName
-                        )?.displayName || task.processName}
-                      </span>
-                      {task.sku && (
-                        <span className="text-sm text-gray-500 font-mono">
-                          ({task.sku.sku})
-                        </span>
-                      )}
-                      {task.targetQuantity && (
-                        <span className="text-sm text-gray-500">
-                          Target: {task.targetQuantity}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Efficiency Preview */}
-        <div className="card mb-6">
-          <div className="card-header">
-            <h2 className="card-title">Efficiency Preview</h2>
-          </div>
-          <div className="card-body">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <div className="text-sm text-gray-500">Expected Time</div>
-                <div className="text-xl font-semibold">
-                  {formatMinutes(expectedMinutes)}
-                </div>
-              </div>
-              <div>
-                <div className="text-sm text-gray-500">Actual Time</div>
-                <div className="text-xl font-semibold">
-                  {formatMinutes(workedMinutes)}
-                </div>
-              </div>
-              <div className="md:col-span-2">
-                <div className="text-sm text-gray-500">Efficiency</div>
-                <div
-                  className={`text-3xl font-bold px-4 py-2 rounded inline-block ${getEfficiencyColor()}`}
-                >
-                  {efficiency.toFixed(0)}%
-                </div>
-                <p className="text-xs text-gray-500 mt-1">
-                  100% = completed work matches expected time
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Submit */}
+        <input type="hidden" name="linesJson" value={linesJson} />
         <div className="flex gap-3">
           <button
             type="submit"
             className="btn btn-primary btn-lg"
-            disabled={isSubmitting || totalExpectedSeconds === 0}
+            disabled={isSubmitting || staged.length === 0}
           >
-            {isSubmitting ? "Submitting..." : "Submit for Approval"}
+            {isSubmitting ? "Submitting…" : "Submit for QC"}
           </button>
           <Link to="/worker-dashboard" className="btn btn-secondary btn-lg">
             Cancel
           </Link>
         </div>
-
         <p className="text-sm text-gray-500 mt-3">
-          Your entry will be reviewed by a manager before inventory is updated.
+          Your entry will be reviewed by QC before inventory is updated.
         </p>
       </Form>
     </Layout>

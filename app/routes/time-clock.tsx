@@ -165,10 +165,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!currentStatus.isClockedIn) {
       return { error: "You are not clocked in" };
     }
-    // For workers, redirect to confirmation page instead of directly clocking out
-    if (user.role === "WORKER") {
-      return redirect("/worker-clock-out-confirm");
-    }
   }
 
   if (eventType === "BREAK_START" && !currentStatus.isClockedIn) {
@@ -187,6 +183,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   await createAuditLog(user.id, eventType, "ClockEvent", event.id, {});
+
+  // Single clock-out flow: workers log completed output (SKU + qty) on the
+  // clock-out entry screen, which creates the PENDING entry for QC.
+  if (eventType === "CLOCK_OUT" && user.role === "WORKER") {
+    return redirect(`/clock-out-entry?clockOut=${event.id}`);
+  }
 
   // Check for late clock-in if this is a CLOCK_IN event
   if (eventType === "CLOCK_IN" && user.role === "WORKER") {
