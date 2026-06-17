@@ -46,30 +46,49 @@ export default function App() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  let message = "Oops!";
-  let details = "An unexpected error occurred.";
+  let title = "Something went wrong";
+  let details = "An unexpected error occurred. Please try again.";
+  let homeHref = "/";
+  let homeLabel = "Back to dashboard";
   let stack: string | undefined;
 
   if (isRouteErrorResponse(error)) {
-    message = error.status === 404 ? "404" : "Error";
-    details =
-      error.status === 404
-        ? "The requested page could not be found."
-        : error.statusText || details;
+    if (error.status === 404) {
+      title = "Page not found";
+      details = "The page you're looking for doesn't exist or has moved.";
+    } else if (error.status === 403) {
+      title = "No access";
+      details = "You don't have permission to view this page.";
+    } else if (error.status === 401) {
+      title = "Please sign in";
+      details = "Your session may have expired. Sign in to continue.";
+      homeHref = "/login";
+      homeLabel = "Go to sign in";
+    } else {
+      title = `Error ${error.status}`;
+      details = error.statusText || details;
+    }
   } else if (import.meta.env.DEV && error && error instanceof Error) {
     details = error.message;
     stack = error.stack;
   }
 
   return (
-    <main className="pt-16 p-4 container mx-auto">
-      <h1>{message}</h1>
-      <p>{details}</p>
-      {stack && (
-        <pre className="w-full p-4 overflow-x-auto">
-          <code>{stack}</code>
-        </pre>
-      )}
+    <main className="min-h-screen flex items-center justify-center p-4 bg-gray-50">
+      <div className="card max-w-md w-full text-center">
+        <div className="card-body">
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">{title}</h1>
+          <p className="text-gray-600 mb-6">{details}</p>
+          <a href={homeHref} className="btn btn-primary">
+            {homeLabel}
+          </a>
+          {stack && (
+            <pre className="mt-6 text-left text-xs overflow-x-auto bg-gray-50 p-3 rounded border">
+              <code>{stack}</code>
+            </pre>
+          )}
+        </div>
+      </div>
     </main>
   );
 }

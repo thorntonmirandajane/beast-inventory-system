@@ -154,9 +154,16 @@ export default function Notifications() {
             </div>
           ) : (
             notifications.map((notification) => {
-              const metadata = notification.metadata
-                ? JSON.parse(notification.metadata)
-                : null;
+              // Guard against a malformed metadata row taking down the whole
+              // page during render.
+              const metadata = (() => {
+                if (!notification.metadata) return null;
+                try {
+                  return JSON.parse(notification.metadata);
+                } catch {
+                  return null;
+                }
+              })();
 
               return (
                 <div
