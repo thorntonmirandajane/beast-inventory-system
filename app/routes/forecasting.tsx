@@ -152,18 +152,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Per-SKU rollup maps used by both the Forecast tab columns and the
-  // dedicated tabs. SKU matching is exact string for now.
+  // Per-SKU rollup maps used by the Forecast tab columns. Shopify variant SKUs
+  // and our DB SKUs can differ in case (e.g. "COC-TI-3PACK-100g-2.0in" vs
+  // "COC-TI-3PACK-100G-2.0IN"), so an exact-string join silently misses and the
+  // Forecast tab shows 0 even though the Unfulfilled tab shows the real number.
+  // Key everything by a normalized (trim + upper-case) SKU and accumulate.
+  const normSku = (s: string) => s.trim().toUpperCase();
+
   const unfulfilledQtyBySku = new Map<string, number>();
   if (unfulfilledItems) {
     for (const it of unfulfilledItems) {
-      unfulfilledQtyBySku.set(it.sku, (unfulfilledQtyBySku.get(it.sku) ?? 0) + it.quantity);
+      const k = normSku(it.sku);
+      unfulfilledQtyBySku.set(k, (unfulfilledQtyBySku.get(k) ?? 0) + it.quantity);
     }
   }
   const programmedQtyBySku = new Map<string, number>();
   if (programmedOrders) {
     for (const row of programmedOrders.bySku) {
-      programmedQtyBySku.set(row.sku, row.quantity);
+      const k = normSku(row.sku);
+      programmedQtyBySku.set(k, (programmedQtyBySku.get(k) ?? 0) + row.quantity);
+    }
+  }
+  // Same normalization for live Gallatin inventory (also Shopify-keyed).
+  const gallatinQtyByNormSku = new Map<string, number>();
+  if (gallatinInventory) {
+    for (const [s, q] of gallatinInventory) {
+      const k = normSku(s);
+      gallatinQtyByNormSku.set(k, (gallatinQtyByNormSku.get(k) ?? 0) + q);
     }
   }
 
@@ -241,11 +256,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const forecast = forecastMap.get(sku.id);
     // Prefer the live Shopify number when available; fall back to the
     // stored manual value so the page still calculates if Shopify is down.
-    const liveGallatin = gallatinInventory?.get(sku.sku);
+    const skuKey = normSku(sku.sku);
+    const liveGallatin = gallatinQtyByNormSku.get(skuKey);
     const currentInGallatin = liveGallatin ?? forecast?.currentInGallatin ?? 0;
     const forecastedQty = forecast?.quantity || 0;
-    const unfulfilledQty = unfulfilledQtyBySku.get(sku.sku) ?? 0;
-    const programmedQty = programmedQtyBySku.get(sku.sku) ?? 0;
+    const unfulfilledQty = unfulfilledQtyBySku.get(skuKey) ?? 0;
+    const programmedQty = programmedQtyBySku.get(skuKey) ?? 0;
 
     // Calculate current completed inventory
     const currentCompleted = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
