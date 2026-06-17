@@ -204,7 +204,7 @@ export interface UnfulfilledLineItem {
   orderCreatedAt: string;
   sku: string;
   title: string;
-  quantity: number; // remaining unfulfilled
+  quantity: number; // remaining fulfillable & unfulfilled (excludes removed/canceled)
 }
 
 /**
@@ -235,6 +235,7 @@ async function fetchUnfulfilledLineItemsUncached(): Promise<UnfulfilledLineItem[
               id
               name
               createdAt
+              cancelledAt
               displayFulfillmentStatus
               lineItems(first: 100) {
                 edges {
@@ -242,6 +243,7 @@ async function fetchUnfulfilledLineItemsUncached(): Promise<UnfulfilledLineItem[
                     sku
                     title
                     quantity
+                    currentQuantity
                     unfulfilledQuantity
                   }
                 }
@@ -259,11 +261,26 @@ async function fetchUnfulfilledLineItemsUncached(): Promise<UnfulfilledLineItem[
 
     for (const orderEdge of orders.edges) {
       const order = orderEdge.node;
+      // Skip canceled orders entirely — their line items are not fulfillable.
+      if (order.cancelledAt) continue;
+
       for (const liEdge of order.lineItems.edges) {
         const li = liEdge.node;
-        const remaining = li.unfulfilledQuantity ?? li.quantity ?? 0;
-        if (remaining <= 0) continue;
         if (!li.sku) continue;
+
+        // currentQuantity = units still on the order AFTER refunds/removals/edits
+        // (0 once a line is canceled/removed). This is what's actually
+        // fulfillable — never fall back to li.quantity, which is the ORIGINAL
+        // ordered amount and would re-include removed/canceled units.
+        const current = li.currentQuantity ?? 0;
+        if (current <= 0) continue;
+
+        // Of what's still on the order, count only what isn't fulfilled yet,
+        // capped at current so a stale unfulfilledQuantity can't exceed it.
+        const unfulfilled = li.unfulfilledQuantity ?? current;
+        const remaining = Math.min(unfulfilled, current);
+        if (remaining <= 0) continue;
+
         items.push({
           orderId: order.id,
           orderName: order.name,
