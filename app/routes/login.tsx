@@ -50,14 +50,14 @@ export default function Login() {
         <Form method="post">
           <div className="form-group">
             <label htmlFor="email" className="form-label">
-              Email
+              Email or username
             </label>
             <input
-              type="email"
+              type="text"
               id="email"
               name="email"
               className="form-input"
-              placeholder="you@example.com"
+              placeholder="you@example.com or your username"
               required
               autoFocus
             />

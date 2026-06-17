@@ -21,23 +21,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = formData.get("intent") as string;
 
   if (intent === "create") {
-    const email = formData.get("email") as string;
+    const emailInput = ((formData.get("email") as string) || "").trim();
     const password = formData.get("password") as string;
     const firstName = formData.get("firstName") as string;
     const lastName = formData.get("lastName") as string;
     const role = formData.get("role") as UserRole;
     const payRateStr = formData.get("payRate") as string;
 
-    if (!email || !password || !firstName || !lastName || !role) {
-      return { error: "All fields are required" };
+    if (!password || !firstName || !lastName || !role) {
+      return { error: "First name, last name, password, and role are required." };
     }
 
-    const existing = await prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
-    });
-
-    if (existing) {
-      return { error: "Email already exists" };
+    // Email/login is OPTIONAL. If the admin provides one, it must be unique.
+    // If left blank — e.g. a worker with no email — auto-generate a simple
+    // login handle from their name so they can still sign in; they can change
+    // it to a real email later. (No mail is ever sent — this column is only a
+    // login identifier.)
+    let loginId = emailInput.toLowerCase();
+    if (loginId) {
+      const existing = await prisma.user.findUnique({ where: { email: loginId } });
+      if (existing) {
+        return { error: "That email / username is already taken." };
+      }
+    } else {
+      const base = `${firstName}.${lastName}`.toLowerCase().replace(/[^a-z0-9.]/g, "") || "worker";
+      loginId = base;
+      let n = 1;
+      while (await prisma.user.findUnique({ where: { email: loginId } })) {
+        n += 1;
+        loginId = `${base}${n}`;
+      }
     }
 
     const hashedPassword = await hashPassword(password);
@@ -45,7 +58,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const newUser = await prisma.user.create({
       data: {
-        email: email.toLowerCase(),
+        email: loginId,
         password: hashedPassword,
         firstName,
         lastName,
@@ -60,7 +73,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       payRate,
     });
 
-    return { success: true, message: `User ${firstName} ${lastName} created` };
+    return {
+      success: true,
+      message: `User ${firstName} ${lastName} created — login: ${loginId}`,
+    };
   }
 
   if (intent === "update") {
@@ -69,11 +85,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const isActive = formData.get("isActive") === "true";
     const payRateStr = formData.get("payRate") as string;
     const payRate = payRateStr ? parseFloat(payRateStr) : null;
+    const emailInput = ((formData.get("email") as string) || "").trim().toLowerCase();
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: { role, isActive, payRate },
-    });
+    const data: {
+      role: UserRole;
+      isActive: boolean;
+      payRate: number | null;
+      email?: string;
+    } = { role, isActive, payRate };
+
+    // Allow changing the login/email later (e.g. a worker provides a real
+    // email). Blank is ignored so we never wipe the login identifier.
+    if (emailInput) {
+      const clash = await prisma.user.findFirst({
+        where: { email: emailInput, NOT: { id: userId } },
+      });
+      if (clash) {
+        return { error: "That email / username is already taken." };
+      }
+      data.email = emailInput;
+    }
+
+    await prisma.user.update({ where: { id: userId }, data });
 
     await createAuditLog(user.id, "UPDATE_USER", "User", userId, {
       role,
@@ -172,14 +205,17 @@ export default function Users() {
                 />
               </div>
               <div className="form-group mb-0">
-                <label className="form-label">Email *</label>
+                <label className="form-label">Username or email</label>
                 <input
-                  type="email"
+                  type="text"
                   name="email"
                   className="form-input"
-                  required
-                  placeholder="email@example.com"
+                  placeholder="Leave blank to auto-generate (e.g. john.smith)"
                 />
+                <p className="text-xs text-gray-500 mt-1">
+                  Optional. Workers without an email get an auto-generated login from their
+                  name; it can be changed to a real email later.
+                </p>
               </div>
               <div className="form-group mb-0">
                 <label className="form-label">Password *</label>
@@ -278,6 +314,14 @@ export default function Users() {
                       <Form method="post" className="flex items-center gap-2">
                         <input type="hidden" name="intent" value="update" />
                         <input type="hidden" name="userId" value={u.id} />
+                        <input
+                          type="text"
+                          name="email"
+                          className="form-input text-sm py-1.5 px-2 w-40"
+                          placeholder="username / email"
+                          defaultValue={u.email}
+                          title="Login / email"
+                        />
                         <select
                           name="role"
                           className="form-select text-sm py-1.5 px-2 w-28"
