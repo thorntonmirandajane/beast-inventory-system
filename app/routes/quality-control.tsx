@@ -5,7 +5,7 @@ import { Layout } from "../components/Layout";
 import { ImageUpload } from "../components/ImageUpload";
 import prisma from "../db.server";
 import { approveTimeEntry } from "../utils/productivity.server";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -216,8 +216,17 @@ function EditableQuantityCell({
       },
       { method: "post" }
     );
-    setIsEditing(false);
+    // Don't close here — wait for the server to confirm (see effect below),
+    // so a failed save stays open with its error instead of silently vanishing.
   };
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) {
+      setIsEditing(false);
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  const saving = fetcher.state !== "idle";
 
   if (isEditing) {
     return (
@@ -236,11 +245,14 @@ function EditableQuantityCell({
           className="form-input w-full text-sm"
           rows={2}
         />
+        {fetcher.data?.error && (
+          <div className="text-sm text-red-600">{fetcher.data.error}</div>
+        )}
         <div className="flex gap-2">
-          <button onClick={handleSave} className="btn btn-primary btn-sm">
-            Save
+          <button onClick={handleSave} disabled={saving} className="btn btn-primary btn-sm">
+            {saving ? "Saving…" : "Save"}
           </button>
-          <button onClick={() => setIsEditing(false)} className="btn btn-ghost btn-sm">
+          <button onClick={() => setIsEditing(false)} disabled={saving} className="btn btn-ghost btn-sm">
             Cancel
           </button>
         </div>
@@ -290,8 +302,17 @@ function RejectTaskModal({
       },
       { method: "post" }
     );
-    onClose();
+    // Close only after the server confirms (effect below), so a failed reject
+    // doesn't disappear silently.
   };
+
+  const rejecting = fetcher.state !== "idle";
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) {
+      onClose();
+    }
+  }, [fetcher.state, fetcher.data, onClose]);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -350,15 +371,18 @@ function RejectTaskModal({
             />
           </div>
 
+          {fetcher.data?.error && (
+            <div className="alert alert-error mb-4">{fetcher.data.error}</div>
+          )}
           <div className="flex gap-4">
             <button
               type="submit"
-              disabled={!reason.trim()}
+              disabled={!reason.trim() || rejecting}
               className="btn btn-error flex-1"
             >
-              Reject Task
+              {rejecting ? "Rejecting…" : "Reject Task"}
             </button>
-            <button type="button" onClick={onClose} className="btn btn-ghost flex-1">
+            <button type="button" onClick={onClose} disabled={rejecting} className="btn btn-ghost flex-1">
               Cancel
             </button>
           </div>

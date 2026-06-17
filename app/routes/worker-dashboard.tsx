@@ -395,6 +395,11 @@ export default function WorkerDashboard() {
                       type="submit"
                       className="btn btn-danger btn-lg"
                       disabled={isSubmitting}
+                      onClick={(e) => {
+                        if (!confirm("Clock out now? You'll log what you completed next.")) {
+                          e.preventDefault();
+                        }
+                      }}
                     >
                       Clock Out
                     </button>

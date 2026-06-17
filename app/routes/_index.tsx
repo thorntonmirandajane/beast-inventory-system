@@ -8,9 +8,10 @@ import { getAllBuildEligibility } from "../utils/inventory.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
 
-  // Redirect workers to time clock instead of inventory dashboard
+  // Workers land on their own dashboard (clock in/out, today's tasks,
+  // rejected-work alerts, efficiency) rather than the inventory dashboard.
   if (user.role === "WORKER") {
-    throw redirect("/time-clock");
+    throw redirect("/worker-dashboard");
   }
 
   // Get counts

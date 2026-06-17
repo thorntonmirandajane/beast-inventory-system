@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, redirect } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, redirect, useSubmit } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -167,6 +167,8 @@ export default function AdminSubmitWorkerTask() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  const submit = useSubmit();
+  const [formError, setFormError] = useState<string | null>(null);
 
   const [selectedWorker, setSelectedWorker] = useState("");
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split("T")[0]);
@@ -207,24 +209,22 @@ export default function AdminSubmitWorkerTask() {
 
   const handleAddTask = () => {
     if (!selectedProcess) {
-      alert("Please select a process");
+      setFormError("Please select a process.");
       return;
     }
-
     if (!isMiscTask && !selectedSku) {
-      alert("Please select a SKU");
+      setFormError("Please select a SKU.");
       return;
     }
-
     if (isMiscTask && !miscDescription.trim()) {
-      alert("Please provide a description for MISC task");
+      setFormError("Please provide a description for the MISC task.");
       return;
     }
-
     if (!quantity || quantity <= 0) {
-      alert("Please enter a valid quantity");
+      setFormError("Please enter a quantity greater than 0.");
       return;
     }
+    setFormError(null);
 
     const selectedSkuObj = skus.find(s => s.id === selectedSku);
 
@@ -257,24 +257,20 @@ export default function AdminSubmitWorkerTask() {
     e.preventDefault();
 
     if (!selectedWorker) {
-      alert("Please select a worker");
+      setFormError("Please select a worker.");
       return;
     }
-
     if (pendingTasks.length === 0) {
-      alert("Please add at least one task");
+      setFormError("Please add at least one task.");
       return;
     }
+    setFormError(null);
 
-    // Submit the form with hidden input
-    const form = e.currentTarget;
-    const tasksInput = document.createElement("input");
-    tasksInput.type = "hidden";
-    tasksInput.name = "tasks";
-    tasksInput.value = JSON.stringify(pendingTasks);
-    form.appendChild(tasksInput);
-
-    form.submit();
+    // Submit through React Router (so the button disables and there's no full
+    // page reload / double-submit) with the staged tasks attached.
+    const formData = new FormData(e.currentTarget);
+    formData.set("tasks", JSON.stringify(pendingTasks));
+    submit(formData, { method: "post" });
   };
 
   return (
@@ -483,6 +479,9 @@ export default function AdminSubmitWorkerTask() {
                   ))}
                 </div>
 
+                {formError && (
+                  <div className="alert alert-error mb-4">{formError}</div>
+                )}
                 <Form method="post" onSubmit={handleSubmitAll}>
                   <input type="hidden" name="intent" value="submit-tasks" />
                   <input type="hidden" name="workerId" value={selectedWorker} />
