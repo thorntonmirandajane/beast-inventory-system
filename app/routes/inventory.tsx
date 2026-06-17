@@ -3,7 +3,6 @@ import { useLoaderData, Link, useSearchParams, useFetcher } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
-import { autoDeductRawMaterials } from "../utils/inventory.server";
 import { useState, useEffect } from "react";
 
 // Type for tracking pending changes
@@ -349,52 +348,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
     }
 
-    // Auto-deduct components when increasing assembled/completed quantities
-    const sku = await prisma.sku.findUnique({ where: { id: skuId } });
-
-    if (quantityChange > 0 && sku) {
-      // For assemblies: deduct when ASSEMBLED state increases
-      if (sku.type === "ASSEMBLY" && state === "ASSEMBLED") {
-        const deductResult = await autoDeductRawMaterials(skuId, quantityChange);
-
-        if (!deductResult.success) {
-          return {
-            error: `Quantity updated but auto-deduction failed: ${deductResult.error}`,
-            partialSuccess: true,
-          };
-        }
-
-        return {
-          success: true,
-          message: `Updated to ${newQuantity}. Auto-deducted: ${deductResult.deducted.map(d => `${d.sku} (-${d.quantity})`).join(", ")}`,
-        };
-      }
-
-      // For completed products: deduct when COMPLETED state increases
-      if (sku.type === "COMPLETED" && state === "COMPLETED") {
-        const deductResult = await autoDeductRawMaterials(skuId, quantityChange);
-
-        if (!deductResult.success) {
-          return {
-            error: `Quantity updated but auto-deduction failed: ${deductResult.error}`,
-            partialSuccess: true,
-          };
-        }
-
-        return {
-          success: true,
-          message: `Updated to ${newQuantity}. Auto-deducted: ${deductResult.deducted.map(d => `${d.sku} (-${d.quantity})`).join(", ")}`,
-        };
-      }
-    }
-
+    // Grid edits are manual count corrections, NOT production. Production
+    // consumes components only via the QC-approval engine (applyProduction).
+    // The old recursive auto-deduct here double-counted against it — see
+    // PRODUCTION-PROCESS.md §1. To seed/audit counts, use Import Counts.
     return { success: true, message: `Updated to ${newQuantity}` };
   }
 
   if (intent === "batch-update") {
     const updates = JSON.parse(formData.get("updates") as string);
-    const deductionResults: string[] = [];
-    const errors: string[] = [];
 
     for (const update of updates) {
       const { skuId, state, quantity } = update;
@@ -424,34 +386,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       }
 
-      // Auto-deduct components if needed
-      if (quantityChange > 0) {
-        const sku = await prisma.sku.findUnique({ where: { id: skuId } });
-        if (sku && ((sku.type === "ASSEMBLY" && state === "ASSEMBLED") || (sku.type === "COMPLETED" && state === "COMPLETED"))) {
-          const deductResult = await autoDeductRawMaterials(skuId, quantityChange);
-
-          if (deductResult.success) {
-            if (deductResult.deducted.length > 0) {
-              deductionResults.push(
-                `${sku.sku}: Deducted ${deductResult.deducted.map(d => `${d.sku} (-${d.quantity})`).join(", ")}`
-              );
-            }
-          } else {
-            errors.push(`${sku.sku}: ${deductResult.error}`);
-          }
-        }
-      }
+      // Grid batch edits are manual count corrections only — no BOM deduction
+      // (production moves inventory via the QC-approval engine). See above.
     }
 
-    let message = `Batch updated ${updates.length} items`;
-    if (deductionResults.length > 0) {
-      message += `. Auto-deductions: ${deductionResults.join("; ")}`;
-    }
-    if (errors.length > 0) {
-      message += `. Warnings: ${errors.join("; ")}`;
-    }
-
-    return { success: true, message };
+    return { success: true, message: `Batch updated ${updates.length} items` };
   }
 
   if (intent === "reset-all") {

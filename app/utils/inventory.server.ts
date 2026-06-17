@@ -1,6 +1,6 @@
 import prisma from "../db.server";
 import type { InventoryState, SkuType, Prisma } from "@prisma/client";
-import { planProduction, type DirectBomLine } from "./production";
+import { planProduction, availableState, type DirectBomLine } from "./production";
 
 // Type for Prisma client or transaction
 type PrismaClientOrTx = typeof prisma | Prisma.TransactionClient;
@@ -845,6 +845,106 @@ export async function applyProduction(
   }
 
   return { success: true, warnings };
+}
+
+// ============================================
+// OPENING COUNTS / SPOT-CHECK (set absolute counts)
+// ============================================
+
+export interface CountPreviewItem {
+  sku: string;
+  name: string;
+  type: SkuType;
+  state: InventoryState;
+  current: number;
+  newQty: number;
+  delta: number;
+}
+
+export interface OpeningCountResult {
+  applied: boolean;
+  items: CountPreviewItem[];
+  unknownSkus: string[];
+  warnings: string[];
+}
+
+/**
+ * Set absolute on-hand counts from an opening-count / spot-check upload.
+ * State is inferred from each SKU's type (RAW->RAW, ASSEMBLY->ASSEMBLED,
+ * COMPLETED->COMPLETED). This SETS the count (not a delta) and records the
+ * change as an ADJUSTED ledger entry — it is the day-zero seed and the weekly
+ * spot-check correction described in PRODUCTION-PROCESS.md §6.
+ *
+ * Pass { dryRun: true } to get the preview (matched rows + what would change)
+ * without writing anything.
+ */
+export async function applyOpeningCounts(
+  rows: { sku: string; qty: number }[],
+  performedById: string | undefined,
+  opts: { dryRun: boolean }
+): Promise<OpeningCountResult> {
+  // Dedupe by SKU (a SKU maps to one state, so one count). Last value wins.
+  const bySku = new Map<string, number>();
+  const warnings: string[] = [];
+  for (const r of rows) {
+    if (bySku.has(r.sku)) {
+      warnings.push(`${r.sku} listed more than once — using the last value (${r.qty})`);
+    }
+    bySku.set(r.sku, r.qty);
+  }
+
+  const items: CountPreviewItem[] = [];
+  const unknownSkus: string[] = [];
+
+  for (const [skuCode, qty] of bySku) {
+    const sku = await prisma.sku.findFirst({
+      where: { sku: { equals: skuCode, mode: "insensitive" } },
+    });
+    if (!sku) {
+      unknownSkus.push(skuCode);
+      continue;
+    }
+    const state = availableState(sku.type);
+    const current = await getAvailableQuantity(sku.id, [state]);
+    items.push({
+      sku: sku.sku,
+      name: sku.name,
+      type: sku.type,
+      state,
+      current,
+      newQty: qty,
+      delta: qty - current,
+    });
+  }
+
+  if (!opts.dryRun) {
+    await prisma.$transaction(async (tx) => {
+      for (const item of items) {
+        if (item.delta === 0) continue;
+        const skuRow = await tx.sku.findFirst({
+          where: { sku: { equals: item.sku, mode: "insensitive" } },
+        });
+        if (!skuRow) continue;
+
+        // SET the count: clear existing rows in this state, write one row.
+        await tx.inventoryItem.deleteMany({ where: { skuId: skuRow.id, state: item.state } });
+        if (item.newQty !== 0) {
+          await tx.inventoryItem.create({
+            data: { skuId: skuRow.id, quantity: item.newQty, state: item.state },
+          });
+        }
+
+        await logInventoryMovement(
+          skuRow.id, "ADJUSTED", item.newQty, undefined, item.state,
+          undefined, "OPENING_COUNT", undefined,
+          `Opening count: set ${item.state} to ${item.newQty} (was ${item.current})`,
+          performedById, tx
+        );
+      }
+    });
+  }
+
+  return { applied: !opts.dryRun, items, unknownSkus, warnings };
 }
 
 // ============================================
