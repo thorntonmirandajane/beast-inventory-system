@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, Link, useFetcher, redirect } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, Link, useFetcher } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import { ImageUpload } from "../components/ImageUpload";
@@ -169,18 +169,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "approve-entry") {
     const entryId = formData.get("entryId") as string;
 
-    console.log("[Quality Control] Approving time entry:", entryId);
     const result = await approveTimeEntry(entryId, user.id);
 
     if (!result.success) {
-      console.error("[Quality Control] Approval failed:", result.error);
       return { error: result.error };
     }
 
-    console.log("[Quality Control] Approval successful");
-
-    // Redirect back to pending list after successful approval
-    throw redirect("/quality-control?tab=pending&approved=true");
+    // Return (don't redirect) so the engine's stock warnings reach the user.
+    // React Router revalidates the loader, so the approved entry leaves the
+    // pending list on its own.
+    const warnings = result.warnings ?? [];
+    return {
+      success: true,
+      message:
+        warnings.length > 0
+          ? `Approved — inventory updated, with ${warnings.length} stock warning${warnings.length === 1 ? "" : "s"} (see below).`
+          : "Approved — inventory updated.",
+      warnings,
+    };
   }
 
   return { error: "Unknown intent" };
@@ -433,6 +439,17 @@ export default function QualityControl() {
           {actionData?.success && (
             <div className="alert alert-success mb-6">{actionData.message}</div>
           )}
+          {actionData?.warnings && actionData.warnings.length > 0 && (
+            <div className="alert alert-warning mb-6">
+              <strong>Stock warnings</strong> — these components went negative (counts may be
+              off or not loaded yet):
+              <ul className="mt-1 list-disc list-inside text-sm">
+                {actionData.warnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Shift Summary */}
           <div className="card mb-6">
@@ -630,6 +647,17 @@ export default function QualityControl() {
           )}
           {actionData?.success && (
             <div className="alert alert-success mb-6">{actionData.message}</div>
+          )}
+          {actionData?.warnings && actionData.warnings.length > 0 && (
+            <div className="alert alert-warning mb-6">
+              <strong>Stock warnings</strong> — these components went negative (counts may be
+              off or not loaded yet):
+              <ul className="mt-1 list-disc list-inside text-sm">
+                {actionData.warnings.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            </div>
           )}
           {justApproved && (
             <div className="alert alert-success mb-6">

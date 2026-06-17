@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, redirect, useFetcher } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, redirect, useFetcher, useSubmit } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -236,6 +236,8 @@ export default function WorkerSubmitTask() {
   const [quantity, setQuantity] = useState<number>(0);
   const [miscDescription, setMiscDescription] = useState("");
   const [skuSearchQuery, setSkuSearchQuery] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+  const submit = useSubmit();
 
   // Filter SKUs based on selected process
   const selectedProcessConfig = processes.find(p => p.processName === selectedProcess);
@@ -287,26 +289,24 @@ export default function WorkerSubmitTask() {
       });
 
   const handleAddTask = () => {
-    // Validation
+    // Inline validation (no blocking alert() popups on shared tablets)
     if (!selectedProcess) {
-      alert("Please select a process");
+      setFormError("Please select a process.");
       return;
     }
-
     if (!isMiscTask && !selectedSku) {
-      alert("Please select a SKU");
+      setFormError("Please select a SKU.");
       return;
     }
-
     if (isMiscTask && !miscDescription.trim()) {
-      alert("Please provide a description for MISC task");
+      setFormError("Please provide a description for the MISC task.");
       return;
     }
-
     if (!quantity || quantity <= 0) {
-      alert("Please enter a valid quantity");
+      setFormError("Please enter a quantity greater than 0.");
       return;
     }
+    setFormError(null);
 
     const processConfig = processes.find(p => p.processName === selectedProcess);
     const sku = skus.find(s => s.id === selectedSku);
@@ -338,28 +338,18 @@ export default function WorkerSubmitTask() {
 
   const handleSubmitAll = () => {
     if (pendingTasks.length === 0) {
-      alert("No tasks to submit");
+      setFormError("Add at least one task before submitting.");
       return;
     }
+    setFormError(null);
 
-    const form = document.createElement("form");
-    form.method = "post";
-    form.style.display = "none";
-
-    const intentInput = document.createElement("input");
-    intentInput.type = "hidden";
-    intentInput.name = "intent";
-    intentInput.value = "submit-tasks";
-    form.appendChild(intentInput);
-
-    const tasksInput = document.createElement("input");
-    tasksInput.type = "hidden";
-    tasksInput.name = "tasks";
-    tasksInput.value = JSON.stringify(pendingTasks);
-    form.appendChild(tasksInput);
-
-    document.body.appendChild(form);
-    form.submit();
+    // Submit through React Router so navigation.state flips to "submitting"
+    // (the button disables, preventing the double-submit that the old manual
+    // form.submit() allowed) and the action runs without a full page reload.
+    const formData = new FormData();
+    formData.set("intent", "submit-tasks");
+    formData.set("tasks", JSON.stringify(pendingTasks));
+    submit(formData, { method: "post" });
   };
 
   return (
@@ -375,6 +365,10 @@ export default function WorkerSubmitTask() {
 
       {actionData?.success && (
         <div className="alert alert-success mb-6">{actionData.message}</div>
+      )}
+
+      {formError && (
+        <div className="alert alert-error mb-6">{formError}</div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

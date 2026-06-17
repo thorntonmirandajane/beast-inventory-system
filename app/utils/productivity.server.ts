@@ -229,8 +229,9 @@ export async function submitTimeEntry(
 export async function approveTimeEntry(
   timeEntryId: string,
   approvedById?: string
-): Promise<{ success: boolean; error?: string; details?: string[] }> {
+): Promise<{ success: boolean; error?: string; details?: string[]; warnings?: string[] }> {
   const details: string[] = [];
+  const warnings: string[] = [];
   const entry = await prisma.workerTimeEntry.findUnique({
     where: { id: timeEntryId },
     include: {
@@ -317,6 +318,7 @@ export async function approveTimeEntry(
         details.push(`  Produced ${finalQuantity} ${skuName}, consumed its direct components`);
         for (const w of accepted.warnings) {
           details.push(`  WARNING: ${w}`);
+          warnings.push(`${skuName}: ${w}`);
           console.warn(`[Approve] ${line.processName}: ${w}`);
         }
 
@@ -389,7 +391,7 @@ export async function approveTimeEntry(
       }
     });
 
-    return { success: true, details };
+    return { success: true, details, warnings };
   } catch (error) {
     console.error("Error approving time entry:", error);
     details.push(`ERROR: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -397,6 +399,7 @@ export async function approveTimeEntry(
       success: false,
       error: error instanceof Error ? error.message : "Unknown error occurred",
       details,
+      warnings,
     };
   }
 }
