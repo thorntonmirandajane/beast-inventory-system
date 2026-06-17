@@ -278,9 +278,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const rawMaterialsMap = new Map<string, { skuId: string; sku: string; name: string; needed: number; available: number }>();
     const assembliesMap = new Map<string, { skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }>();
 
-    if (needToBuild > 0) {
-      await explodeBomRecursively(sku.id, needToBuild, rawMaterialsMap, assembliesMap);
-    }
+    // Always explode so clicking "+" shows the bill of materials even when the
+    // SKU is sufficient (needToBuild = 0). With qty 0 this lists the immediate
+    // components and their per-unit quantities (availability/totals are only
+    // rendered when needToBuild > 0).
+    await explodeBomRecursively(sku.id, needToBuild, rawMaterialsMap, assembliesMap);
 
     // Calculate process totals (simplified - based on raw materials found)
     const processTotals: Record<string, { units: number; seconds: number }> = {};
@@ -840,6 +842,12 @@ function ForecastRow({
                     </tbody>
                   </table>
                 </div>
+              )}
+
+              {item.assemblySkusNeeded.length === 0 && item.rawMaterialsNeeded.length === 0 && (
+                <p className="text-sm text-gray-500">
+                  No bill of materials is configured for this SKU.
+                </p>
               )}
 
               {/* Process Time Breakdown - Only show if needToBuild > 0 */}
