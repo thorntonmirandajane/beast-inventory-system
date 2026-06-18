@@ -20,7 +20,7 @@ async function explodeBomRecursively(
   skuId: string,
   quantity: number,
   rawMaterials: Map<string, { skuId: string; sku: string; name: string; needed: number; available: number }>,
-  assemblies: Map<string, { skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }>,
+  assemblies: Map<string, { skuId: string; sku: string; name: string; type: string; material: string | null; qtyPerUnit: number; totalNeeded: number; available: number }>,
   visited: Set<string> = new Set()
 ): Promise<void> {
   // Prevent infinite loops from circular references
@@ -79,6 +79,7 @@ async function explodeBomRecursively(
           sku: comp.sku,
           name: comp.name,
           type: comp.type,
+          material: comp.material, // the process used to build this assembly
           qtyPerUnit: bomComp.quantity,
           totalNeeded: qtyNeeded,
           available,
@@ -276,7 +277,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Use recursive BOM explosion to find ALL raw materials at any depth
     const rawMaterialsMap = new Map<string, { skuId: string; sku: string; name: string; needed: number; available: number }>();
-    const assembliesMap = new Map<string, { skuId: string; sku: string; name: string; type: string; qtyPerUnit: number; totalNeeded: number; available: number }>();
+    const assembliesMap = new Map<string, { skuId: string; sku: string; name: string; type: string; material: string | null; qtyPerUnit: number; totalNeeded: number; available: number }>();
 
     // Always explode so clicking "+" shows the bill of materials even when the
     // SKU is sufficient (needToBuild = 0). With qty 0 this lists the immediate
@@ -284,18 +285,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // rendered when needToBuild > 0).
     await explodeBomRecursively(sku.id, needToBuild, rawMaterialsMap, assembliesMap);
 
-    // Calculate process totals (simplified - based on raw materials found)
+    // Process labor for EVERY stage that must be built — not just the final
+    // pack: the pack process for `needToBuild`, plus each sub-assembly's
+    // process for its shortfall (e.g. stud-testing short broadheads, blading
+    // short ferrules, tipping short tipped-ferrules). A SKU's process is stored
+    // in its `material` field.
     const processTotals: Record<string, { units: number; seconds: number }> = {};
-
-    // Track final assembly process
     if (needToBuild > 0) {
-      const finalProcess = sku.material;
-      if (finalProcess && processMap.has(finalProcess)) {
-        if (!processTotals[finalProcess]) {
-          processTotals[finalProcess] = { units: 0, seconds: 0 };
-        }
-        processTotals[finalProcess].units += needToBuild;
-        processTotals[finalProcess].seconds += needToBuild * (processMap.get(finalProcess)?.secondsPerUnit || 0);
+      const addLabor = (process: string | null, units: number) => {
+        if (!process || units <= 0 || !processMap.has(process)) return;
+        if (!processTotals[process]) processTotals[process] = { units: 0, seconds: 0 };
+        processTotals[process].units += units;
+        processTotals[process].seconds += units * (processMap.get(process)?.secondsPerUnit || 0);
+      };
+      // Final pack/assembly stage for the whole quantity being built.
+      addLabor(sku.material, needToBuild);
+      // Each sub-assembly that is short must itself be built (its shortfall).
+      for (const asm of assembliesMap.values()) {
+        addLabor(asm.material, Math.max(0, asm.totalNeeded - asm.available));
       }
     }
 
