@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, Link } from "react-router";
 import { requireRole, createAuditLog, hashPassword } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -163,9 +163,12 @@ export default function Users() {
 
   return (
     <Layout user={user}>
-      <div className="page-header">
-        <h1 className="page-title">User Management</h1>
-        <p className="page-subtitle">Manage system users and permissions</p>
+      <div className="page-header flex items-start justify-between">
+        <div>
+          <h1 className="page-title">User Management</h1>
+          <p className="page-subtitle">Manage system users and permissions</p>
+        </div>
+        <Link to="/users/import" className="btn btn-secondary">Import from CSV</Link>
       </div>
 
       {actionData?.error && (
