@@ -85,10 +85,6 @@ export default function Login() {
             {isSubmitting ? "Signing in..." : "Sign in"}
           </button>
         </Form>
-
-        <p className="text-center text-sm text-gray-500 mt-6">
-          Default: admin@beast.com / admin123
-        </p>
       </div>
     </div>
   );
