@@ -91,36 +91,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const selectedDate = new Date(date);
     selectedDate.setHours(12, 0, 0, 0);
 
-    // Find clock-in event for the worker on the selected date
     const startOfDay = new Date(selectedDate);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(selectedDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    // Every admin submission gets its own synthetic CLOCK_IN event and its
-    // own WorkerTimeEntry, so each batch is independently approvable.
-    // Reusing the day's existing clock-in caused all prior admin-submitted
-    // lines to ride along with whatever entry was next approved.
-    const clockInEvent = await prisma.clockEvent.create({
-      data: {
-        userId: workerId,
-        type: "CLOCK_IN",
-        timestamp: selectedDate,
-        notes: `Auto-created by admin task submission for ${date}`,
-      },
+    // Attach the tasks to the worker's existing time entry for this date (e.g.
+    // their clocked / imported hours) so expected (from the tasks) and actual
+    // (from the clock) live on ONE entry and efficiency can compute. Only if
+    // there's no entry for the day do we create a placeholder clock-in.
+    const existingEntry = await prisma.workerTimeEntry.findFirst({
+      where: { userId: workerId, clockInTime: { gte: startOfDay, lte: endOfDay } },
+      orderBy: { clockInTime: "asc" },
     });
 
-    const timeEntry = await prisma.workerTimeEntry.create({
-      data: {
-        userId: workerId,
-        clockInEventId: clockInEvent.id,
-        clockInTime: clockInEvent.timestamp,
-        status: "DRAFT",
-      },
-    });
+    let timeEntry = existingEntry;
+    if (!timeEntry) {
+      const clockInEvent = await prisma.clockEvent.create({
+        data: {
+          userId: workerId,
+          type: "CLOCK_IN",
+          timestamp: selectedDate,
+          notes: `Auto-created by admin task submission for ${date}`,
+        },
+      });
+      timeEntry = await prisma.workerTimeEntry.create({
+        data: {
+          userId: workerId,
+          clockInEventId: clockInEvent.id,
+          clockInTime: clockInEvent.timestamp,
+          status: "DRAFT",
+        },
+      });
+    }
 
-    // Create all TimeEntryLine records
-    let totalExpectedSeconds = 0;
+    // Add the task lines.
     for (const task of tasks) {
       await prisma.timeEntryLine.create({
         data: {
@@ -135,8 +140,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         },
       });
 
-      totalExpectedSeconds += task.quantity * task.secondsPerUnit;
-
       await createAuditLog(user.id, "ADMIN_SUBMIT_TASK", "TimeEntryLine", timeEntry.id, {
         workerId,
         processName: task.processName,
@@ -146,17 +149,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       });
     }
 
-    // Update time entry to PENDING status so it shows in approvals
-    // Admin-submitted tasks are ready for approval
+    // Recompute expected/efficiency from ALL lines now on the entry and send it
+    // to QC. Re-opening an already-approved entry to PENDING means QC re-approves
+    // it, which is what moves the new tasks' inventory.
+    const allLines = await prisma.timeEntryLine.findMany({ where: { timeEntryId: timeEntry.id } });
+    const expectedMinutes = allLines.reduce((sum, l) => sum + l.expectedSeconds, 0) / 60;
+    const efficiency =
+      timeEntry.actualMinutes && timeEntry.actualMinutes > 0
+        ? (expectedMinutes / timeEntry.actualMinutes) * 100
+        : null;
+
     await prisma.workerTimeEntry.update({
       where: { id: timeEntry.id },
       data: {
         status: "PENDING",
-        expectedMinutes: totalExpectedSeconds / 60,
+        expectedMinutes,
+        efficiency,
+        approvedById: null,
+        approvedAt: null,
       },
     });
 
-    return { success: true, message: `Successfully submitted ${tasks.length} task(s) for worker. Entry is now pending approval.` };
+    return {
+      success: true,
+      message: existingEntry
+        ? `Added ${tasks.length} task(s) to ${date}'s time entry — pending QC approval.`
+        : `Created a time entry with ${tasks.length} task(s) for ${date}. No clocked hours found for that day, so efficiency will be blank until hours are added. Pending QC approval.`,
+    };
   }
 
   return { error: "Invalid action" };
