@@ -262,15 +262,38 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
     });
 
-    // Update SKU categories to match this process
+    // Sync which SKUs belong to this process via the `material` field — the
+    // SAME field the per-process count reads (matchesProcess). Selected SKUs are
+    // assigned to this process; SKUs that were on this process but are now
+    // deselected are cleared. (Previously this wrote `category` instead and
+    // never un-assigned, so adding/removing SKUs never changed the count.)
+    const newMaterial = displayName.trim();
+    const selectedSet = new Set(selectedSkuIds);
+    const oldDisplay = existingProcess?.displayName ?? newMaterial;
+
     if (selectedSkuIds.length > 0) {
       await prisma.sku.updateMany({
-        where: {
-          id: { in: selectedSkuIds },
-        },
-        data: {
-          category: displayName.trim(),
-        },
+        where: { id: { in: selectedSkuIds } },
+        data: { material: newMaterial },
+      });
+    }
+
+    // Clear SKUs that were on this process (old or new name) but aren't selected.
+    const buildSkus = await prisma.sku.findMany({
+      where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } },
+      select: { id: true, material: true },
+    });
+    const toUnassign = buildSkus
+      .filter(
+        (s) =>
+          !selectedSet.has(s.id) &&
+          (matchesProcess(s.material, oldDisplay) || matchesProcess(s.material, newMaterial))
+      )
+      .map((s) => s.id);
+    if (toUnassign.length > 0) {
+      await prisma.sku.updateMany({
+        where: { id: { in: toUnassign } },
+        data: { material: null },
       });
     }
 
