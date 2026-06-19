@@ -182,7 +182,7 @@ export default function WorkerWorkSummary() {
             <div>
               <div className="text-sm text-gray-500 mb-1">Efficiency</div>
               <div className={`text-lg font-semibold ${getEfficiencyColor(efficiency)}`}>
-                {efficiency}%
+                {Math.round(efficiency)}%
               </div>
             </div>
           </div>
@@ -195,7 +195,7 @@ export default function WorkerWorkSummary() {
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-lg font-semibold">Your Efficiency</h3>
             <span className={`badge ${getEfficiencyBadge(efficiency)}`}>
-              {efficiency}%
+              {Math.round(efficiency)}%
             </span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-4 mb-3">

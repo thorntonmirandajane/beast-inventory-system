@@ -221,7 +221,7 @@ export default function WorkerEfficiency() {
         </div>
         <div className="stat-card">
           <div className="stat-value" style={{ color: getEfficiencyColor(summary.avgEfficiency) }}>
-            {summary.avgEfficiency}%
+            {Math.round(summary.avgEfficiency)}%
           </div>
           <div className="stat-label">Average Efficiency</div>
         </div>
@@ -262,7 +262,7 @@ export default function WorkerEfficiency() {
                         className="font-bold text-lg"
                         style={{ color: getEfficiencyColor(stat.avgEfficiency) }}
                       >
-                        {stat.avgEfficiency}%
+                        {Math.round(stat.avgEfficiency)}%
                       </span>
                     ) : (
                       <span className="text-gray-400">—</span>

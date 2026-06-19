@@ -1098,7 +1098,7 @@ export default function QualityControl() {
                       <td>
                         {entry.efficiency !== null ? (
                           <span className={`badge ${getEfficiencyBadge(entry.efficiency)}`}>
-                            {entry.efficiency}%
+                            {Math.round(entry.efficiency)}%
                           </span>
                         ) : (
                           <span className="text-gray-400">—</span>
