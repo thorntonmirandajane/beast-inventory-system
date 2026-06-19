@@ -108,6 +108,19 @@ export function calculateEfficiency(
   return (expectedMinutes / actualMinutes) * 100;
 }
 
+// "Trackable" efficiency excludes misc time (ad-hoc work pulled off the line)
+// from the denominator: expected / (actual − misc). This is the primary
+// efficiency number; "overall" is expected / actual (use calculateEfficiency).
+export function trackableEfficiency(
+  expectedMinutes: number,
+  actualMinutes: number | null | undefined,
+  miscMinutes: number | null | undefined
+): number | null {
+  const trackable = (actualMinutes ?? 0) - (miscMinutes ?? 0);
+  if (trackable <= 0) return null;
+  return (expectedMinutes / trackable) * 100;
+}
+
 // Calculate expected time from lines
 export function calculateExpectedMinutes(
   lines: Array<{ quantityCompleted: number; secondsPerUnit: number }>
@@ -179,8 +192,8 @@ export async function submitTimeEntry(
   // Calculate expected minutes from lines
   const expectedMinutes = calculateExpectedMinutes(lines);
 
-  // Calculate efficiency
-  const efficiency = calculateEfficiency(actualMinutes, expectedMinutes);
+  // Calculate efficiency (trackable — excludes any misc time on the entry)
+  const efficiency = trackableEfficiency(expectedMinutes, actualMinutes, entry.miscMinutes);
 
   // Update entry and create lines
   return prisma.$transaction(async (tx) => {

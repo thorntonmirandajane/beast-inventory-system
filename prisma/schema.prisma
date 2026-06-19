@@ -442,6 +442,7 @@ model WorkerTimeEntry {
   clockInTime     DateTime
   clockOutTime    DateTime?
   breakMinutes    Int             @default(0)
+  miscMinutes     Int             @default(0)
   actualMinutes   Int?
   expectedMinutes Float?
   efficiency      Float?

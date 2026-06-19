@@ -3,6 +3,7 @@ import { useLoaderData, useActionData, Form, useNavigation, redirect, useSubmit 
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { trackableEfficiency } from "../utils/productivity.server";
 import { useState } from "react";
 
 interface PendingTask {
@@ -154,10 +155,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // it, which is what moves the new tasks' inventory.
     const allLines = await prisma.timeEntryLine.findMany({ where: { timeEntryId: timeEntry.id } });
     const expectedMinutes = allLines.reduce((sum, l) => sum + l.expectedSeconds, 0) / 60;
-    const efficiency =
-      timeEntry.actualMinutes && timeEntry.actualMinutes > 0
-        ? (expectedMinutes / timeEntry.actualMinutes) * 100
-        : null;
+    const efficiency = trackableEfficiency(expectedMinutes, timeEntry.actualMinutes, timeEntry.miscMinutes);
 
     await prisma.workerTimeEntry.update({
       where: { id: timeEntry.id },

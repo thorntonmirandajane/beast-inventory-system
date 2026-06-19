@@ -4,7 +4,7 @@ import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import { ImageUpload } from "../components/ImageUpload";
 import prisma from "../db.server";
-import { approveTimeEntry } from "../utils/productivity.server";
+import { approveTimeEntry, trackableEfficiency } from "../utils/productivity.server";
 import { matchesProcess } from "../utils/process";
 import { useState, useEffect } from "react";
 
@@ -274,10 +274,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     if (entry) {
       const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
-      const efficiency =
-        entry.actualMinutes && entry.actualMinutes > 0
-          ? (expectedMinutes / entry.actualMinutes) * 100
-          : null;
+      const efficiency = trackableEfficiency(expectedMinutes, entry.actualMinutes, entry.miscMinutes);
       await prisma.workerTimeEntry.update({
         where: { id: entryId },
         data: { expectedMinutes, efficiency, status: "PENDING", approvedById: null, approvedAt: null },
@@ -286,6 +283,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     await createAuditLog(user.id, "QC_ADD_LINE", "WorkerTimeEntry", entryId, { processName, skuId, quantity });
     return { success: true, message: "Task added — entry is pending approval." };
+  }
+
+  if (intent === "set-misc") {
+    const entryId = formData.get("entryId") as string;
+    const miscHours = parseFloat(formData.get("miscHours") as string);
+    if (!entryId || isNaN(miscHours) || miscHours < 0) {
+      return { error: "Enter misc hours of 0 or more." };
+    }
+    const miscMinutes = Math.round(miscHours * 60);
+    const entry = await prisma.workerTimeEntry.findUnique({
+      where: { id: entryId },
+      include: { lines: true },
+    });
+    if (!entry) return { error: "Entry not found." };
+
+    const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
+    const efficiency = trackableEfficiency(expectedMinutes, entry.actualMinutes, miscMinutes);
+    await prisma.workerTimeEntry.update({
+      where: { id: entryId },
+      data: { miscMinutes, efficiency },
+    });
+    await createAuditLog(user.id, "SET_MISC_TIME", "WorkerTimeEntry", entryId, { miscMinutes });
+    return { success: true, message: `Misc time set to ${miscHours}h.` };
   }
 
   if (intent === "delete-entry") {
@@ -601,8 +621,34 @@ function AddTaskForm({
   );
 }
 
+function MiscTimeForm({ entryId, miscMinutes }: { entryId: string; miscMinutes: number }) {
+  const fetcher = useFetcher();
+  const busy = fetcher.state !== "idle";
+  return (
+    <fetcher.Form method="post" className="flex items-center gap-2 mt-1">
+      <input type="hidden" name="intent" value="set-misc" />
+      <input type="hidden" name="entryId" value={entryId} />
+      <input
+        type="number"
+        name="miscHours"
+        step="0.01"
+        min="0"
+        defaultValue={(miscMinutes / 60).toFixed(2)}
+        className="form-input w-20 py-1 text-sm"
+      />
+      <button type="submit" className="btn btn-sm btn-secondary" disabled={busy}>
+        {busy ? "…" : "Save"}
+      </button>
+    </fetcher.Form>
+  );
+}
+
 export default function QualityControl() {
   const { user, timeEntries, timeEntry, tab, entryId, processConfigs, assignableSkus, justApproved, movementPreview } = useLoaderData<typeof loader>();
+  const overallEff =
+    timeEntry && timeEntry.expectedMinutes != null && timeEntry.actualMinutes
+      ? (timeEntry.expectedMinutes / timeEntry.actualMinutes) * 100
+      : null;
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -690,12 +736,10 @@ export default function QualityControl() {
               <h3 className="card-title">Shift Summary</h3>
             </div>
             <div className="card-body">
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                   <label className="text-sm font-medium text-gray-600">Worker</label>
-                  <p className="font-medium">
-                    {timeEntry.user.firstName} {timeEntry.user.lastName}
-                  </p>
+                  <p className="font-medium">{timeEntry.user.firstName} {timeEntry.user.lastName}</p>
                 </div>
                 <div>
                   <label className="text-sm font-medium text-gray-600">Clock In</label>
@@ -706,32 +750,55 @@ export default function QualityControl() {
                   <p className="font-medium">{timeEntry.clockOutTime ? formatDateTime(timeEntry.clockOutTime) : "—"}</p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-600">Hours Worked</label>
+                  <label className="text-sm font-medium text-gray-600">Total Hours</label>
                   <p className="font-medium">{timeEntry.actualMinutes != null ? `${(timeEntry.actualMinutes / 60).toFixed(2)}h` : "—"}</p>
                 </div>
               </div>
-              {timeEntry.efficiency !== null && (
-                <div className="mt-4">
-                  <label className="text-sm font-medium text-gray-600">Efficiency</label>
-                  <div className="flex items-center gap-4 mt-2">
-                    <div className="flex-1 bg-gray-200 rounded-full h-6 relative overflow-hidden">
-                      <div
-                        className={`h-full ${
-                          timeEntry.efficiency >= 90
-                            ? "bg-green-500"
-                            : timeEntry.efficiency >= 70
-                            ? "bg-yellow-500"
-                            : "bg-red-500"
-                        }`}
-                        style={{ width: `${Math.min(timeEntry.efficiency, 100)}%` }}
-                      ></div>
-                      <span className="absolute inset-0 flex items-center justify-center text-sm font-semibold">
-                        {timeEntry.efficiency}%
-                      </span>
-                    </div>
-                  </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 items-end">
+                <div>
+                  <label className="text-sm font-medium text-gray-600">Misc Time (hrs)</label>
+                  <p className="text-xs text-gray-500">Pulled off — excluded from efficiency</p>
+                  <MiscTimeForm entryId={timeEntry.id} miscMinutes={timeEntry.miscMinutes} />
                 </div>
-              )}
+                <div>
+                  <label className="text-sm font-medium text-gray-600">Trackable Hours</label>
+                  <p className="font-medium">
+                    {timeEntry.actualMinutes != null
+                      ? `${((timeEntry.actualMinutes - timeEntry.miscMinutes) / 60).toFixed(2)}h`
+                      : "—"}
+                  </p>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-600">Expected Hours</label>
+                  <p className="font-medium">
+                    {timeEntry.expectedMinutes != null ? `${(timeEntry.expectedMinutes / 60).toFixed(2)}h` : "—"}
+                  </p>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-600">Efficiency</label>
+                  <p className="font-medium">
+                    {timeEntry.efficiency != null ? (
+                      <span
+                        className={
+                          timeEntry.efficiency >= 90
+                            ? "text-green-600"
+                            : timeEntry.efficiency >= 70
+                            ? "text-yellow-600"
+                            : "text-red-600"
+                        }
+                      >
+                        {timeEntry.efficiency.toFixed(0)}% trackable
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </p>
+                  {overallEff != null && (
+                    <p className="text-sm text-gray-500">{overallEff.toFixed(0)}% overall</p>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
 
