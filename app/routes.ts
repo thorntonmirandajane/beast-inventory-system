@@ -41,6 +41,7 @@ export default [
   route("disposals", "routes/disposals.tsx"),
   route("admin-submit-worker-task", "routes/admin-submit-worker-task.tsx"),
   route("admin-manual-time-entry", "routes/admin-manual-time-entry.tsx"),
+  route("admin-time-import", "routes/admin-time-import.tsx"),
   route("process-tutorials", "routes/process-tutorials.tsx"),
   route("tutorials", "routes/tutorials.tsx"),
   route("audit-log", "routes/audit-log.tsx"),

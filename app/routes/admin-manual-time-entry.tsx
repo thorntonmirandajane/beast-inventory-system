@@ -135,11 +135,14 @@ export default function AdminManualTimeEntry() {
 
   return (
     <Layout user={user}>
-      <div className="page-header">
-        <h1 className="page-title">Add Manual Time Entry</h1>
-        <p className="page-subtitle">
-          Enter time for workers who forgot to clock in/out
-        </p>
+      <div className="page-header flex items-start justify-between">
+        <div>
+          <h1 className="page-title">Add Manual Time Entry</h1>
+          <p className="page-subtitle">
+            Enter time for workers who forgot to clock in/out
+          </p>
+        </div>
+        <a href="/admin-time-import" className="btn btn-secondary">Import from CSV</a>
       </div>
 
       {actionData?.error && (
