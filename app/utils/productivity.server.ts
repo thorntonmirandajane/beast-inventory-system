@@ -283,15 +283,11 @@ export async function approveTimeEntry(
           continue;
         }
 
-        const transition = PROCESS_TRANSITIONS[line.processName];
-        if (!transition) {
-          details.push(`  SKIPPED: No transition found for process "${line.processName}"`);
-          console.warn(`[Approve] No transition found for process: ${line.processName}`);
-          continue;
-        }
-
-        details.push(`  Transition: produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
-        console.log(`[Approve] Transition found: consumes ${transition.consumes}, produces ${transition.produces}, consumesRawFromBom: ${transition.consumesRawFromBom}`);
+        // NOTE: inventory movement is BOM-driven — it depends only on the
+        // line's output SKU and its BOM, NOT on the process name. So we do NOT
+        // gate on a hardcoded process list anymore (that skipped any process the
+        // user added, like "Tipping (100g Titanium)", and silently moved no
+        // inventory). The process is just a label for efficiency.
 
         // Move inventory through the SINGLE production engine
         // (app/utils/production.ts → applyProduction). Accepted units consume
@@ -312,8 +308,11 @@ export async function approveTimeEntry(
           tx
         );
         if (!accepted.success) {
-          details.push(`  FAILED: ${accepted.error}`);
-          throw new Error(accepted.error ?? "Production failed");
+          // SKU has no BOM (e.g. a raw or mis-mapped output) or wasn't found —
+          // skip this line rather than failing the whole approval.
+          details.push(`  SKIPPED: ${accepted.error}`);
+          console.warn(`[Approve] Skipping ${skuName}: ${accepted.error}`);
+          continue;
         }
         details.push(`  Produced ${finalQuantity} ${skuName}, consumed its direct components`);
         for (const w of accepted.warnings) {
