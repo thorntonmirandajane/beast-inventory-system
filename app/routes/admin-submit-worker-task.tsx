@@ -155,7 +155,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // it, which is what moves the new tasks' inventory.
     const allLines = await prisma.timeEntryLine.findMany({ where: { timeEntryId: timeEntry.id } });
     const expectedMinutes = allLines.reduce((sum, l) => sum + l.expectedSeconds, 0) / 60;
-    const efficiency = trackableEfficiency(expectedMinutes, timeEntry.actualMinutes, timeEntry.miscMinutes);
+    // Misc time from the form (hours); fall back to whatever's already on the entry.
+    const miscHours = parseFloat(formData.get("miscHours") as string);
+    const miscMinutes =
+      Number.isFinite(miscHours) && miscHours > 0 ? Math.round(miscHours * 60) : timeEntry.miscMinutes ?? 0;
+    const efficiency = trackableEfficiency(expectedMinutes, timeEntry.actualMinutes, miscMinutes);
 
     await prisma.workerTimeEntry.update({
       where: { id: timeEntry.id },
@@ -163,6 +167,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         status: "PENDING",
         expectedMinutes,
         efficiency,
+        miscMinutes,
         approvedById: null,
         approvedAt: null,
       },
@@ -189,6 +194,7 @@ export default function AdminSubmitWorkerTask() {
 
   const [selectedWorker, setSelectedWorker] = useState("");
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split("T")[0]);
+  const [miscHours, setMiscHours] = useState("0");
   const [selectedProcess, setSelectedProcess] = useState("");
   const [selectedSku, setSelectedSku] = useState("");
   const [quantity, setQuantity] = useState<number>(0);
@@ -355,6 +361,20 @@ export default function AdminSubmitWorkerTask() {
                   will be created for this date.
                 </p>
               </div>
+              <div className="form-group">
+                <label className="form-label">Misc time (hours)</label>
+                <input
+                  type="number"
+                  value={miscHours}
+                  onChange={(e) => setMiscHours(e.target.value)}
+                  step="0.25"
+                  min="0"
+                  className="form-input"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Time pulled off for other projects — excluded from efficiency.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -503,6 +523,7 @@ export default function AdminSubmitWorkerTask() {
                   <input type="hidden" name="intent" value="submit-tasks" />
                   <input type="hidden" name="workerId" value={selectedWorker} />
                   <input type="hidden" name="date" value={selectedDate} />
+                  <input type="hidden" name="miscHours" value={miscHours} />
 
                   <div className="flex gap-3">
                     <button

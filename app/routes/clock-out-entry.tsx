@@ -148,6 +148,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const clockOutEventId = formData.get("clockOutEventId") as string;
   const clockOutTime = new Date(formData.get("clockOutTime") as string);
   const breakMinutes = parseInt(formData.get("breakMinutes") as string, 10);
+  const miscHours = parseFloat(formData.get("miscHours") as string);
+  const miscMinutes = Number.isFinite(miscHours) && miscHours > 0 ? Math.round(miscHours * 60) : 0;
 
   // Parse the lines from form data
   const linesJson = formData.get("linesJson") as string;
@@ -173,7 +175,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       clockOutEventId,
       clockOutTime,
       breakMinutes,
-      validLines
+      validLines,
+      miscMinutes
     );
 
     return redirect("/worker-dashboard?submitted=true");
@@ -486,6 +489,22 @@ export default function ClockOutEntry() {
         <input type="hidden" name="clockOutTime" value={clockOutEvent.timestamp.toString()} />
         <input type="hidden" name="breakMinutes" value={breakMinutes} />
         <input type="hidden" name="linesJson" value={linesJson} />
+        <div className="form-group mb-4 max-w-xs">
+          <label htmlFor="miscHours" className="form-label">Misc time (hours)</label>
+          <input
+            id="miscHours"
+            type="number"
+            name="miscHours"
+            step="0.25"
+            min="0"
+            defaultValue="0"
+            inputMode="decimal"
+            className="form-input"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Time pulled off for other projects — doesn't count against your efficiency.
+          </p>
+        </div>
         <div className="flex gap-3">
           <button
             type="submit"

@@ -173,7 +173,8 @@ export async function submitTimeEntry(
     secondsPerUnit: number;
     workerTaskId?: string | null;
     notes?: string | null;
-  }>
+  }>,
+  miscMinutes: number = 0
 ) {
   // Calculate actual minutes worked
   const entry = await prisma.workerTimeEntry.findUnique({
@@ -192,8 +193,8 @@ export async function submitTimeEntry(
   // Calculate expected minutes from lines
   const expectedMinutes = calculateExpectedMinutes(lines);
 
-  // Calculate efficiency (trackable — excludes any misc time on the entry)
-  const efficiency = trackableEfficiency(expectedMinutes, actualMinutes, entry.miscMinutes);
+  // Calculate efficiency (trackable — excludes misc time)
+  const efficiency = trackableEfficiency(expectedMinutes, actualMinutes, miscMinutes);
 
   // Update entry and create lines
   return prisma.$transaction(async (tx) => {
@@ -225,6 +226,7 @@ export async function submitTimeEntry(
         clockOutEventId,
         clockOutTime,
         breakMinutes,
+        miscMinutes,
         actualMinutes,
         expectedMinutes,
         efficiency,
