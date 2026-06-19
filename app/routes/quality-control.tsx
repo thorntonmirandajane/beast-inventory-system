@@ -494,7 +494,7 @@ export default function QualityControl() {
                 <h1 className="page-title">Review Time Entry</h1>
                 <p className="page-subtitle">
                   {timeEntry.user.firstName} {timeEntry.user.lastName} •{" "}
-                  {formatDate(timeEntry.clockOutTime!)}
+                  {formatDate(timeEntry.clockInTime)}
                 </p>
               </div>
               <Link to={`/quality-control?tab=${tab}`} className="btn btn-ghost">
@@ -540,11 +540,11 @@ export default function QualityControl() {
                 </div>
                 <div>
                   <label className="text-sm font-medium text-gray-600">Clock Out</label>
-                  <p className="font-medium">{formatDateTime(timeEntry.clockOutTime!)}</p>
+                  <p className="font-medium">{timeEntry.clockOutTime ? formatDateTime(timeEntry.clockOutTime) : "—"}</p>
                 </div>
                 <div>
                   <label className="text-sm font-medium text-gray-600">Hours Worked</label>
-                  <p className="font-medium">{(timeEntry.actualMinutes / 60).toFixed(2)}h</p>
+                  <p className="font-medium">{timeEntry.actualMinutes != null ? `${(timeEntry.actualMinutes / 60).toFixed(2)}h` : "—"}</p>
                 </div>
               </div>
               {timeEntry.efficiency !== null && (
@@ -830,12 +830,14 @@ export default function QualityControl() {
                       <td className="font-medium">
                         {entry.user.firstName} {entry.user.lastName}
                       </td>
-                      <td>{formatDate(entry.clockOutTime!)}</td>
+                      <td>{formatDate(entry.clockInTime)}</td>
                       <td>
-                        {formatTime(entry.clockInTime)} - {formatTime(entry.clockOutTime!)}
-                        <span className="text-gray-500 text-sm ml-2">
-                          ({(entry.actualMinutes / 60).toFixed(1)}h)
-                        </span>
+                        {formatTime(entry.clockInTime)} - {entry.clockOutTime ? formatTime(entry.clockOutTime) : "—"}
+                        {entry.actualMinutes != null && (
+                          <span className="text-gray-500 text-sm ml-2">
+                            ({(entry.actualMinutes / 60).toFixed(1)}h)
+                          </span>
+                        )}
                       </td>
                       <td>
                         {entry.lines.length} task{entry.lines.length !== 1 ? "s" : ""}
