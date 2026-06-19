@@ -1,10 +1,11 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, Link, useFetcher } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, Link, useFetcher, redirect } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import { ImageUpload } from "../components/ImageUpload";
 import prisma from "../db.server";
 import { approveTimeEntry } from "../utils/productivity.server";
+import { matchesProcess } from "../utils/process";
 import { useState, useEffect } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -33,10 +34,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       },
     });
 
-    // Get process configs for display names
+    // Get process configs (display names + seconds/unit) and assignable SKUs
+    // for the in-review "Add Task" form.
     const processConfigs = await prisma.processConfig.findMany({
       where: { isActive: true },
-      select: { processName: true, displayName: true },
+      select: { processName: true, displayName: true, secondsPerUnit: true },
+      orderBy: { displayName: "asc" },
+    });
+    const assignableSkus = await prisma.sku.findMany({
+      where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } },
+      select: { id: true, sku: true, name: true, material: true },
+      orderBy: [{ type: "asc" }, { sku: "asc" }],
     });
 
     // Preview of what inventory WILL change on approval: each accepted line
@@ -85,7 +93,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       movementPreview = [];
     }
 
-    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs, justApproved: false, movementPreview };
+    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs, assignableSkus, justApproved: false, movementPreview };
   }
 
   // List view
@@ -136,13 +144,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Get process configs for display names
   const processConfigs = await prisma.processConfig.findMany({
     where: { isActive: true },
-    select: { processName: true, displayName: true },
+    select: { processName: true, displayName: true, secondsPerUnit: true },
+    orderBy: { displayName: "asc" },
   });
 
   // Check if we just approved an entry
   const justApproved = url.searchParams.get("approved") === "true";
 
-  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs, justApproved, movementPreview: [] };
+  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs, assignableSkus: [], justApproved, movementPreview: [] };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -233,6 +242,68 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           : "Approved — inventory updated.",
       warnings,
     };
+  }
+
+  if (intent === "add-line") {
+    const entryId = formData.get("entryId") as string;
+    const processName = formData.get("processName") as string;
+    const skuId = formData.get("skuId") as string;
+    const quantity = parseInt(formData.get("quantity") as string, 10);
+    const secondsPerUnit = parseInt(formData.get("secondsPerUnit") as string, 10) || 0;
+
+    if (!entryId || !processName || !skuId || !quantity || quantity <= 0) {
+      return { error: "Pick a process and SKU and enter a quantity greater than 0." };
+    }
+
+    await prisma.timeEntryLine.create({
+      data: {
+        timeEntryId: entryId,
+        processName,
+        skuId,
+        quantityCompleted: quantity,
+        secondsPerUnit,
+        expectedSeconds: quantity * secondsPerUnit,
+      },
+    });
+
+    // Recompute expected/efficiency, and re-open the entry to PENDING so the new
+    // task gets QC-approved (which is what moves its inventory).
+    const entry = await prisma.workerTimeEntry.findUnique({
+      where: { id: entryId },
+      include: { lines: true },
+    });
+    if (entry) {
+      const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
+      const efficiency =
+        entry.actualMinutes && entry.actualMinutes > 0
+          ? (expectedMinutes / entry.actualMinutes) * 100
+          : null;
+      await prisma.workerTimeEntry.update({
+        where: { id: entryId },
+        data: { expectedMinutes, efficiency, status: "PENDING", approvedById: null, approvedAt: null },
+      });
+    }
+
+    await createAuditLog(user.id, "QC_ADD_LINE", "WorkerTimeEntry", entryId, { processName, skuId, quantity });
+    return { success: true, message: "Task added — entry is pending approval." };
+  }
+
+  if (intent === "delete-entry") {
+    const entryId = formData.get("entryId") as string;
+    const entry = await prisma.workerTimeEntry.findUnique({
+      where: { id: entryId },
+      select: { clockInEventId: true, clockOutEventId: true },
+    });
+    if (!entry) return { error: "Entry not found." };
+
+    await prisma.$transaction(async (tx) => {
+      await tx.workerTimeEntry.delete({ where: { id: entryId } }); // cascades its lines
+      if (entry.clockOutEventId) await tx.clockEvent.delete({ where: { id: entry.clockOutEventId } });
+      await tx.clockEvent.delete({ where: { id: entry.clockInEventId } });
+    });
+
+    await createAuditLog(user.id, "DELETE_TIME_ENTRY", "WorkerTimeEntry", entryId, {});
+    throw redirect(`/quality-control?tab=${formData.get("tab") || "pending"}`);
   }
 
   return { error: "Unknown intent" };
@@ -438,8 +509,100 @@ function RejectTaskModal({
   );
 }
 
+function AddTaskForm({
+  entryId,
+  processConfigs,
+  skus,
+}: {
+  entryId: string;
+  processConfigs: { processName: string; displayName: string; secondsPerUnit: number }[];
+  skus: { id: string; sku: string; name: string; material: string | null }[];
+}) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const [proc, setProc] = useState("");
+  const [skuId, setSkuId] = useState("");
+  const [qty, setQty] = useState("");
+  const cfg = processConfigs.find((p) => p.processName === proc);
+  const filtered = cfg ? skus.filter((s) => matchesProcess(s.material, cfg.displayName)) : [];
+  const busy = fetcher.state !== "idle";
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) {
+      setSkuId("");
+      setQty("");
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  return (
+    <div className="card mt-6">
+      <div className="card-header">
+        <h3 className="card-title">Add a Task</h3>
+        <p className="text-sm text-gray-500">
+          Adds production to this entry and sends it back to pending so approving it moves inventory.
+        </p>
+      </div>
+      <div className="card-body">
+        {fetcher.data?.error && <div className="alert alert-error mb-4">{fetcher.data.error}</div>}
+        <fetcher.Form method="post" className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+          <input type="hidden" name="intent" value="add-line" />
+          <input type="hidden" name="entryId" value={entryId} />
+          <input type="hidden" name="secondsPerUnit" value={cfg?.secondsPerUnit ?? 0} />
+          <div className="form-group mb-0">
+            <label className="form-label text-sm">Process</label>
+            <select
+              name="processName"
+              value={proc}
+              onChange={(e) => { setProc(e.target.value); setSkuId(""); }}
+              className="form-input"
+              required
+            >
+              <option value="">Select…</option>
+              {processConfigs.map((p) => (
+                <option key={p.processName} value={p.processName}>{p.displayName}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group mb-0 md:col-span-2">
+            <label className="form-label text-sm">SKU completed</label>
+            <select
+              name="skuId"
+              value={skuId}
+              onChange={(e) => setSkuId(e.target.value)}
+              className="form-input"
+              required
+              disabled={!proc}
+            >
+              <option value="">{proc ? "Select…" : "Pick a process first"}</option>
+              {filtered.map((s) => (
+                <option key={s.id} value={s.id}>{s.sku} — {s.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group mb-0">
+            <label className="form-label text-sm">Quantity</label>
+            <input
+              type="number"
+              name="quantity"
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              min="1"
+              className="form-input text-center"
+              required
+            />
+          </div>
+          <div className="md:col-span-4">
+            <button type="submit" className="btn btn-secondary" disabled={busy || !proc || !skuId || !qty}>
+              {busy ? "Adding…" : "+ Add Task"}
+            </button>
+          </div>
+        </fetcher.Form>
+      </div>
+    </div>
+  );
+}
+
 export default function QualityControl() {
-  const { user, timeEntries, timeEntry, tab, entryId, processConfigs, justApproved, movementPreview } = useLoaderData<typeof loader>();
+  const { user, timeEntries, timeEntry, tab, entryId, processConfigs, assignableSkus, justApproved, movementPreview } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -676,6 +839,8 @@ export default function QualityControl() {
                 </div>
               )}
 
+              <AddTaskForm entryId={timeEntry.id} processConfigs={processConfigs} skus={assignableSkus} />
+
               {timeEntry.status === "PENDING" && movementPreview.length > 0 && (
                 <div className="card mt-6">
                   <div className="card-header">
@@ -727,6 +892,22 @@ export default function QualityControl() {
                   </Form>
                 </div>
               )}
+
+              <div className="mt-6 border-t pt-4">
+                <Form
+                  method="post"
+                  onSubmit={(e) => {
+                    if (!confirm("Delete this entire time entry (its tasks and clock events)? Inventory already moved by a prior approval is NOT reversed.")) {
+                      e.preventDefault();
+                    }
+                  }}
+                >
+                  <input type="hidden" name="intent" value="delete-entry" />
+                  <input type="hidden" name="entryId" value={timeEntry.id} />
+                  <input type="hidden" name="tab" value={tab} />
+                  <button type="submit" className="btn btn-error">Delete Entry</button>
+                </Form>
+              </div>
             </div>
           </div>
 
