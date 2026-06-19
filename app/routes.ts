@@ -36,6 +36,7 @@ export default [
   route("schedules", "routes/schedules.tsx"),
   route("payroll", "routes/payroll.tsx"),
   route("capacity", "routes/capacity.tsx"),
+  route("capacity/import", "routes/capacity.import.tsx"),
   route("forecasting", "routes/forecasting.tsx"),
   route("quality-control", "routes/quality-control.tsx"),
   route("disposals", "routes/disposals.tsx"),

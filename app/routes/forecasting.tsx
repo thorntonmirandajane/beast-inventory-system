@@ -14,6 +14,7 @@ import {
   fetchProgrammedOrders,
   type ProgrammedOrdersResponse,
 } from "../utils/queued-orders-client.server";
+import { resolveProcessConfig } from "../utils/process";
 
 // Recursive function to explode BOM and find all raw materials at any depth
 async function explodeBomRecursively(
@@ -292,11 +293,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // in its `material` field.
     const processTotals: Record<string, { units: number; seconds: number }> = {};
     if (needToBuild > 0) {
-      const addLabor = (process: string | null, units: number) => {
-        if (!process || units <= 0 || !processMap.has(process)) return;
-        if (!processTotals[process]) processTotals[process] = { units: 0, seconds: 0 };
-        processTotals[process].units += units;
-        processTotals[process].seconds += units * (processMap.get(process)?.secondsPerUnit || 0);
+      const addLabor = (material: string | null, units: number) => {
+        if (units <= 0) return;
+        // Resolve the SKU's `material` to its process the SAME way the Process
+        // Times page and worker submit-task do, so labor counts every stage.
+        const cfg = resolveProcessConfig(material, processConfigs);
+        if (!cfg) return;
+        const key = cfg.displayName;
+        if (!processTotals[key]) processTotals[key] = { units: 0, seconds: 0 };
+        processTotals[key].units += units;
+        processTotals[key].seconds += units * (cfg.secondsPerUnit || 0);
       };
       // Final pack/assembly stage for the whole quantity being built.
       addLabor(sku.material, needToBuild);

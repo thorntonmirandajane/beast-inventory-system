@@ -417,9 +417,14 @@ export default function Capacity() {
 
   return (
     <Layout user={user}>
-      <div className="page-header">
-        <h1 className="page-title">Process Times</h1>
-        <p className="page-subtitle">Configure time per unit for each process</p>
+      <div className="page-header flex items-start justify-between">
+        <div>
+          <h1 className="page-title">Process Times</h1>
+          <p className="page-subtitle">Configure time per unit for each process</p>
+        </div>
+        {user.role === "ADMIN" && (
+          <a href="/capacity/import" className="btn btn-secondary">Import Assignments (CSV)</a>
+        )}
       </div>
 
       {actionData?.error && (
