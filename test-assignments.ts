@@ -11,9 +11,9 @@ function check(label: string, cond: boolean, extra = "") {
 // Stage 2 (blading): blocked (no tipped ferrules in stock yet).
 // Stage 3 (stud test): 100 units @ 60s = 1.67h, buildable.
 const queue: WorkItem[] = [
-  { process: "Tipping", skuId: "t1", sku: "TIPPED", name: "Tipped Ferrule", units: 1000, hoursPerUnit: 30 / 3600, buildable: true, stageOrder: 1 },
-  { process: "Blading", skuId: "b1", sku: "BLADED", name: "Bladed Ferrule", units: 500, hoursPerUnit: 45 / 3600, buildable: false, stageOrder: 2 },
-  { process: "Stud Testing", skuId: "s1", sku: "BEAST", name: "Broadhead", units: 100, hoursPerUnit: 60 / 3600, buildable: true, stageOrder: 3 },
+  { process: "Tipping", processName: "TIPPING", skuId: "t1", sku: "TIPPED", name: "Tipped Ferrule", units: 1000, hoursPerUnit: 30 / 3600, buildable: true, stageOrder: 1 },
+  { process: "Blading", processName: "BLADING", skuId: "b1", sku: "BLADED", name: "Bladed Ferrule", units: 500, hoursPerUnit: 45 / 3600, buildable: false, stageOrder: 2 },
+  { process: "Stud Testing", processName: "STUD_TESTING", skuId: "s1", sku: "BEAST", name: "Broadhead", units: 100, hoursPerUnit: 60 / 3600, buildable: true, stageOrder: 3 },
 ];
 
 const workers: WorkerCapacity[] = [

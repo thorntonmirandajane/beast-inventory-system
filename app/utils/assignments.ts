@@ -7,7 +7,8 @@
 // testable without a database.
 
 export interface WorkItem {
-  process: string; // process display name
+  process: string; // process display name (for the UI)
+  processName: string; // ProcessConfig.processName (for the WorkerTask record)
   skuId: string;
   sku: string;
   name: string;
@@ -27,6 +28,7 @@ export interface Assignment {
   userId: string;
   name: string;
   process: string;
+  processName: string;
   skuId: string;
   sku: string;
   skuName: string;
@@ -70,6 +72,7 @@ export function assignWork(queue: WorkItem[], workers: WorkerCapacity[]): Assign
         userId: worker.userId,
         name: worker.name,
         process: item.process,
+        processName: item.processName,
         skuId: item.skuId,
         sku: item.sku,
         skuName: item.name,
