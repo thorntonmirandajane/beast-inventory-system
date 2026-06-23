@@ -1,320 +1,494 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData, Form } from "react-router";
+import { useLoaderData, Form, Link } from "react-router";
 import { requireUser } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 
+// Flat rate for Expected Labor $ and the fallback when a worker has no pay rate.
+const EXPECTED_RATE = 20;
+const FALLBACK_RATE = 20;
+
+type EntryLite = {
+  userId: string;
+  actualMinutes: number | null;
+  expectedMinutes: number | null;
+  miscMinutes: number;
+  clockInTime: Date;
+  clockOutTime: Date | null;
+  lines: { processName: string; quantityCompleted: number; skuId: string | null; sku: { sku: string; name: string } | null }[];
+};
+
+// Core stats from a set of entries. Expected/actual are minutes; ratios are
+// identical in hours, so we keep minutes for the math and expose hours.
+function computeStats(entries: EntryLite[]) {
+  let actual = 0,
+    misc = 0,
+    expected = 0;
+  const processCounts: Record<string, number> = {};
+  const skuCounts: Record<string, { sku: string; name: string; count: number }> = {};
+  for (const e of entries) {
+    actual += e.actualMinutes ?? 0;
+    misc += e.miscMinutes ?? 0;
+    expected += e.expectedMinutes ?? 0;
+    for (const line of e.lines) {
+      processCounts[line.processName] = (processCounts[line.processName] ?? 0) + line.quantityCompleted;
+      if (line.skuId && line.sku) {
+        const c = skuCounts[line.skuId] ?? { sku: line.sku.sku, name: line.sku.name, count: 0 };
+        c.count += line.quantityCompleted;
+        skuCounts[line.skuId] = c;
+      }
+    }
+  }
+  const trackable = Math.max(0, actual - misc);
+  return {
+    shifts: entries.length,
+    totalHours: actual / 60,
+    miscHours: misc / 60,
+    trackableHours: trackable / 60,
+    expectedHours: expected / 60,
+    overall: actual > 0 ? (expected / actual) * 100 : null,
+    trackableEff: trackable > 0 ? (expected / trackable) * 100 : null,
+    miscPct: actual > 0 ? (misc / actual) * 100 : 0,
+    topProcesses: Object.entries(processCounts).sort(([, a], [, b]) => b - a).slice(0, 3).map(([process, count]) => ({ process, count })),
+    topSkus: Object.values(skuCounts).sort((a, b) => b.count - a.count).slice(0, 3),
+  };
+}
+
+function ymd(d: Date) {
+  return d.toISOString().split("T")[0];
+}
+function mondayOf(d: Date) {
+  const day = d.getDay(); // 0 Sun .. 6 Sat
+  const diff = day === 0 ? -6 : 1 - day;
+  const m = new Date(d);
+  m.setDate(d.getDate() + diff);
+  m.setHours(0, 0, 0, 0);
+  return m;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
-
-  if (user.role !== "ADMIN") {
-    throw new Response("Unauthorized", { status: 403 });
-  }
+  if (user.role !== "ADMIN") throw new Response("Unauthorized", { status: 403 });
 
   const url = new URL(request.url);
-  const startDateParam = url.searchParams.get("startDate");
-  const endDateParam = url.searchParams.get("endDate");
+  const view = url.searchParams.get("view") === "weekly" ? "weekly" : "range";
+  const employeeId = url.searchParams.get("employeeId") || "all";
 
-  // Default to last 30 days
-  const endDate = endDateParam ? new Date(endDateParam) : new Date();
-  endDate.setHours(23, 59, 59, 999);
-
-  const startDate = startDateParam ? new Date(startDateParam) : new Date();
-  if (!startDateParam) {
-    startDate.setDate(startDate.getDate() - 30);
+  // Effective date window depends on the view.
+  let startDate: Date;
+  let endDate: Date;
+  let weekStart: Date | null = null;
+  if (view === "weekly") {
+    const ws = url.searchParams.get("weekStart");
+    weekStart = ws ? mondayOf(new Date(`${ws}T12:00:00`)) : mondayOf(new Date());
+    startDate = new Date(weekStart);
+    endDate = new Date(weekStart);
+    endDate.setDate(endDate.getDate() + 6);
+    endDate.setHours(23, 59, 59, 999);
+  } else {
+    endDate = url.searchParams.get("endDate") ? new Date(url.searchParams.get("endDate")!) : new Date();
+    endDate.setHours(23, 59, 59, 999);
+    startDate = url.searchParams.get("startDate") ? new Date(url.searchParams.get("startDate")!) : new Date();
+    if (!url.searchParams.get("startDate")) startDate.setDate(startDate.getDate() - 30);
+    startDate.setHours(0, 0, 0, 0);
   }
-  startDate.setHours(0, 0, 0, 0);
 
-  // Get all workers
-  const workers = await prisma.user.findMany({
-    where: {
-      role: "WORKER",
-      isActive: true,
-    },
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      email: true,
-    },
+  const users = await prisma.user.findMany({
+    where: { isActive: true },
+    select: { id: true, firstName: true, lastName: true, email: true, role: true, payRate: true },
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
 
-  // Get approved time entries in the date range
-  const timeEntries = await prisma.workerTimeEntry.findMany({
-    where: {
-      status: "APPROVED",
-      clockOutTime: {
-        gte: startDate,
-        lte: endDate,
-      },
-    },
-    include: {
-      user: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-        },
-      },
+  const entries = await prisma.workerTimeEntry.findMany({
+    // Filter by clock-IN so misc/admin entries with a null clock-out still count.
+    where: { status: "APPROVED", clockInTime: { gte: startDate, lte: endDate } },
+    select: {
+      userId: true,
+      actualMinutes: true,
+      expectedMinutes: true,
+      miscMinutes: true,
+      clockInTime: true,
+      clockOutTime: true,
       lines: {
-        include: {
-          sku: {
-            select: {
-              sku: true,
-              name: true,
-            },
-          },
-        },
+        select: { processName: true, quantityCompleted: true, skuId: true, sku: { select: { sku: true, name: true } } },
       },
     },
-    orderBy: { clockOutTime: "desc" },
   });
 
-  // Calculate efficiency stats per worker
-  const workerStats = workers.map((worker) => {
-    const workerEntries = timeEntries.filter((e) => e.userId === worker.id);
+  const byUser = new Map<string, EntryLite[]>();
+  for (const e of entries) {
+    const arr = byUser.get(e.userId) ?? [];
+    arr.push(e);
+    byUser.set(e.userId, arr);
+  }
 
-    let totalActualMinutes = 0;
-    let totalExpectedMinutes = 0;
-    let totalShifts = workerEntries.length;
-    const efficiencyScores: number[] = [];
+  // Per-worker stats + labor. Include role-WORKER roster plus anyone who logged
+  // time (so managers with misc time show up, matching the spreadsheet).
+  const rows = users
+    .filter((u) => u.role === "WORKER" || byUser.has(u.id))
+    .map((u) => {
+      const s = computeStats(byUser.get(u.id) ?? []);
+      const rate = u.payRate ?? FALLBACK_RATE;
+      const laborCost = s.totalHours * rate;
+      const expectedLabor = s.expectedHours * EXPECTED_RATE;
+      return {
+        workerId: u.id,
+        name: `${u.lastName}, ${u.firstName}`,
+        email: u.email,
+        payRate: u.payRate,
+        missingRate: u.payRate == null && s.shifts > 0,
+        ...s,
+        laborCost,
+        expectedLabor,
+        laborDiff: expectedLabor - laborCost,
+      };
+    });
 
-    const processCounts: Record<string, number> = {};
-    const skuCounts: Record<string, { sku: string; name: string; count: number }> = {};
+  // Team aggregate (weighted — the correct headline, not a mean of percentages).
+  const allEntries = rows.flatMap((r) => byUser.get(r.workerId) ?? []);
+  const team = computeStats(allEntries);
+  const teamLabor = rows.reduce((sum, r) => sum + r.laborCost, 0);
+  const teamExpectedLabor = team.expectedHours * EXPECTED_RATE;
+  const missingRateNames = rows.filter((r) => r.missingRate).map((r) => r.name);
 
-    for (const entry of workerEntries) {
-      if (entry.actualMinutes) totalActualMinutes += entry.actualMinutes;
-      if (entry.expectedMinutes) totalExpectedMinutes += entry.expectedMinutes;
-      if (entry.efficiency && entry.efficiency > 0) {
-        efficiencyScores.push(entry.efficiency);
+  // Single Employee Summary target (All = team).
+  const selected = employeeId !== "all" ? rows.find((r) => r.workerId === employeeId) : null;
+  const summaryBlock = selected
+    ? {
+        label: selected.name,
+        totalHours: selected.totalHours,
+        miscHours: selected.miscHours,
+        trackableHours: selected.trackableHours,
+        expectedHours: selected.expectedHours,
+        overall: selected.overall,
+        trackableEff: selected.trackableEff,
+        miscPct: selected.miscPct,
+        totalLabor: selected.laborCost,
+        expectedLabor: selected.expectedLabor,
+        laborDiff: selected.laborDiff,
       }
+    : {
+        label: "All employees",
+        totalHours: team.totalHours,
+        miscHours: team.miscHours,
+        trackableHours: team.trackableHours,
+        expectedHours: team.expectedHours,
+        overall: team.overall,
+        trackableEff: team.trackableEff,
+        miscPct: team.miscPct,
+        totalLabor: teamLabor,
+        expectedLabor: teamExpectedLabor,
+        laborDiff: teamExpectedLabor - teamLabor,
+      };
 
-      // Count processes and SKUs
-      for (const line of entry.lines) {
-        // Count by process
-        if (!processCounts[line.processName]) {
-          processCounts[line.processName] = 0;
-        }
-        processCounts[line.processName] += line.quantityCompleted;
-
-        // Count by SKU
-        if (line.skuId && line.sku) {
-          if (!skuCounts[line.skuId]) {
-            skuCounts[line.skuId] = {
-              sku: line.sku.sku,
-              name: line.sku.name,
-              count: 0,
-            };
-          }
-          skuCounts[line.skuId].count += line.quantityCompleted;
-        }
-      }
-    }
-
-    const avgEfficiency =
-      efficiencyScores.length > 0
-        ? efficiencyScores.reduce((sum, e) => sum + e, 0) / efficiencyScores.length
-        : 0;
-
-    const totalHours = totalActualMinutes / 60;
-    const expectedHours = totalExpectedMinutes / 60;
-
-    // Get top 3 processes and SKUs
-    const topProcesses = Object.entries(processCounts)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 3)
-      .map(([process, count]) => ({ process, count }));
-
-    const topSkus = Object.values(skuCounts)
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 3);
-
-    return {
-      workerId: worker.id,
-      workerName: `${worker.firstName} ${worker.lastName}`,
-      workerEmail: worker.email,
-      totalShifts,
-      totalHours: Math.round(totalHours * 10) / 10,
-      expectedHours: Math.round(expectedHours * 10) / 10,
-      avgEfficiency: Math.round(avgEfficiency * 10) / 10,
-      topProcesses,
-      topSkus,
+  // Weekly grid (Mon–Sun): per worker, per-day Overall efficiency + week totals.
+  let weekly: null | {
+    days: { label: string; date: string }[];
+    rows: { name: string; cells: (number | null)[]; weeklyEff: number | null; weeklyHours: number }[];
+    teamCells: (number | null)[];
+    teamWeeklyEff: number | null;
+    teamWeeklyHours: number;
+  } = null;
+  if (view === "weekly" && weekStart) {
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(weekStart!);
+      d.setDate(d.getDate() + i);
+      return { label: d.toLocaleDateString(undefined, { weekday: "short", month: "numeric", day: "numeric" }), date: ymd(d) };
+    });
+    const dayIndex = (e: EntryLite) => {
+      const d = e.clockInTime ?? e.clockOutTime;
+      return d ? days.findIndex((x) => x.date === ymd(new Date(d))) : -1;
     };
-  });
+    // accumulate expected/actual minutes per worker per day, and team per day
+    const teamExp = Array(7).fill(0);
+    const teamAct = Array(7).fill(0);
+    const weeklyRows = rows.map((r) => {
+      const exp = Array(7).fill(0);
+      const act = Array(7).fill(0);
+      for (const e of byUser.get(r.workerId) ?? []) {
+        const i = dayIndex(e);
+        if (i < 0) continue;
+        exp[i] += e.expectedMinutes ?? 0;
+        act[i] += e.actualMinutes ?? 0;
+        teamExp[i] += e.expectedMinutes ?? 0;
+        teamAct[i] += e.actualMinutes ?? 0;
+      }
+      const cells = days.map((_, i) => (act[i] > 0 ? (exp[i] / act[i]) * 100 : null));
+      const totAct = act.reduce((a, b) => a + b, 0);
+      const totExp = exp.reduce((a, b) => a + b, 0);
+      return {
+        name: r.name,
+        cells,
+        weeklyEff: totAct > 0 ? (totExp / totAct) * 100 : null,
+        weeklyHours: totAct / 60,
+      };
+    });
+    const teamCells = days.map((_, i) => (teamAct[i] > 0 ? (teamExp[i] / teamAct[i]) * 100 : null));
+    const tAct = teamAct.reduce((a, b) => a + b, 0);
+    const tExp = teamExp.reduce((a, b) => a + b, 0);
+    weekly = {
+      days,
+      rows: weeklyRows,
+      teamCells,
+      teamWeeklyEff: tAct > 0 ? (tExp / tAct) * 100 : null,
+      teamWeeklyHours: tAct / 60,
+    };
+  }
 
-  // Sort by total hours descending
-  workerStats.sort((a, b) => b.totalHours - a.totalHours);
-
-  // Calculate summary stats
-  const totalHours = workerStats.reduce((sum, w) => sum + w.totalHours, 0);
-  const totalShifts = workerStats.reduce((sum, w) => sum + w.totalShifts, 0);
-  const avgEfficiencyAll =
-    workerStats.length > 0
-      ? workerStats.reduce((sum, w) => sum + w.avgEfficiency, 0) / workerStats.length
-      : 0;
+  const prevWeek = weekStart ? ymd(new Date(weekStart.getTime() - 7 * 86400000)) : null;
+  const nextWeek = weekStart ? ymd(new Date(weekStart.getTime() + 7 * 86400000)) : null;
 
   return {
     user,
-    workerStats,
-    startDate: startDate.toISOString().split("T")[0],
-    endDate: endDate.toISOString().split("T")[0],
-    summary: {
-      totalWorkers: workerStats.filter((w) => w.totalShifts > 0).length,
-      totalHours: Math.round(totalHours * 10) / 10,
-      totalShifts,
-      avgEfficiency: Math.round(avgEfficiencyAll * 10) / 10,
-    },
+    view,
+    employeeId,
+    startDate: ymd(startDate),
+    endDate: ymd(endDate),
+    weekStart: weekStart ? ymd(weekStart) : null,
+    prevWeek,
+    nextWeek,
+    rows: rows.sort((a, b) => a.name.localeCompare(b.name)),
+    team,
+    teamLabor,
+    teamExpectedLabor,
+    missingRateNames,
+    summaryBlock,
+    weekly,
+    activeWorkers: rows.filter((r) => r.shifts > 0).length,
+    totalShifts: rows.reduce((s, r) => s + r.shifts, 0),
   };
 };
 
+const pct = (v: number | null) => (v == null ? "—" : `${Math.round(v)}%`);
+const usd = (v: number) => `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+function effColor(v: number | null): string {
+  if (v == null) return "#9ca3af";
+  if (v >= 100) return "#10b981";
+  if (v >= 80) return "#f59e0b";
+  return "#ef4444";
+}
+
 export default function WorkerEfficiency() {
-  const { user, workerStats, startDate, endDate, summary } = useLoaderData<typeof loader>();
+  const data = useLoaderData<typeof loader>();
+  const { view, employeeId, rows, summaryBlock, weekly, missingRateNames } = data;
+
+  const empOptions = (
+    <select name="employeeId" defaultValue={employeeId} className="form-input">
+      <option value="all">(All)</option>
+      {rows.map((r) => (
+        <option key={r.workerId} value={r.workerId}>{r.name}</option>
+      ))}
+    </select>
+  );
 
   return (
-    <Layout user={user}>
+    <Layout user={data.user}>
       <div className="page-header">
         <h1 className="page-title">Worker Efficiency</h1>
-        <p className="page-subtitle">View worker productivity metrics by date range</p>
+        <p className="page-subtitle">Trackable vs overall efficiency, labor cost, and weekly breakdown</p>
       </div>
 
-      {/* Date Range Filter */}
-      <div className="card mb-6">
-        <div className="card-header">
-          <h2 className="card-title">Date Range</h2>
-        </div>
+      {/* View tabs */}
+      <div className="tabs mb-4">
+        <Link to={`/worker-efficiency?view=range&employeeId=${employeeId}`} className={`tab ${view === "range" ? "active" : ""}`}>
+          Date Range
+        </Link>
+        <Link to={`/worker-efficiency?view=weekly&employeeId=${employeeId}`} className={`tab ${view === "weekly" ? "active" : ""}`}>
+          Weekly
+        </Link>
+      </div>
+
+      {/* Controls */}
+      <div className="card mb-4">
         <div className="card-body">
-          <Form method="get" className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-            <div className="form-group mb-0">
-              <label className="form-label">Start Date</label>
-              <input
-                type="date"
-                name="startDate"
-                className="form-input"
-                defaultValue={startDate}
-              />
-            </div>
-            <div className="form-group mb-0">
-              <label className="form-label">End Date</label>
-              <input type="date" name="endDate" className="form-input" defaultValue={endDate} />
-            </div>
-            <button type="submit" className="btn btn-primary">
-              Update Range
-            </button>
-          </Form>
+          {view === "range" ? (
+            <Form method="get" className="flex items-end gap-3 flex-wrap">
+              <input type="hidden" name="view" value="range" />
+              <div className="form-group mb-0">
+                <label className="form-label">Start Date</label>
+                <input type="date" name="startDate" defaultValue={data.startDate} className="form-input" />
+              </div>
+              <div className="form-group mb-0">
+                <label className="form-label">End Date</label>
+                <input type="date" name="endDate" defaultValue={data.endDate} className="form-input" />
+              </div>
+              <div className="form-group mb-0">
+                <label className="form-label">Employee</label>
+                {empOptions}
+              </div>
+              <button type="submit" className="btn btn-primary">Update</button>
+            </Form>
+          ) : (
+            <Form method="get" className="flex items-end gap-3 flex-wrap">
+              <input type="hidden" name="view" value="weekly" />
+              <div className="flex items-center gap-2">
+                <Link to={`/worker-efficiency?view=weekly&employeeId=${employeeId}&weekStart=${data.prevWeek}`} className="btn btn-secondary">←</Link>
+                <span className="text-sm font-medium px-2">Week of {data.weekStart}</span>
+                <Link to={`/worker-efficiency?view=weekly&employeeId=${employeeId}&weekStart=${data.nextWeek}`} className="btn btn-secondary">→</Link>
+              </div>
+              <div className="form-group mb-0">
+                <label className="form-label">Jump to week (any date)</label>
+                <input type="date" name="weekStart" defaultValue={data.weekStart ?? undefined} className="form-input" />
+              </div>
+              <div className="form-group mb-0">
+                <label className="form-label">Employee</label>
+                {empOptions}
+              </div>
+              <button type="submit" className="btn btn-primary">Go</button>
+            </Form>
+          )}
         </div>
       </div>
 
-      {/* Summary Stats */}
-      <div className="stats-grid mb-6">
-        <div className="stat-card">
-          <div className="stat-value">{summary.totalWorkers}</div>
-          <div className="stat-label">Active Workers</div>
+      {missingRateNames.length > 0 && (
+        <div className="alert alert-warning mb-4 text-sm">
+          <strong>{missingRateNames.length} worker(s) have no pay rate set</strong> — labor $ uses the
+          ${FALLBACK_RATE}/hr fallback for them: {missingRateNames.join(", ")}.
         </div>
-        <div className="stat-card">
-          <div className="stat-value">{summary.totalShifts}</div>
-          <div className="stat-label">Total Shifts</div>
+      )}
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
+        <Card label="Active Workers" value={String(data.activeWorkers)} />
+        <Card label="Total Shifts" value={String(data.totalShifts)} />
+        <Card label="Total Hours" value={`${data.team.totalHours.toFixed(1)}h`} />
+        <Card label="Overall Efficiency" value={pct(data.team.overall)} color={effColor(data.team.overall)} />
+        <Card label="Trackable Efficiency" value={pct(data.team.trackableEff)} color={effColor(data.team.trackableEff)} />
+      </div>
+
+      {/* Single Employee Summary */}
+      <div className="card mb-4">
+        <div className="card-header">
+          <h2 className="card-title">Summary — {summaryBlock.label}</h2>
         </div>
-        <div className="stat-card">
-          <div className="stat-value">{summary.totalHours}h</div>
-          <div className="stat-label">Total Hours Worked</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-value" style={{ color: getEfficiencyColor(summary.avgEfficiency) }}>
-            {Math.round(summary.avgEfficiency)}%
+        <div className="card-body grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-2 text-sm">
+          <div>
+            <Line k="Total Hours" v={`${summaryBlock.totalHours.toFixed(2)}`} note="total clocked-in hours" />
+            <Line k="Misc Hours" v={`${summaryBlock.miscHours.toFixed(2)}`} note="misc time reported" />
+            <Line k="Trackable Hours" v={`${summaryBlock.trackableHours.toFixed(2)}`} note="non-misc time" />
+            <Line k="Expected Hours" v={`${summaryBlock.expectedHours.toFixed(2)}`} note="labor we completed" />
+            <Line k="Efficiency (trackable)" v={pct(summaryBlock.trackableEff)} bold />
+            <Line k="Overall Efficiency" v={pct(summaryBlock.overall)} bold />
+            <Line k="Misc % of Time" v={`${Math.round(summaryBlock.miscPct)}%`} />
           </div>
-          <div className="stat-label">Average Efficiency</div>
+          <div>
+            <Line k="Total Labor $" v={usd(summaryBlock.totalLabor)} note="actual hours × each person's pay rate" />
+            <Line k={`Expected Labor $`} v={usd(summaryBlock.expectedLabor)} note={`expected hours × $${EXPECTED_RATE}/hr`} />
+            <Line k="Difference $" v={usd(summaryBlock.laborDiff)} note="expected labor − total labor" bold color={summaryBlock.laborDiff >= 0 ? "#10b981" : "#ef4444"} />
+          </div>
         </div>
       </div>
 
-      {/* Worker Efficiency Table */}
-      <div className="card">
-        <div className="card-header">
-          <h2 className="card-title">Worker Details</h2>
-          <p className="text-sm text-gray-500">Individual worker performance metrics</p>
-        </div>
-        <div className="card-body">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Worker</th>
-                <th className="text-center">Shifts</th>
-                <th className="text-right">Hours Worked</th>
-                <th className="text-right">Expected Hours</th>
-                <th className="text-center">Avg Efficiency</th>
-                <th>Top Processes</th>
-                <th>Top SKUs</th>
-              </tr>
-            </thead>
-            <tbody>
-              {workerStats.map((stat) => (
-                <tr key={stat.workerId}>
-                  <td>
-                    <div className="font-semibold">{stat.workerName}</div>
-                    <div className="text-sm text-gray-500">{stat.workerEmail}</div>
-                  </td>
-                  <td className="text-center">{stat.totalShifts}</td>
-                  <td className="text-right font-semibold">{stat.totalHours}h</td>
-                  <td className="text-right text-gray-600">{stat.expectedHours}h</td>
-                  <td className="text-center">
-                    {stat.avgEfficiency > 0 ? (
-                      <span
-                        className="font-bold text-lg"
-                        style={{ color: getEfficiencyColor(stat.avgEfficiency) }}
-                      >
-                        {Math.round(stat.avgEfficiency)}%
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td>
-                    {stat.topProcesses.length > 0 ? (
-                      <div className="text-sm space-y-1">
-                        {stat.topProcesses.map((p, idx) => (
-                          <div key={idx}>
-                            <span className="font-medium">{p.process}:</span>{" "}
-                            <span className="text-gray-600">{p.count}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td>
-                    {stat.topSkus.length > 0 ? (
-                      <div className="text-sm space-y-1">
-                        {stat.topSkus.map((s, idx) => (
-                          <div key={idx}>
-                            <span className="font-mono text-xs">{s.sku}:</span>{" "}
-                            <span className="text-gray-600">{s.count}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {workerStats.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="text-center text-gray-500 py-8">
-                    No worker data found for the selected date range
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {view === "range" ? <RangeTable rows={rows} /> : weekly ? <WeeklyGrid weekly={weekly} /> : null}
     </Layout>
   );
 }
 
-function getEfficiencyColor(efficiency: number): string {
-  if (efficiency >= 100) return "#10b981"; // green
-  if (efficiency >= 80) return "#f59e0b"; // orange
-  return "#ef4444"; // red
+function Card({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div className="card">
+      <div className="card-body">
+        <div className="stat-value" style={color ? { color } : undefined}>{value}</div>
+        <div className="stat-label">{label}</div>
+      </div>
+    </div>
+  );
+}
+
+function Line({ k, v, note, bold, color }: { k: string; v: string; note?: string; bold?: boolean; color?: string }) {
+  return (
+    <div className="flex justify-between border-b last:border-0 py-1">
+      <span className="text-gray-600">{k}{note && <span className="text-xs text-gray-400 ml-1">({note})</span>}</span>
+      <span className={bold ? "font-bold" : "font-medium"} style={color ? { color } : undefined}>{v}</span>
+    </div>
+  );
+}
+
+function RangeTable({ rows }: { rows: ReturnType<typeof useLoaderData<typeof loader>>["rows"] }) {
+  return (
+    <div className="card">
+      <div className="card-header"><h2 className="card-title">Team Summary</h2></div>
+      <div className="card-body overflow-x-auto">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Employee</th>
+              <th className="text-right">Pay $/hr</th>
+              <th className="text-right">Total Hrs</th>
+              <th className="text-right">Misc Hrs</th>
+              <th className="text-right">Trackable Hrs</th>
+              <th className="text-right">Expected Hrs</th>
+              <th className="text-right">Efficiency</th>
+              <th className="text-right">Overall %</th>
+              <th className="text-right">Labor $</th>
+              <th>Top Processes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.workerId}>
+                <td className="font-medium">{r.name}</td>
+                <td className="text-right">
+                  {r.payRate == null ? <span className="text-amber-600" title="No rate set — using fallback">${FALLBACK_RATE}*</span> : `$${r.payRate}`}
+                </td>
+                <td className="text-right">{r.totalHours.toFixed(2)}</td>
+                <td className="text-right">{r.miscHours.toFixed(2)}</td>
+                <td className="text-right">{r.trackableHours.toFixed(2)}</td>
+                <td className="text-right">{r.expectedHours.toFixed(2)}</td>
+                <td className="text-right font-semibold" style={{ color: effColor(r.trackableEff) }}>{pct(r.trackableEff)}</td>
+                <td className="text-right" style={{ color: effColor(r.overall) }}>{pct(r.overall)}</td>
+                <td className="text-right">{usd(r.laborCost)}</td>
+                <td className="text-xs text-gray-500">{r.topProcesses.map((p) => `${p.process}: ${p.count}`).join(", ")}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={10} className="text-center text-gray-500 py-6">No approved time entries in this range.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function WeeklyGrid({ weekly }: { weekly: NonNullable<ReturnType<typeof useLoaderData<typeof loader>>["weekly"]> }) {
+  return (
+    <div className="card">
+      <div className="card-header"><h2 className="card-title">Weekly Team Efficiency (Overall %)</h2></div>
+      <div className="card-body overflow-x-auto">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Employee</th>
+              {weekly.days.map((d) => <th key={d.date} className="text-right">{d.label}</th>)}
+              <th className="text-right">Weekly Eff %</th>
+              <th className="text-right">Weekly Hours</th>
+            </tr>
+          </thead>
+          <tbody>
+            {weekly.rows.map((r) => (
+              <tr key={r.name}>
+                <td className="font-medium">{r.name}</td>
+                {r.cells.map((c, i) => (
+                  <td key={i} className="text-right" style={{ color: effColor(c) }}>{c == null ? "" : pct(c)}</td>
+                ))}
+                <td className="text-right font-semibold" style={{ color: effColor(r.weeklyEff) }}>{pct(r.weeklyEff)}</td>
+                <td className="text-right">{r.weeklyHours.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="font-bold border-t-2">
+              <td>Team Total</td>
+              {weekly.teamCells.map((c, i) => (
+                <td key={i} className="text-right" style={{ color: effColor(c) }}>{c == null ? "" : pct(c)}</td>
+              ))}
+              <td className="text-right" style={{ color: effColor(weekly.teamWeeklyEff) }}>{pct(weekly.teamWeeklyEff)}</td>
+              <td className="text-right">{weekly.teamWeeklyHours.toFixed(2)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
 }
