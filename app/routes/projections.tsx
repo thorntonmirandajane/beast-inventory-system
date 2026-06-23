@@ -167,69 +167,8 @@ export default function Projections() {
         </div>
       </div>
 
-      {/* TOP — raw material needs */}
+      {/* SKU projection (editable) — sits right under the settings */}
       <div className="card mb-6">
-        <div className="card-header flex items-center justify-between">
-          <h2 className="card-title">Raw Materials — 2026 Need ({rawRows.length})</h2>
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-600">Organize by</label>
-            <select value={topSort} onChange={(e) => setTopSort(e.target.value as typeof topSort)} className="form-select text-sm py-1.5">
-              <option value="needToOrder">Need to order</option>
-              <option value="total2026">2026 total</option>
-              <option value="partType">Part type</option>
-              <option value="material">Material</option>
-              <option value="category">Category</option>
-              <option value="sku">SKU</option>
-            </select>
-          </div>
-        </div>
-        <div className="card-body overflow-x-auto">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>SKU</th>
-                <th>Name</th>
-                <th>Part type</th>
-                <th className="text-right">Fulfilled</th>
-                <th className="text-right">Unfulfilled</th>
-                <th className="text-right">Programmed</th>
-                <th className="text-right">Planned proj.</th>
-                <th className="text-right" title="unfulfilled + programmed + planned">Qty still needed</th>
-                <th className="text-right">On hand</th>
-                <th className="text-right" title="raws in built (assembled + completed) stock">In assembly</th>
-                <th className="text-right">On order</th>
-                <th className="text-right" title="still needed − on hand − in assembly − on order">Need to order</th>
-                <th className="text-right">2026 total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedRaw.map((r) => (
-                <tr key={r.skuId} style={r.needToOrder > 0 ? { background: "#fef2f2" } : undefined}>
-                  <td className="font-mono text-sm">{r.sku}</td>
-                  <td className="text-sm">{r.name}</td>
-                  <td className="text-sm">{r.partType}</td>
-                  <td className="text-right">{num(r.fulfilled)}</td>
-                  <td className="text-right">{num(r.unfulfilled)}</td>
-                  <td className="text-right">{num(r.programmed)}</td>
-                  <td className="text-right">{num(r.plannedProjection)}</td>
-                  <td className="text-right font-medium">{num(r.qtyStillNeeded)}</td>
-                  <td className="text-right">{num(r.onHand)}</td>
-                  <td className="text-right">{num(r.inAssembly)}</td>
-                  <td className="text-right">{num(r.onOrder)}</td>
-                  <td className="text-right font-bold" style={{ color: r.needToOrder > 0 ? "#ef4444" : "#10b981" }}>{num(r.needToOrder)}</td>
-                  <td className="text-right">{num(r.total2026)}</td>
-                </tr>
-              ))}
-              {rawRows.length === 0 && (
-                <tr><td colSpan={13} className="text-center text-gray-500 py-6">No raw need yet — set projections and refresh.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* BOTTOM — completed SKU projection (editable) */}
-      <div className="card">
         <div className="card-header flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h2 className="card-title">SKU Projection ({completedRows.length})</h2>
@@ -299,6 +238,68 @@ export default function Projections() {
           </Form>
         </div>
       </div>
+
+      {/* Raw material needs (derived from the projection above) */}
+      <div className="card">
+        <div className="card-header flex items-center justify-between">
+          <h2 className="card-title">Raw Materials — 2026 Need ({rawRows.length})</h2>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-600">Organize by</label>
+            <select value={topSort} onChange={(e) => setTopSort(e.target.value as typeof topSort)} className="form-select text-sm py-1.5">
+              <option value="needToOrder">Need to order</option>
+              <option value="total2026">2026 total</option>
+              <option value="partType">Part type</option>
+              <option value="material">Material</option>
+              <option value="category">Category</option>
+              <option value="sku">SKU</option>
+            </select>
+          </div>
+        </div>
+        <div className="card-body overflow-x-auto">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>Name</th>
+                <th>Part type</th>
+                <th className="text-right">Fulfilled</th>
+                <th className="text-right">Unfulfilled</th>
+                <th className="text-right">Programmed</th>
+                <th className="text-right">Planned proj.</th>
+                <th className="text-right" title="unfulfilled + programmed + planned">Qty still needed</th>
+                <th className="text-right">On hand</th>
+                <th className="text-right" title="raws in built (assembled + completed) stock">In assembly</th>
+                <th className="text-right">On order</th>
+                <th className="text-right" title="still needed − on hand − in assembly − on order">Need to order</th>
+                <th className="text-right">2026 total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedRaw.map((r) => (
+                <tr key={r.skuId} style={r.needToOrder > 0 ? { background: "#fef2f2" } : undefined}>
+                  <td className="font-mono text-sm">{r.sku}</td>
+                  <td className="text-sm">{r.name}</td>
+                  <td className="text-sm">{r.partType}</td>
+                  <td className="text-right">{num(r.fulfilled)}</td>
+                  <td className="text-right">{num(r.unfulfilled)}</td>
+                  <td className="text-right">{num(r.programmed)}</td>
+                  <td className="text-right">{num(r.plannedProjection)}</td>
+                  <td className="text-right font-medium">{num(r.qtyStillNeeded)}</td>
+                  <td className="text-right">{num(r.onHand)}</td>
+                  <td className="text-right">{num(r.inAssembly)}</td>
+                  <td className="text-right">{num(r.onOrder)}</td>
+                  <td className="text-right font-bold" style={{ color: r.needToOrder > 0 ? "#ef4444" : "#10b981" }}>{num(r.needToOrder)}</td>
+                  <td className="text-right">{num(r.total2026)}</td>
+                </tr>
+              ))}
+              {rawRows.length === 0 && (
+                <tr><td colSpan={13} className="text-center text-gray-500 py-6">No raw need yet — set projections and refresh.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
     </Layout>
   );
 }
