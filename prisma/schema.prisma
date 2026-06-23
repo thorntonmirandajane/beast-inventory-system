@@ -395,10 +395,12 @@ model ForecastOverride {
 }
 
 model ProjectionSale {
-  id       String @id @default(cuid())
-  skuId    String @unique
-  ytdQty   Int    @default(0)
-  priorQty Int    @default(0)
+  id             String @id @default(cuid())
+  skuId          String @unique
+  ytdFulfilled   Int    @default(0)
+  ytdUnfulfilled Int    @default(0)
+  priorQty       Int    @default(0)
+  programmedQty  Int    @default(0)
 
   @@map("projection_sales")
 }

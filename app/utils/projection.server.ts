@@ -1,5 +1,6 @@
 import prisma from "../db.server";
-import { getSalesBySku } from "./shopify.server";
+import { getSalesBySku, getSalesBreakdownBySku } from "./shopify.server";
+import { fetchProgrammedOrders } from "./queued-orders-client.server";
 
 const norm = (s: string) => s.trim().toUpperCase();
 
@@ -28,11 +29,13 @@ export interface ProjectionRow {
   skuId: string;
   sku: string;
   name: string;
-  actualYTD: number;
-  priorComp: number;
+  fulfilled: number; // YTD shipped
+  unfulfilled: number; // YTD placed, not yet shipped
+  programmed: number; // future dealer/programmed orders
+  priorComp: number; // prior-year comparable units
   multiplier: number;
-  projectedRest: number;
-  formulaTotal: number;
+  plannedProjected: number; // multiplier × priorComp
+  formulaTotal: number; // fulfilled + unfulfilled + programmed + plannedProjected
   override: number | null;
   note: string | null;
   final: number;
@@ -96,11 +99,13 @@ export async function computeProjections() {
   for (const s of skus) {
     if (s.type !== "COMPLETED") continue;
     const sale = salesBySku.get(s.id);
-    const actualYTD = sale?.ytdQty ?? 0;
+    const fulfilled = sale?.ytdFulfilled ?? 0;
+    const unfulfilled = sale?.ytdUnfulfilled ?? 0;
+    const programmed = sale?.programmedQty ?? 0;
     const priorComp = sale?.priorQty ?? 0;
     const mult = scenario.globalMultiplier;
-    const projectedRest = Math.round(mult * priorComp);
-    const formulaTotal = actualYTD + projectedRest;
+    const plannedProjected = Math.round(mult * priorComp);
+    const formulaTotal = fulfilled + unfulfilled + programmed + plannedProjected;
     const ov = overrideBySku.get(s.id);
     const override = ov ? ov.overrideQty : null;
     const final = override ?? formulaTotal;
@@ -108,10 +113,12 @@ export async function computeProjections() {
       skuId: s.id,
       sku: s.sku,
       name: s.name,
-      actualYTD,
+      fulfilled,
+      unfulfilled,
+      programmed,
       priorComp,
       multiplier: mult,
-      projectedRest,
+      plannedProjected,
       formulaTotal,
       override,
       note: ov?.note ?? null,
@@ -192,12 +199,31 @@ export async function refreshSales(): Promise<number> {
   const ytdEnd = now.toISOString().split("T")[0];
   const cmpStart = scenario.comparisonStart.toISOString().split("T")[0];
   const cmpEnd = scenario.comparisonEnd.toISOString().split("T")[0];
+  const horizonStart = scenario.horizonStart.toISOString().split("T")[0];
+  const horizonEnd = scenario.horizonEnd.toISOString().split("T")[0];
 
-  const [ytd, prior] = await Promise.all([getSalesBySku(ytdStart, ytdEnd), getSalesBySku(cmpStart, cmpEnd)]);
-  const ytdN = new Map<string, number>();
-  for (const [k, v] of ytd) ytdN.set(norm(k), (ytdN.get(norm(k)) ?? 0) + v);
+  // YTD split by fulfilled/unfulfilled, prior-year total, and programmed (B2B
+  // dealer) orders over the horizon. Programmed degrades to 0 if unavailable.
+  const [ytd, prior, programmed] = await Promise.all([
+    getSalesBreakdownBySku(ytdStart, ytdEnd),
+    getSalesBySku(cmpStart, cmpEnd),
+    fetchProgrammedOrders({ from: horizonStart, to: horizonEnd })
+      .then((r) => r.bySku)
+      .catch(() => [] as { sku: string; quantity: number }[]),
+  ]);
+
+  const ytdN = new Map<string, { fulfilled: number; unfulfilled: number }>();
+  for (const [k, v] of ytd) {
+    const n = norm(k);
+    const e = ytdN.get(n) ?? { fulfilled: 0, unfulfilled: 0 };
+    e.fulfilled += v.fulfilled;
+    e.unfulfilled += v.unfulfilled;
+    ytdN.set(n, e);
+  }
   const priorN = new Map<string, number>();
   for (const [k, v] of prior) priorN.set(norm(k), (priorN.get(norm(k)) ?? 0) + v);
+  const progN = new Map<string, number>();
+  for (const row of programmed) progN.set(norm(row.sku), (progN.get(norm(row.sku)) ?? 0) + row.quantity);
 
   const skus = await prisma.sku.findMany({
     where: { isActive: true, type: "COMPLETED" },
@@ -205,12 +231,17 @@ export async function refreshSales(): Promise<number> {
   });
   for (const s of skus) {
     const k = norm(s.sku);
-    const ytdQty = Math.round(ytdN.get(k) ?? 0);
-    const priorQty = Math.round(priorN.get(k) ?? 0);
+    const ytdv = ytdN.get(k) ?? { fulfilled: 0, unfulfilled: 0 };
+    const data = {
+      ytdFulfilled: Math.round(ytdv.fulfilled),
+      ytdUnfulfilled: Math.round(ytdv.unfulfilled),
+      priorQty: Math.round(priorN.get(k) ?? 0),
+      programmedQty: Math.round(progN.get(k) ?? 0),
+    };
     await prisma.projectionSale.upsert({
       where: { skuId: s.id },
-      create: { skuId: s.id, ytdQty, priorQty },
-      update: { ytdQty, priorQty },
+      create: { skuId: s.id, ...data },
+      update: data,
     });
   }
   await prisma.forecastScenario.update({ where: { id: scenario.id }, data: { salesRefreshedAt: now } });

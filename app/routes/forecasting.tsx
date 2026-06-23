@@ -15,7 +15,6 @@ import {
   type ProgrammedOrdersResponse,
 } from "../utils/queued-orders-client.server";
 import { resolveProcessConfig } from "../utils/process";
-import { computeProjections, refreshSales, getOrCreateScenario } from "../utils/projection.server";
 
 // Recursive function to explode BOM and find all raw materials at any depth
 async function explodeBomRecursively(
@@ -456,15 +455,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         .sort((a, b) => b.quantity - a.quantity)
     : [];
 
-  // Demand-projection forecaster — only compute on its tab (it reads cached
-  // sales from the DB; refresh is an explicit action).
-  const projection = tab === "projections" ? await computeProjections() : null;
-
   return {
     user,
     tab,
     basis,
-    projection,
     forecastData,
     totalProcessRequirements,
     allRawMaterialShortages: Object.values(allRawMaterialShortages),
@@ -665,62 +659,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const { count } = await prisma.forecast.deleteMany();
     await createAuditLog(user.id, "CLEAR_FORECASTS", "Forecast", "", { cleared: count });
     return { success: true, message: `Cleared ${count} forecasted quantit${count === 1 ? "y" : "ies"}.` };
-  }
-
-  // ---- Demand-projection forecaster actions ----
-  if (intent === "save-projection-settings") {
-    const scenario = await getOrCreateScenario();
-    const multiplier = parseFloat(formData.get("globalMultiplier") as string);
-    const cmpStart = formData.get("comparisonStart") as string;
-    const cmpEnd = formData.get("comparisonEnd") as string;
-    await prisma.forecastScenario.update({
-      where: { id: scenario.id },
-      data: {
-        globalMultiplier: isNaN(multiplier) || multiplier < 0 ? scenario.globalMultiplier : multiplier,
-        comparisonStart: cmpStart ? new Date(`${cmpStart}T00:00:00Z`) : scenario.comparisonStart,
-        comparisonEnd: cmpEnd ? new Date(`${cmpEnd}T00:00:00Z`) : scenario.comparisonEnd,
-      },
-    });
-    return { success: true, message: "Projection settings saved. Refresh sales if you changed the comparison window." };
-  }
-
-  if (intent === "refresh-projection-sales") {
-    try {
-      const n = await refreshSales();
-      await createAuditLog(user.id, "REFRESH_PROJECTION_SALES", "ForecastScenario", "", { skus: n });
-      return { success: true, message: `Refreshed Shopify sales for ${n} SKUs.` };
-    } catch (e) {
-      return { error: `Shopify sales refresh failed: ${e instanceof Error ? e.message : String(e)}` };
-    }
-  }
-
-  if (intent === "save-projection-overrides") {
-    const skus = await prisma.sku.findMany({ where: { isActive: true, type: "COMPLETED" }, select: { id: true } });
-    let changed = 0;
-    for (const s of skus) {
-      const raw = (formData.get(`override_${s.id}`) as string | null)?.trim();
-      if (raw == null || raw === "") {
-        const del = await prisma.forecastOverride.deleteMany({ where: { skuId: s.id } });
-        changed += del.count;
-        continue;
-      }
-      const qty = parseInt(raw, 10);
-      if (isNaN(qty) || qty < 0) continue;
-      await prisma.forecastOverride.upsert({
-        where: { skuId: s.id },
-        create: { skuId: s.id, overrideQty: qty, updatedBy: user.id },
-        update: { overrideQty: qty, updatedBy: user.id },
-      });
-      changed++;
-    }
-    await createAuditLog(user.id, "SAVE_PROJECTION_OVERRIDES", "ForecastOverride", "", { changed });
-    return { success: true, message: `Saved projection overrides.` };
-  }
-
-  if (intent === "reset-projection-overrides") {
-    const { count } = await prisma.forecastOverride.deleteMany();
-    await createAuditLog(user.id, "RESET_PROJECTION_OVERRIDES", "ForecastOverride", "", { cleared: count });
-    return { success: true, message: `Cleared ${count} override(s).` };
   }
 
   return { error: "Invalid action" };
@@ -1008,7 +946,6 @@ export default function Forecasting() {
     user,
     tab,
     basis,
-    projection,
     forecastData,
     totalProcessRequirements,
     allRawMaterialShortages,
@@ -1147,9 +1084,6 @@ export default function Forecasting() {
             </span>
           )}
         </Link>
-        <Link to={buildTabUrl("projections")} className={`tab ${tab === "projections" ? "active" : ""}`}>
-          Projections
-        </Link>
         <Link to={buildTabUrl("materials")} className={`tab ${tab === "materials" ? "active" : ""}`}>
           Raw Materials
           {rawMaterialsReport.filter((r) => r.short > 0).length > 0 && (
@@ -1185,10 +1119,6 @@ export default function Forecasting() {
 
       {tab === "materials" && (
         <RawMaterialsTab rows={rawMaterialsReport} from={laborStart} to={laborEnd} />
-      )}
-
-      {tab === "projections" && projection && (
-        <ProjectionsTab projection={projection} isSubmitting={isSubmitting} />
       )}
 
       {tab === "forecast" && (
@@ -1577,190 +1507,6 @@ function RawMaterialsTab({
   );
 }
 
-// ============================================================
-// Projections tab — demand-projection forecaster + material adequacy
-// ============================================================
-function ProjectionsTab({
-  projection,
-  isSubmitting,
-}: {
-  projection: NonNullable<ReturnType<typeof useLoaderData<typeof loader>>["projection"]>;
-  isSubmitting: boolean;
-}) {
-  const { scenario, rows, adequacy, materialGroups } = projection;
-  const cmpStart = new Date(scenario.comparisonStart).toISOString().split("T")[0];
-  const cmpEnd = new Date(scenario.comparisonEnd).toISOString().split("T")[0];
-  const refreshed = scenario.salesRefreshedAt ? new Date(scenario.salesRefreshedAt).toLocaleString() : null;
-  const num = (n: number) => n.toLocaleString();
-
-  return (
-    <>
-      {/* Controls */}
-      <div className="card mb-4">
-        <div className="card-header">
-          <h2 className="card-title">Demand Projection</h2>
-          <p className="text-sm text-gray-500">
-            Projected total = Actual YTD + (multiplier × prior-year comparable). Per-SKU override always wins.
-            Based on Shopify (DtC) sales — B2B not included.
-          </p>
-        </div>
-        <div className="card-body flex flex-wrap items-end gap-4">
-          <Form method="post" className="flex items-end gap-3 flex-wrap">
-            <input type="hidden" name="intent" value="save-projection-settings" />
-            <div className="form-group mb-0">
-              <label className="form-label">Global multiplier</label>
-              <input type="number" name="globalMultiplier" step="0.1" min="0" defaultValue={scenario.globalMultiplier} className="form-input w-28" />
-            </div>
-            <div className="form-group mb-0">
-              <label className="form-label">Compare from</label>
-              <input type="date" name="comparisonStart" defaultValue={cmpStart} className="form-input" />
-            </div>
-            <div className="form-group mb-0">
-              <label className="form-label">Compare to</label>
-              <input type="date" name="comparisonEnd" defaultValue={cmpEnd} className="form-input" />
-            </div>
-            <button type="submit" className="btn btn-secondary" disabled={isSubmitting}>Save settings</button>
-          </Form>
-          <Form method="post">
-            <input type="hidden" name="intent" value="refresh-projection-sales" />
-            <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
-              {isSubmitting ? "Working…" : "Refresh sales from Shopify"}
-            </button>
-          </Form>
-          <span className="text-xs text-gray-500">
-            {refreshed ? `Sales last refreshed ${refreshed}` : "Sales not refreshed yet — click Refresh to pull Shopify history."}
-          </span>
-        </div>
-      </div>
-
-      {/* Material Adequacy — the lit test, derived from Final projection */}
-      <div className="card mb-4">
-        <div className="card-header">
-          <h2 className="card-title">Material Adequacy</h2>
-          <p className="text-sm text-gray-500">Projected raw need (full BOM) vs on-hand (available) + open POs. Negative net = short.</p>
-        </div>
-        <div className="card-body overflow-x-auto">
-          <table className="data-table mb-6">
-            <thead>
-              <tr>
-                <th>Material</th>
-                <th className="text-right">Projected Need</th>
-                <th className="text-right">On Hand</th>
-                <th className="text-right">On Order</th>
-                <th className="text-right">Net</th>
-              </tr>
-            </thead>
-            <tbody>
-              {materialGroups.map((g) => (
-                <tr key={g.material}>
-                  <td className="font-medium">{g.material}</td>
-                  <td className="text-right">{num(g.projectedNeed)}</td>
-                  <td className="text-right">{num(g.onHand)}</td>
-                  <td className="text-right">{num(g.onOrder)}</td>
-                  <td className="text-right font-bold" style={{ color: g.net < 0 ? "#ef4444" : "#10b981" }}>{num(g.net)}</td>
-                </tr>
-              ))}
-              {materialGroups.length === 0 && (
-                <tr><td colSpan={5} className="text-center text-gray-500 py-6">No raw need yet — set projections and refresh sales.</td></tr>
-              )}
-            </tbody>
-          </table>
-
-          {adequacy.length > 0 && (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Raw SKU</th>
-                  <th>Name</th>
-                  <th>Material</th>
-                  <th className="text-right">Projected Need</th>
-                  <th className="text-right">On Hand</th>
-                  <th className="text-right">On Order</th>
-                  <th className="text-right">Net</th>
-                </tr>
-              </thead>
-              <tbody>
-                {adequacy.map((r) => (
-                  <tr key={r.skuId} style={r.net < 0 ? { background: "#fef2f2" } : undefined}>
-                    <td className="font-mono text-sm">{r.sku}</td>
-                    <td className="text-sm">{r.name}</td>
-                    <td className="text-sm">{r.material}</td>
-                    <td className="text-right">{num(r.projectedNeed)}</td>
-                    <td className="text-right">{num(r.onHand)}</td>
-                    <td className="text-right">{num(r.onOrder)}</td>
-                    <td className="text-right font-semibold" style={{ color: r.net < 0 ? "#ef4444" : "#10b981" }}>{num(r.net)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-
-      {/* Headline projection table — editable overrides */}
-      <div className="card">
-        <div className="card-header flex items-center justify-between">
-          <h2 className="card-title">SKU-level Projection ({rows.length})</h2>
-          <Form method="post" onSubmit={(e) => { if (!confirm("Clear all per-SKU overrides?")) e.preventDefault(); }}>
-            <input type="hidden" name="intent" value="reset-projection-overrides" />
-            <button type="submit" className="btn btn-ghost btn-sm text-red-600" disabled={isSubmitting}>Reset overrides</button>
-          </Form>
-        </div>
-        <div className="card-body overflow-x-auto">
-          <Form method="post">
-            <input type="hidden" name="intent" value="save-projection-overrides" />
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>SKU</th>
-                  <th>Name</th>
-                  <th className="text-right">Actual YTD</th>
-                  <th className="text-right">Prior-yr comp</th>
-                  <th className="text-right">× Mult</th>
-                  <th className="text-right">Projected rest</th>
-                  <th className="text-right">Projected total</th>
-                  <th className="text-right">Override</th>
-                  <th className="text-right">Final</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => (
-                  <tr key={r.skuId}>
-                    <td className="font-mono text-sm">{r.sku}</td>
-                    <td className="text-sm">{r.name}</td>
-                    <td className="text-right">{num(r.actualYTD)}</td>
-                    <td className="text-right">{num(r.priorComp)}</td>
-                    <td className="text-right text-gray-500">{r.multiplier}×</td>
-                    <td className="text-right">{num(r.projectedRest)}</td>
-                    <td className="text-right">{num(r.formulaTotal)}</td>
-                    <td className="text-right">
-                      <input
-                        type="number"
-                        name={`override_${r.skuId}`}
-                        min="0"
-                        defaultValue={r.override ?? ""}
-                        placeholder="—"
-                        className="form-input text-sm py-1 px-2 w-24 text-right"
-                      />
-                    </td>
-                    <td className="text-right font-bold" style={r.override != null ? { color: "#2563eb" } : undefined}>{num(r.final)}</td>
-                  </tr>
-                ))}
-                {rows.length === 0 && (
-                  <tr><td colSpan={9} className="text-center text-gray-500 py-6">No completed SKUs.</td></tr>
-                )}
-              </tbody>
-            </table>
-            <div className="mt-4 pt-4 border-t flex items-center gap-3">
-              <button type="submit" className="btn btn-primary" disabled={isSubmitting}>Save overrides</button>
-              <span className="text-xs text-gray-500">Blank an override to clear it. Final (blue) = overridden; otherwise = projected total.</span>
-            </div>
-          </Form>
-        </div>
-      </div>
-    </>
-  );
-}
 
 // ============================================================
 // Unfulfilled tab — Shopify orders with remaining unfulfilled qty

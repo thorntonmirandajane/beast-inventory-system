@@ -338,6 +338,66 @@ export async function getSalesBySku(start: string, end: string): Promise<Map<str
   return cached(`sales-by-sku:${start}:${end}`, () => fetchSalesBySkuUncached(start, end));
 }
 
+// Same window, but split each line into fulfilled vs still-unfulfilled units
+// (line-level, so partially-shipped orders split correctly).
+export async function getSalesBreakdownBySku(
+  start: string,
+  end: string
+): Promise<Map<string, { fulfilled: number; unfulfilled: number }>> {
+  return cached(`sales-breakdown:${start}:${end}`, () => fetchSalesBreakdownUncached(start, end));
+}
+
+async function fetchSalesBreakdownUncached(
+  start: string,
+  end: string
+): Promise<Map<string, { fulfilled: number; unfulfilled: number }>> {
+  const out = new Map<string, { fulfilled: number; unfulfilled: number }>();
+  let cursor: string | null = null;
+  const q = `created_at:>=${start} created_at:<=${end}`;
+
+  while (true) {
+    const data: any = await shopifyGraphQL(
+      `
+      query($cursor: String, $q: String) {
+        orders(first: 100, after: $cursor, query: $q) {
+          pageInfo { hasNextPage endCursor }
+          edges {
+            node {
+              cancelledAt
+              lineItems(first: 100) {
+                edges { node { sku quantity currentQuantity unfulfilledQuantity } }
+              }
+            }
+          }
+        }
+      }
+    `,
+      { cursor, q }
+    );
+    const orders = data.orders;
+    if (!orders) break;
+    for (const orderEdge of orders.edges) {
+      const order = orderEdge.node;
+      if (order.cancelledAt) continue;
+      for (const liEdge of order.lineItems.edges) {
+        const li = liEdge.node;
+        if (!li.sku) continue;
+        const current = li.currentQuantity ?? li.quantity ?? 0;
+        if (current <= 0) continue;
+        const unfulfilled = Math.min(li.unfulfilledQuantity ?? 0, current);
+        const fulfilled = current - unfulfilled;
+        const e = out.get(li.sku) ?? { fulfilled: 0, unfulfilled: 0 };
+        e.fulfilled += fulfilled;
+        e.unfulfilled += unfulfilled;
+        out.set(li.sku, e);
+      }
+    }
+    if (!orders.pageInfo.hasNextPage) break;
+    cursor = orders.pageInfo.endCursor;
+  }
+  return out;
+}
+
 async function fetchSalesBySkuUncached(start: string, end: string): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   let cursor: string | null = null;
