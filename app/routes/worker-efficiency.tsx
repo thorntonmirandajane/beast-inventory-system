@@ -234,6 +234,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         weeklyHours: totAct / 60,
       };
     });
+    // Highest weekly efficiency first; workers with no hours this week sink to the bottom.
+    weeklyRows.sort((a, b) => (b.weeklyEff ?? -1) - (a.weeklyEff ?? -1));
     const teamCells = days.map((_, i) => eff(teamExp[i], teamAct[i], teamMis[i]));
     const tAct = teamAct.reduce((a, b) => a + b, 0);
     const tExp = teamExp.reduce((a, b) => a + b, 0);
@@ -464,46 +466,64 @@ function RangeTable({ rows }: { rows: ReturnType<typeof useLoaderData<typeof loa
 }
 
 function WeeklyGrid({ weekly }: { weekly: NonNullable<ReturnType<typeof useLoaderData<typeof loader>>["weekly"]> }) {
+  const border = "1px solid #d1d5db";
+  const cell: React.CSSProperties = { border, padding: "6px 10px", textAlign: "center" };
+  const nameCell: React.CSSProperties = { border, padding: "6px 10px", textAlign: "left", fontWeight: 500 };
+  const head: React.CSSProperties = { ...cell, background: "#f3f4f6", fontWeight: 600 };
+
   return (
-    <div className="card">
-      <div className="card-header">
-        <h2 className="card-title">Weekly Team Efficiency (Trackable %)</h2>
-        <p className="text-sm text-gray-500">Expected ÷ non-misc hours — misc time doesn't count against the score</p>
-      </div>
-      <div className="card-body overflow-x-auto">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Employee</th>
-              {weekly.days.map((d) => <th key={d.date} className="text-right">{d.label}</th>)}
-              <th className="text-right">Weekly Eff %</th>
-              <th className="text-right">Weekly Hours</th>
-            </tr>
-          </thead>
-          <tbody>
-            {weekly.rows.map((r) => (
-              <tr key={r.name}>
-                <td className="font-medium">{r.name}</td>
-                {r.cells.map((c, i) => (
-                  <td key={i} className="text-right" style={{ color: effColor(c) }}>{c == null ? "" : pct(c)}</td>
-                ))}
-                <td className="text-right font-semibold" style={{ color: effColor(r.weeklyEff) }}>{pct(r.weeklyEff)}</td>
-                <td className="text-right">{r.weeklyHours.toFixed(2)}</td>
+    <>
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #weekly-print, #weekly-print * { visibility: visible; }
+          #weekly-print { position: absolute; left: 0; top: 0; width: 100%; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+      <div id="weekly-print" className="card">
+        <div className="card-header flex items-center justify-between">
+          <div>
+            <h2 className="card-title">Weekly Team Efficiency (Trackable %)</h2>
+            <p className="text-sm text-gray-500">Expected ÷ non-misc hours — sorted highest to lowest; misc time doesn't count against the score</p>
+          </div>
+          <button className="btn btn-secondary no-print" onClick={() => window.print()}>Print</button>
+        </div>
+        <div className="card-body overflow-x-auto">
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: "0.875rem" }}>
+            <thead>
+              <tr>
+                <th style={{ ...head, textAlign: "left" }}>Employee</th>
+                {weekly.days.map((d) => <th key={d.date} style={head}>{d.label}</th>)}
+                <th style={head}>Weekly Eff %</th>
+                <th style={head}>Weekly Hours</th>
               </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="font-bold border-t-2">
-              <td>Team Total</td>
-              {weekly.teamCells.map((c, i) => (
-                <td key={i} className="text-right" style={{ color: effColor(c) }}>{c == null ? "" : pct(c)}</td>
+            </thead>
+            <tbody>
+              {weekly.rows.map((r) => (
+                <tr key={r.name}>
+                  <td style={nameCell}>{r.name}</td>
+                  {r.cells.map((c, i) => (
+                    <td key={i} style={{ ...cell, color: effColor(c) }}>{c == null ? "" : pct(c)}</td>
+                  ))}
+                  <td style={{ ...cell, color: effColor(r.weeklyEff), fontWeight: 600 }}>{pct(r.weeklyEff)}</td>
+                  <td style={cell}>{r.weeklyHours.toFixed(2)}</td>
+                </tr>
               ))}
-              <td className="text-right" style={{ color: effColor(weekly.teamWeeklyEff) }}>{pct(weekly.teamWeeklyEff)}</td>
-              <td className="text-right">{weekly.teamWeeklyHours.toFixed(2)}</td>
-            </tr>
-          </tfoot>
-        </table>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td style={{ ...nameCell, fontWeight: 700, background: "#f3f4f6" }}>Team Total</td>
+                {weekly.teamCells.map((c, i) => (
+                  <td key={i} style={{ ...cell, color: effColor(c), fontWeight: 700, background: "#f3f4f6" }}>{c == null ? "" : pct(c)}</td>
+                ))}
+                <td style={{ ...cell, color: effColor(weekly.teamWeeklyEff), fontWeight: 700, background: "#f3f4f6" }}>{pct(weekly.teamWeeklyEff)}</td>
+                <td style={{ ...cell, fontWeight: 700, background: "#f3f4f6" }}>{weekly.teamWeeklyHours.toFixed(2)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
