@@ -31,6 +31,17 @@ projected stock = approved on-hand
 i.e. apply every PENDING time-entry line through the same single-level BOM engine
 (planProduction) to a projected copy of inventory, then plan against that.
 
+## Partial builds + priority (added)
+- **No all-or-nothing blocking.** Each task builds as many units as the tightest input
+  allows *right now* (`min over inputs of floor(stock / qtyPer)`); the rest is shown as
+  blocked-by-shortage. So 4,048 ferrules against a 10k pack need → tip 4,048 now, 5,952
+  blocked — not the whole job blocked.
+- **Oldest backorder first.** Each completed SKU inherits the oldest `orderCreatedAt` of
+  its unfulfilled Shopify lines; sub-assemblies inherit the oldest among the products that
+  need them. The queue is sorted oldest-first, then most-upstream, and constrained inputs
+  are allocated greedily in that order — so the scarce ferrules flow to the most overdue
+  product line first.
+
 ## Algorithm
 1. **Projected inventory** — approved InventoryItem totals, then apply all PENDING
    time-entry-line production (add outputs, consume immediate BOM children).

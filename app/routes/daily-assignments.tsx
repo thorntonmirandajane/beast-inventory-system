@@ -10,6 +10,9 @@ import { assignWork } from "../utils/assignments";
 function ymd(d: Date) {
   return d.toISOString().split("T")[0];
 }
+function fmtTs(ts?: number) {
+  return ts && Number.isFinite(ts) ? new Date(ts).toLocaleDateString() : "—";
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireRole(request, ["ADMIN", "MANAGER"]);
@@ -119,7 +122,8 @@ export default function DailyAssignments() {
         <div>
           <h1 className="page-title">Daily Assignments</h1>
           <p className="page-subtitle">
-            Suggested work for scheduled workers, from the forecast need. Reassign or adjust, then create.
+            Suggested work for scheduled workers, from the forecast need — oldest backorders first,
+            partial builds where inputs are short. Reassign or adjust, then create.
           </p>
         </div>
         <Form method="get" className="flex items-end gap-2">
@@ -166,6 +170,7 @@ export default function DailyAssignments() {
                   <th className="py-2 pr-4">SKU</th>
                   <th className="py-2 pr-4 text-right">Qty</th>
                   <th className="py-2 pr-4 text-right">~Hours</th>
+                  <th className="py-2 pr-4">Oldest Order</th>
                   <th className="py-2"></th>
                 </tr>
               </thead>
@@ -195,6 +200,7 @@ export default function DailyAssignments() {
                       />
                     </td>
                     <td className="py-1 pr-4 text-right text-gray-500">{(r.hours || 0).toFixed(1)}h</td>
+                    <td className="py-1 pr-4 text-gray-500">{fmtTs(r.priorityTs)}</td>
                     <td className="py-1 text-right">
                       <button onClick={() => removeRow(r.id)} className="btn btn-ghost btn-sm text-red-600">Remove</button>
                     </td>
@@ -231,7 +237,7 @@ export default function DailyAssignments() {
       {/* Blocked work */}
       {result.blocked.length > 0 && (
         <div className="card mb-6">
-          <div className="card-header"><h2 className="card-title">Blocked — needs an upstream stage first ({result.blocked.length})</h2></div>
+          <div className="card-header"><h2 className="card-title">Blocked — inputs short / needs an upstream stage first ({result.blocked.length})</h2></div>
           <div className="card-body text-sm">
             <table className="w-full">
               <thead>
@@ -239,6 +245,7 @@ export default function DailyAssignments() {
                   <th className="py-2 pr-4">Process</th>
                   <th className="py-2 pr-4">SKU</th>
                   <th className="py-2 pr-4 text-right">Units</th>
+                  <th className="py-2 pr-4">Oldest Order</th>
                 </tr>
               </thead>
               <tbody>
@@ -247,6 +254,7 @@ export default function DailyAssignments() {
                     <td className="py-1 pr-4">{b.process}</td>
                     <td className="py-1 pr-4 font-mono">{b.sku}</td>
                     <td className="py-1 pr-4 text-right">{b.units.toLocaleString()}</td>
+                    <td className="py-1 pr-4 text-gray-500">{fmtTs(b.priorityTs)}</td>
                   </tr>
                 ))}
               </tbody>

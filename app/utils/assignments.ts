@@ -14,8 +14,9 @@ export interface WorkItem {
   name: string;
   units: number; // units still needed to build
   hoursPerUnit: number; // secondsPerUnit / 3600
-  buildable: boolean; // immediate inputs in (projected) stock?
+  buildable: boolean; // immediate inputs in (projected) stock for THIS many units?
   stageOrder: number; // lower = more upstream (tipping < blading < stud-test < pack)
+  priorityTs?: number; // oldest unfulfilled-order timestamp (ms); lower = more urgent
 }
 
 export interface WorkerCapacity {
@@ -34,6 +35,7 @@ export interface Assignment {
   skuName: string;
   units: number;
   hours: number;
+  priorityTs?: number;
 }
 
 export interface AssignmentResult {
@@ -46,13 +48,17 @@ export function assignWork(queue: WorkItem[], workers: WorkerCapacity[]): Assign
   // Blocked work is surfaced, never assigned.
   const blocked = queue.filter((w) => !w.buildable && w.units > 0);
 
-  // Buildable work, ordered: upstream stages first, then biggest total hours.
+  // Buildable work, ordered: oldest backorder first, then upstream stage, then
+  // biggest total hours. (priorityTs absent -> treated as 0 so stage order wins,
+  // which keeps the pure tests stable.)
   const buildable = queue
     .filter((w) => w.buildable && w.units > 0 && w.hoursPerUnit > 0)
     .map((w) => ({ ...w }))
     .sort(
       (a, b) =>
-        a.stageOrder - b.stageOrder || b.units * b.hoursPerUnit - a.units * a.hoursPerUnit
+        (a.priorityTs ?? 0) - (b.priorityTs ?? 0) ||
+        a.stageOrder - b.stageOrder ||
+        b.units * b.hoursPerUnit - a.units * a.hoursPerUnit
     );
 
   const remaining = workers.map((w) => ({ ...w, left: w.hours }));
@@ -78,6 +84,7 @@ export function assignWork(queue: WorkItem[], workers: WorkerCapacity[]): Assign
         skuName: item.name,
         units,
         hours,
+        priorityTs: item.priorityTs,
       });
       item.units -= units;
       worker.left -= hours;

@@ -40,5 +40,17 @@ check("nothing buildable left unassigned", unassigned.length === 0);
 const tiny = assignWork(queue, [{ userId: "u1", name: "A", hours: 1 }]);
 check("with 1h capacity, some buildable work is unassigned", tiny.unassigned.length > 0);
 
+// Priority: same stage, different oldest-backorder dates -> oldest goes first, and
+// under tight capacity the newer one is what gets left unassigned.
+const OLD = new Date("2026-05-01").getTime();
+const NEW = new Date("2026-06-20").getTime();
+const prioQueue: WorkItem[] = [
+  { process: "Stud Testing", processName: "STUD_TESTING", skuId: "new", sku: "NEW", name: "newer", units: 100, hoursPerUnit: 60 / 3600, buildable: true, stageOrder: 3, priorityTs: NEW },
+  { process: "Stud Testing", processName: "STUD_TESTING", skuId: "old", sku: "OLD", name: "older", units: 100, hoursPerUnit: 60 / 3600, buildable: true, stageOrder: 3, priorityTs: OLD },
+];
+const prio = assignWork(prioQueue, [{ userId: "u1", name: "A", hours: 1.67 }]); // ~100 units of capacity
+check("oldest backorder assigned first", prio.assignments[0].sku === "OLD");
+check("newer backorder is the one left unassigned", prio.unassigned.length === 1 && prio.unassigned[0].sku === "NEW");
+
 console.log(`\n${failures === 0 ? "✅ ALL PASSED" : `❌ ${failures} FAILURE(S)`}\n`);
 process.exit(failures === 0 ? 0 : 1);

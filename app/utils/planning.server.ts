@@ -91,9 +91,13 @@ export async function computeDailyPlan(
 
   // 4) Demand (unfulfilled + programmed) + Gallatin, normalized by SKU case
   const demand = new Map<string, number>();
+  const backorderTs = new Map<string, number>(); // normSku -> oldest unfulfilled order (ms)
   try {
     for (const it of await getUnfulfilledLineItems()) {
-      demand.set(norm(it.sku), (demand.get(norm(it.sku)) ?? 0) + it.quantity);
+      const k = norm(it.sku);
+      demand.set(k, (demand.get(k) ?? 0) + it.quantity);
+      const ts = new Date(it.orderCreatedAt).getTime();
+      if (!Number.isNaN(ts)) backorderTs.set(k, Math.min(backorderTs.get(k) ?? Infinity, ts));
     }
   } catch (e) {
     warnings.push("Unfulfilled demand unavailable: " + (e instanceof Error ? e.message : String(e)));
@@ -119,9 +123,16 @@ export async function computeDailyPlan(
     where: { isActive: true },
     select: { processName: true, displayName: true, secondsPerUnit: true },
   });
-  const grossNeeded = new Map<string, number>(); // skuId -> gross units needed (sub-assemblies)
-
-  function explode(skuId: string, qty: number, visited: Set<string>) {
+  // Gross sub-assembly need + inherited oldest-backorder timestamp.
+  const grossNeeded = new Map<string, { units: number; oldestTs: number }>();
+  const addGross = (skuId: string, units: number, oldestTs: number) => {
+    const e = grossNeeded.get(skuId);
+    if (e) {
+      e.units += units;
+      e.oldestTs = Math.min(e.oldestTs, oldestTs);
+    } else grossNeeded.set(skuId, { units, oldestTs });
+  };
+  function explode(skuId: string, qty: number, oldestTs: number, visited: Set<string>) {
     const sku = skuById.get(skuId);
     if (!sku || qty <= 0 || visited.has(skuId)) return;
     visited.add(skuId);
@@ -129,50 +140,73 @@ export async function computeDailyPlan(
       const child = skuById.get(c.componentSkuId);
       if (!child || child.type !== "ASSEMBLY") continue;
       const needed = c.quantity * qty;
-      grossNeeded.set(child.id, (grossNeeded.get(child.id) ?? 0) + needed);
+      addGross(child.id, needed, oldestTs);
       const shortfall = Math.max(0, needed - (available.get(child.id) ?? 0));
-      if (shortfall > 0) explode(child.id, shortfall, new Set(visited));
+      if (shortfall > 0) explode(child.id, shortfall, oldestTs, new Set(visited));
     }
   }
 
-  const queue: WorkItem[] = [];
-  const toWorkItem = (skuId: string, units: number): WorkItem | null => {
-    const sku = skuById.get(skuId);
-    if (!sku || units <= 0 || sku.bomComponents.length === 0) return null;
-    const cfg = resolveProcessConfig(sku.material, processConfigs);
-    const display = cfg?.displayName ?? sku.material ?? "Unassigned";
-    const buildable = sku.bomComponents.every(
-      (c) => (available.get(c.componentSkuId) ?? 0) >= c.quantity * units
-    );
-    return {
-      process: display,
-      processName: cfg?.processName ?? "",
-      skuId,
-      sku: sku.sku,
-      name: sku.name,
-      units,
-      hoursPerUnit: (cfg?.secondsPerUnit ?? 0) / 3600,
-      buildable,
-      stageOrder: stageOrder(display),
-    };
-  };
-
-  // Completed SKUs: need = demand − projected completed − gallatin (matches Forecast)
+  // Build list: completed SKUs (net of completed stock + gallatin) and every
+  // sub-assembly (net of its own projected stock), each tagged with the oldest
+  // backorder driving it.
+  const buildList: { skuId: string; buildQty: number; oldestTs: number }[] = [];
   for (const s of skus) {
     if (s.type !== "COMPLETED") continue;
     const d = demand.get(norm(s.sku)) ?? 0;
     if (d <= 0) continue;
+    const oldestTs = backorderTs.get(norm(s.sku)) ?? Infinity;
     const need = Math.max(0, d - (available.get(s.id) ?? 0) - (gallatin.get(norm(s.sku)) ?? 0));
-    if (need <= 0) continue;
-    const wi = toWorkItem(s.id, need);
-    if (wi) queue.push(wi);
-    explode(s.id, need, new Set());
+    if (need > 0) buildList.push({ skuId: s.id, buildQty: need, oldestTs });
+    explode(s.id, need, oldestTs, new Set());
   }
-  // Sub-assemblies: build qty = gross need − projected available
-  for (const [skuId, gross] of grossNeeded) {
-    const buildQty = Math.max(0, gross - (available.get(skuId) ?? 0));
-    const wi = toWorkItem(skuId, buildQty);
-    if (wi) queue.push(wi);
+  for (const [skuId, g] of grossNeeded) {
+    const buildQty = Math.max(0, g.units - (available.get(skuId) ?? 0));
+    if (buildQty > 0) buildList.push({ skuId, buildQty, oldestTs: g.oldestTs });
+  }
+
+  // Process most-urgent (oldest backorder) and most-upstream first, allocating
+  // constrained inputs greedily: build as many as the tightest input allows NOW,
+  // consume those inputs, and surface the rest as blocked-by-shortage. So a huge
+  // need with only partial inputs yields a partial buildable task instead of
+  // all-or-nothing blocking.
+  const cfgFor = (skuId: string) =>
+    resolveProcessConfig(skuById.get(skuId)?.material ?? null, processConfigs);
+  buildList.sort((a, b) => {
+    if (a.oldestTs !== b.oldestTs) return a.oldestTs - b.oldestTs;
+    return (
+      stageOrder(cfgFor(a.skuId)?.displayName ?? "") - stageOrder(cfgFor(b.skuId)?.displayName ?? "")
+    );
+  });
+
+  const queue: WorkItem[] = [];
+  for (const b of buildList) {
+    const sku = skuById.get(b.skuId);
+    if (!sku || sku.bomComponents.length === 0) continue; // raw / no BOM: not built here
+    const cfg = cfgFor(b.skuId);
+    const display = cfg?.displayName ?? sku.material ?? "Unassigned";
+
+    let buildableNow = b.buildQty;
+    for (const c of sku.bomComponents) {
+      const can = Math.floor((available.get(c.componentSkuId) ?? 0) / c.quantity);
+      buildableNow = Math.min(buildableNow, Math.max(0, can));
+    }
+    for (const c of sku.bomComponents) {
+      available.set(c.componentSkuId, (available.get(c.componentSkuId) ?? 0) - c.quantity * buildableNow);
+    }
+
+    const base = {
+      process: display,
+      processName: cfg?.processName ?? "",
+      skuId: b.skuId,
+      sku: sku.sku,
+      name: sku.name,
+      hoursPerUnit: (cfg?.secondsPerUnit ?? 0) / 3600,
+      stageOrder: stageOrder(display),
+      priorityTs: Number.isFinite(b.oldestTs) ? b.oldestTs : undefined,
+    };
+    if (buildableNow > 0) queue.push({ ...base, units: buildableNow, buildable: true });
+    const blockedQty = b.buildQty - buildableNow;
+    if (blockedQty > 0) queue.push({ ...base, units: blockedQty, buildable: false });
   }
 
   // 6) Scheduled workers for the date (SPECIFIC_DATE wins over RECURRING)
