@@ -105,6 +105,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const startDate = url.searchParams.get("startDate");
   const endDate = url.searchParams.get("endDate");
   const tab = url.searchParams.get("tab") || "forecast";
+  // Demand basis: "live" = unfulfilled + programmed Shopify orders (default);
+  // "forecast" = the saved Forecasted Demand (what-if planning) drives Need-to-Build
+  // and therefore the raw-material shortage.
+  const basis = url.searchParams.get("basis") === "forecast" ? "forecast" : "live";
 
   // Default to next 7 days if not specified
   const laborStart = startDate ? new Date(startDate) : new Date();
@@ -271,10 +275,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Calculate current completed inventory
     const currentCompleted = sku.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
 
-    // Need to Build = (Unfulfilled + Programmed) − (Current Completed + Current in Gallatin)
-    // The manual `forecastedQty` is still saved for reference but no longer
-    // drives this calculation — live demand replaces it.
-    const totalDemand = unfulfilledQty + programmedQty;
+    // Need to Build = Demand − (Current Completed + Current in Gallatin).
+    // Demand basis: live Shopify orders (unfulfilled + programmed) by default, or
+    // the saved Forecasted Demand when the user is in what-if mode.
+    const totalDemand = basis === "forecast" ? forecastedQty : unfulfilledQty + programmedQty;
     const needToBuild = Math.max(0, totalDemand - (currentCompleted + currentInGallatin));
 
     // Use recursive BOM explosion to find ALL raw materials at any depth
@@ -454,6 +458,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     user,
     tab,
+    basis,
     forecastData,
     totalProcessRequirements,
     allRawMaterialShortages: Object.values(allRawMaterialShortages),
@@ -562,7 +567,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const forecasts = await prisma.forecast.findMany();
 
     if (forecasts.length === 0) {
-      return { error: "No forecasts to save. Please add forecast quantities first." };
+      return {
+        error:
+          "No forecasts to save yet. Enter Forecasted Demand in the table and click \"Save Changes\" first, then save the template.",
+      };
     }
 
     // Create template with items
@@ -645,6 +653,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
 
     return { success: true, message: `Template "${template.title}" deleted successfully` };
+  }
+
+  if (intent === "clear-forecasts") {
+    const { count } = await prisma.forecast.deleteMany();
+    await createAuditLog(user.id, "CLEAR_FORECASTS", "Forecast", "", { cleared: count });
+    return { success: true, message: `Cleared ${count} forecasted quantit${count === 1 ? "y" : "ies"}.` };
   }
 
   return { error: "Invalid action" };
@@ -931,6 +945,7 @@ export default function Forecasting() {
   const {
     user,
     tab,
+    basis,
     forecastData,
     totalProcessRequirements,
     allRawMaterialShortages,
@@ -964,6 +979,12 @@ export default function Forecasting() {
     return `/forecasting?${next.toString()}`;
   };
 
+  const buildBasisUrl = (nextBasis: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("basis", nextBasis);
+    return `/forecasting?${next.toString()}`;
+  };
+
   return (
     <Layout user={user}>
       <div className="page-header">
@@ -983,6 +1004,7 @@ export default function Forecasting() {
         <div className="card-body">
           <Form method="get" className="flex items-end gap-3 flex-wrap">
             <input type="hidden" name="tab" value={tab} />
+            <input type="hidden" name="basis" value={basis} />
             <div className="form-group mb-0">
               <label className="form-label">From</label>
               <input
@@ -1008,6 +1030,38 @@ export default function Forecasting() {
           </Form>
         </div>
       </div>
+
+      {/* Demand basis: live Shopify orders vs saved forecast (what-if) */}
+      <div className="card mb-4">
+        <div className="card-body flex items-center gap-3 flex-wrap">
+          <span className="text-sm font-medium text-gray-700">Demand basis:</span>
+          <Link
+            to={buildBasisUrl("live")}
+            className={`btn btn-sm ${basis === "live" ? "btn-primary" : "btn-secondary"}`}
+          >
+            Live orders
+          </Link>
+          <Link
+            to={buildBasisUrl("forecast")}
+            className={`btn btn-sm ${basis === "forecast" ? "btn-primary" : "btn-secondary"}`}
+          >
+            Saved forecast (what-if)
+          </Link>
+          <span className="text-xs text-gray-500">
+            {basis === "forecast"
+              ? "Need-to-Build and Raw Materials use your saved Forecasted Demand — not live orders."
+              : "Need-to-Build and Raw Materials use live unfulfilled + programmed Shopify orders."}
+          </span>
+        </div>
+      </div>
+
+      {basis === "forecast" && (
+        <div className="alert alert-warning mb-4 text-sm">
+          <strong>What-if mode.</strong> Numbers below are driven by the saved <em>Forecasted Demand</em>
+          {" "}column, not live orders. Edit the quantities, click <strong>Save Changes</strong> to persist,
+          then the Raw Materials tab reflects them. Use <strong>Clear Forecast</strong> to reset.
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="tabs mb-4">
@@ -1147,6 +1201,23 @@ export default function Forecasting() {
                   {isSubmitting ? "Saving..." : "Save Template"}
                 </button>
               </div>
+            </Form>
+            <Form
+              method="post"
+              className="mt-4 pt-4 border-t"
+              onSubmit={(e) => {
+                if (!confirm("Clear all saved forecasted quantities? This resets the what-if forecast.")) {
+                  e.preventDefault();
+                }
+              }}
+            >
+              <input type="hidden" name="intent" value="clear-forecasts" />
+              <button type="submit" className="btn btn-secondary text-red-600" disabled={isSubmitting}>
+                Clear Forecast
+              </button>
+              <span className="text-xs text-gray-500 ml-3">
+                Deletes the saved Forecasted Demand values (the what-if). Live-order mode is unaffected.
+              </span>
             </Form>
           </div>
         </div>
