@@ -327,3 +327,61 @@ export function aggregateUnfulfilledBySku(
   }
   return map;
 }
+
+// ============================================================
+// Historical sales by SKU (DtC) — for the demand-projection forecaster.
+// Read-only orders query, paginated with cursors, summed by SKU. Cached.
+// `start`/`end` are YYYY-MM-DD (inclusive).
+// ============================================================
+
+export async function getSalesBySku(start: string, end: string): Promise<Map<string, number>> {
+  return cached(`sales-by-sku:${start}:${end}`, () => fetchSalesBySkuUncached(start, end));
+}
+
+async function fetchSalesBySkuUncached(start: string, end: string): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  let cursor: string | null = null;
+  const q = `created_at:>=${start} created_at:<=${end}`;
+
+  while (true) {
+    const data: any = await shopifyGraphQL(
+      `
+      query($cursor: String, $q: String) {
+        orders(first: 100, after: $cursor, query: $q) {
+          pageInfo { hasNextPage endCursor }
+          edges {
+            node {
+              cancelledAt
+              lineItems(first: 100) {
+                edges { node { sku quantity currentQuantity } }
+              }
+            }
+          }
+        }
+      }
+    `,
+      { cursor, q }
+    );
+
+    const orders = data.orders;
+    if (!orders) break;
+
+    for (const orderEdge of orders.edges) {
+      const order = orderEdge.node;
+      if (order.cancelledAt) continue; // canceled orders aren't sales
+      for (const liEdge of order.lineItems.edges) {
+        const li = liEdge.node;
+        if (!li.sku) continue;
+        // Net of refunds/removals when available; fall back to ordered qty.
+        const qty = li.currentQuantity ?? li.quantity ?? 0;
+        if (qty <= 0) continue;
+        out.set(li.sku, (out.get(li.sku) ?? 0) + qty);
+      }
+    }
+
+    if (!orders.pageInfo.hasNextPage) break;
+    cursor = orders.pageInfo.endCursor;
+  }
+
+  return out;
+}

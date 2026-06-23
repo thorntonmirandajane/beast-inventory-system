@@ -367,6 +367,42 @@ model ForecastTemplateItem {
   @@map("forecast_template_items")
 }
 
+// Demand-projection forecaster (Projections tab). Single live scenario; per-SKU
+// overrides win over the multiplier formula; sales are cached from Shopify.
+model ForecastScenario {
+  id               String    @id @default(cuid())
+  globalMultiplier Float     @default(2.0)
+  comparisonStart  DateTime
+  comparisonEnd    DateTime
+  horizonStart     DateTime
+  horizonEnd       DateTime
+  salesRefreshedAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@map("forecast_scenarios")
+}
+
+model ForecastOverride {
+  id          String   @id @default(cuid())
+  skuId       String   @unique
+  overrideQty Int
+  note        String?
+  updatedBy   String
+  updatedAt   DateTime @updatedAt
+
+  @@map("forecast_overrides")
+}
+
+model ProjectionSale {
+  id       String @id @default(cuid())
+  skuId    String @unique
+  ytdQty   Int    @default(0)
+  priorQty Int    @default(0)
+
+  @@map("projection_sales")
+}
+
 model ProcessTime {
   id             String @id @default(cuid())
   skuId          String
