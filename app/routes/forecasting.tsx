@@ -127,7 +127,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // SKU for the new columns and the Need-to-Build calculation, so we
   // fetch them whenever the user is on Forecast, Unfulfilled, or
   // Programmed. (Caching in the clients keeps repeated visits cheap.)
-  const needsExternalData = tab === "forecast" || tab === "unfulfilled" || tab === "programmed";
+  const needsExternalData =
+    tab === "forecast" || tab === "unfulfilled" || tab === "programmed" || tab === "materials";
 
   let unfulfilledItems: UnfulfilledLineItem[] | null = null;
   let unfulfilledError: string | null = null;
@@ -387,6 +388,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
+  // Full raw-materials requirement report for the range: every raw needed across
+  // all completed SKUs, aggregated once. needed = Σ per-SKU need; on-hand taken
+  // once; short = max(0, needed − on-hand). This is the purchasing view (vs the
+  // shortages-only list above).
+  const rawReportMap = new Map<
+    string,
+    { sku: string; name: string; needed: number; available: number; forSkus: string[] }
+  >();
+  for (const item of forecastData) {
+    for (const raw of item.rawMaterialsNeeded) {
+      if (raw.needed <= 0) continue;
+      const e = rawReportMap.get(raw.skuId);
+      if (e) {
+        e.needed += raw.needed;
+        if (!e.forSkus.includes(item.sku)) e.forSkus.push(item.sku);
+      } else {
+        rawReportMap.set(raw.skuId, {
+          sku: raw.sku,
+          name: raw.name,
+          needed: raw.needed,
+          available: raw.available,
+          forSkus: [item.sku],
+        });
+      }
+    }
+  }
+  const rawMaterialsReport = Array.from(rawReportMap.values())
+    .map((r) => ({ ...r, short: Math.max(0, r.needed - r.available) }))
+    .sort((a, b) => b.short - a.short || b.needed - a.needed);
+
   const totalLaborHoursNeeded = Object.values(totalProcessRequirements).reduce((sum, p) => sum + p.hours, 0);
 
   // Build a list of Gallatin inventory rows (SKU + live qty) that beast
@@ -426,6 +457,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     forecastData,
     totalProcessRequirements,
     allRawMaterialShortages: Object.values(allRawMaterialShortages),
+    rawMaterialsReport,
     laborStart: laborStart.toISOString().split('T')[0],
     laborEnd: laborEnd.toISOString().split('T')[0],
     availableLaborHours,
@@ -902,6 +934,7 @@ export default function Forecasting() {
     forecastData,
     totalProcessRequirements,
     allRawMaterialShortages,
+    rawMaterialsReport,
     laborStart,
     laborEnd,
     availableLaborHours,
@@ -997,6 +1030,14 @@ export default function Forecasting() {
             </span>
           )}
         </Link>
+        <Link to={buildTabUrl("materials")} className={`tab ${tab === "materials" ? "active" : ""}`}>
+          Raw Materials
+          {rawMaterialsReport.filter((r) => r.short > 0).length > 0 && (
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs">
+              {rawMaterialsReport.filter((r) => r.short > 0).length} short
+            </span>
+          )}
+        </Link>
       </div>
 
       {shopifyError && tab === "forecast" && (
@@ -1020,6 +1061,10 @@ export default function Forecasting() {
           from={laborStart}
           to={laborEnd}
         />
+      )}
+
+      {tab === "materials" && (
+        <RawMaterialsTab rows={rawMaterialsReport} from={laborStart} to={laborEnd} />
       )}
 
       {tab === "forecast" && (
@@ -1311,6 +1356,83 @@ export default function Forecasting() {
       </>
       )}
     </Layout>
+  );
+}
+
+// ============================================================
+// Raw Materials tab — full purchasing report for the date range
+// ============================================================
+function RawMaterialsTab({
+  rows,
+  from,
+  to,
+}: {
+  rows: { sku: string; name: string; needed: number; available: number; short: number; forSkus: string[] }[];
+  from: string;
+  to: string;
+}) {
+  const shortRows = rows.filter((r) => r.short > 0);
+
+  if (rows.length === 0) {
+    return (
+      <div className="card">
+        <div className="card-body text-center py-10 text-gray-500">
+          No raw materials needed for {from} → {to}. (Need-to-build is zero across all SKUs in
+          this range, or Shopify demand is unavailable.)
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card">
+      <div className="card-header flex items-center justify-between">
+        <h2 className="card-title">Raw Materials Needed · {from} → {to}</h2>
+        <span className="text-sm text-gray-500">
+          {rows.length} material{rows.length !== 1 ? "s" : ""} ·{" "}
+          <span className={shortRows.length > 0 ? "text-red-600 font-semibold" : ""}>
+            {shortRows.length} short
+          </span>
+        </span>
+      </div>
+      <div className="card-body overflow-x-auto">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Raw Material SKU</th>
+              <th>Name</th>
+              <th className="text-right">Needed</th>
+              <th className="text-right">On Hand</th>
+              <th className="text-right">Short</th>
+              <th>For</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.sku} className={r.short > 0 ? "bg-red-50" : ""}>
+                <td className="font-mono text-sm">{r.sku}</td>
+                <td className="text-sm">{r.name}</td>
+                <td className="text-right">{r.needed.toLocaleString()}</td>
+                <td className="text-right">{r.available.toLocaleString()}</td>
+                <td className="text-right">
+                  {r.short > 0 ? (
+                    <span className="font-bold text-red-600">-{r.short.toLocaleString()}</span>
+                  ) : (
+                    <span className="text-green-600">0</span>
+                  )}
+                </td>
+                <td className="text-xs text-gray-500">{r.forSkus.join(", ")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="text-xs text-gray-400 mt-3">
+          Needed explodes the full bill of materials to raw, netting existing sub-assembly stock
+          at each level. On Hand is current raw inventory; Short = Needed − On Hand. Open POs are
+          not yet subtracted.
+        </p>
+      </div>
+    </div>
   );
 }
 
