@@ -200,37 +200,49 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return d ? days.findIndex((x) => x.date === ymd(new Date(d))) : -1;
     };
     // accumulate expected/actual minutes per worker per day, and team per day
+    // Cells show TRACKABLE efficiency (Expected ÷ non-misc hours) so workers
+    // pulled onto misc tasks aren't penalized. Weekly Hours stays total clocked.
     const teamExp = Array(7).fill(0);
     const teamAct = Array(7).fill(0);
+    const teamMis = Array(7).fill(0);
+    const eff = (exp: number, act: number, mis: number) => {
+      const tr = act - mis;
+      return tr > 0 ? (exp / tr) * 100 : null;
+    };
     const weeklyRows = rows.map((r) => {
       const exp = Array(7).fill(0);
       const act = Array(7).fill(0);
+      const mis = Array(7).fill(0);
       for (const e of byUser.get(r.workerId) ?? []) {
         const i = dayIndex(e);
         if (i < 0) continue;
         exp[i] += e.expectedMinutes ?? 0;
         act[i] += e.actualMinutes ?? 0;
+        mis[i] += e.miscMinutes ?? 0;
         teamExp[i] += e.expectedMinutes ?? 0;
         teamAct[i] += e.actualMinutes ?? 0;
+        teamMis[i] += e.miscMinutes ?? 0;
       }
-      const cells = days.map((_, i) => (act[i] > 0 ? (exp[i] / act[i]) * 100 : null));
+      const cells = days.map((_, i) => eff(exp[i], act[i], mis[i]));
       const totAct = act.reduce((a, b) => a + b, 0);
       const totExp = exp.reduce((a, b) => a + b, 0);
+      const totMis = mis.reduce((a, b) => a + b, 0);
       return {
         name: r.name,
         cells,
-        weeklyEff: totAct > 0 ? (totExp / totAct) * 100 : null,
+        weeklyEff: eff(totExp, totAct, totMis),
         weeklyHours: totAct / 60,
       };
     });
-    const teamCells = days.map((_, i) => (teamAct[i] > 0 ? (teamExp[i] / teamAct[i]) * 100 : null));
+    const teamCells = days.map((_, i) => eff(teamExp[i], teamAct[i], teamMis[i]));
     const tAct = teamAct.reduce((a, b) => a + b, 0);
     const tExp = teamExp.reduce((a, b) => a + b, 0);
+    const tMis = teamMis.reduce((a, b) => a + b, 0);
     weekly = {
       days,
       rows: weeklyRows,
       teamCells,
-      teamWeeklyEff: tAct > 0 ? (tExp / tAct) * 100 : null,
+      teamWeeklyEff: eff(tExp, tAct, tMis),
       teamWeeklyHours: tAct / 60,
     };
   }
@@ -418,8 +430,8 @@ function RangeTable({ rows }: { rows: ReturnType<typeof useLoaderData<typeof loa
               <th className="text-right">Misc Hrs</th>
               <th className="text-right">Trackable Hrs</th>
               <th className="text-right">Expected Hrs</th>
-              <th className="text-right">Efficiency</th>
-              <th className="text-right">Overall %</th>
+              <th className="text-right" title="Expected ÷ non-misc hours — misc excluded">Trackable %</th>
+              <th className="text-right" title="Expected ÷ all clocked hours">Overall %</th>
               <th className="text-right">Labor $</th>
               <th>Top Processes</th>
             </tr>
@@ -454,7 +466,10 @@ function RangeTable({ rows }: { rows: ReturnType<typeof useLoaderData<typeof loa
 function WeeklyGrid({ weekly }: { weekly: NonNullable<ReturnType<typeof useLoaderData<typeof loader>>["weekly"]> }) {
   return (
     <div className="card">
-      <div className="card-header"><h2 className="card-title">Weekly Team Efficiency (Overall %)</h2></div>
+      <div className="card-header">
+        <h2 className="card-title">Weekly Team Efficiency (Trackable %)</h2>
+        <p className="text-sm text-gray-500">Expected ÷ non-misc hours — misc time doesn't count against the score</p>
+      </div>
       <div className="card-body overflow-x-auto">
         <table className="data-table">
           <thead>
