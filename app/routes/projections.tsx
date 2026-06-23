@@ -1,5 +1,6 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
+import { useState } from "react";
 import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -80,11 +81,33 @@ export default function Projections() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
-  const { scenario, rows, adequacy, materialGroups } = projection;
+  const { scenario, rows, adequacy } = projection;
   const cmpStart = new Date(scenario.comparisonStart).toISOString().split("T")[0];
   const cmpEnd = new Date(scenario.comparisonEnd).toISOString().split("T")[0];
   const refreshed = scenario.salesRefreshedAt ? new Date(scenario.salesRefreshedAt).toLocaleString() : null;
   const num = (n: number) => n.toLocaleString();
+
+  // Flexible grouping of the SKU-level adequacy rows.
+  const [groupBy, setGroupBy] = useState<"partType" | "material" | "category" | "none">("partType");
+  const groupLabel: Record<string, string> = { partType: "Part type", material: "Material", category: "Category", none: "None (SKU only)" };
+  const grouped =
+    groupBy === "none"
+      ? []
+      : Object.values(
+          adequacy.reduce<Record<string, { key: string; projectedNeed: number; onHand: number; onOrder: number; net: number }>>(
+            (acc, r) => {
+              const key = r[groupBy] || "Other";
+              const g = acc[key] ?? { key, projectedNeed: 0, onHand: 0, onOrder: 0, net: 0 };
+              g.projectedNeed += r.projectedNeed;
+              g.onHand += r.onHand;
+              g.onOrder += r.onOrder;
+              g.net += r.net;
+              acc[key] = g;
+              return acc;
+            },
+            {}
+          )
+        ).sort((a, b) => a.net - b.net);
 
   return (
     <Layout user={user}>
@@ -135,43 +158,51 @@ export default function Projections() {
 
       {/* Material Adequacy */}
       <div className="card mb-4">
-        <div className="card-header">
-          <h2 className="card-title">Material Adequacy</h2>
-          <p className="text-sm text-gray-500">Projected raw need (full BOM) vs on-hand (available) + open POs. Negative net = short.</p>
+        <div className="card-header flex items-center justify-between">
+          <div>
+            <h2 className="card-title">Material Adequacy</h2>
+            <p className="text-sm text-gray-500">Projected raw need (full BOM) vs on-hand (available) + open POs. Negative net = short.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-gray-600">Group by</label>
+            <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as typeof groupBy)} className="form-select text-sm py-1.5">
+              {Object.entries(groupLabel).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </div>
         </div>
         <div className="card-body overflow-x-auto">
-          <table className="data-table mb-6">
-            <thead>
-              <tr>
-                <th>Material</th>
-                <th className="text-right">Projected Need</th>
-                <th className="text-right">On Hand</th>
-                <th className="text-right">On Order</th>
-                <th className="text-right">Net</th>
-              </tr>
-            </thead>
-            <tbody>
-              {materialGroups.map((g) => (
-                <tr key={g.material}>
-                  <td className="font-medium">{g.material}</td>
-                  <td className="text-right">{num(g.projectedNeed)}</td>
-                  <td className="text-right">{num(g.onHand)}</td>
-                  <td className="text-right">{num(g.onOrder)}</td>
-                  <td className="text-right font-bold" style={{ color: g.net < 0 ? "#ef4444" : "#10b981" }}>{num(g.net)}</td>
+          {grouped.length > 0 && (
+            <table className="data-table mb-6">
+              <thead>
+                <tr>
+                  <th>{groupLabel[groupBy]}</th>
+                  <th className="text-right">Projected Need</th>
+                  <th className="text-right">On Hand</th>
+                  <th className="text-right">On Order</th>
+                  <th className="text-right">Net</th>
                 </tr>
-              ))}
-              {materialGroups.length === 0 && (
-                <tr><td colSpan={5} className="text-center text-gray-500 py-6">No raw need yet — set projections and refresh.</td></tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {grouped.map((g) => (
+                  <tr key={g.key}>
+                    <td className="font-medium">{g.key}</td>
+                    <td className="text-right">{num(g.projectedNeed)}</td>
+                    <td className="text-right">{num(g.onHand)}</td>
+                    <td className="text-right">{num(g.onOrder)}</td>
+                    <td className="text-right font-bold" style={{ color: g.net < 0 ? "#ef4444" : "#10b981" }}>{num(g.net)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
 
-          {adequacy.length > 0 && (
+          {adequacy.length > 0 ? (
             <table className="data-table">
               <thead>
                 <tr>
                   <th>Raw SKU</th>
                   <th>Name</th>
+                  <th>Part type</th>
                   <th>Material</th>
                   <th className="text-right">Projected Need</th>
                   <th className="text-right">On Hand</th>
@@ -184,6 +215,7 @@ export default function Projections() {
                   <tr key={r.skuId} style={r.net < 0 ? { background: "#fef2f2" } : undefined}>
                     <td className="font-mono text-sm">{r.sku}</td>
                     <td className="text-sm">{r.name}</td>
+                    <td className="text-sm">{r.partType}</td>
                     <td className="text-sm">{r.material}</td>
                     <td className="text-right">{num(r.projectedNeed)}</td>
                     <td className="text-right">{num(r.onHand)}</td>
@@ -193,6 +225,8 @@ export default function Projections() {
                 ))}
               </tbody>
             </table>
+          ) : (
+            <p className="text-center text-gray-500 py-6">No raw need yet — set projections and refresh.</p>
           )}
         </div>
       </div>

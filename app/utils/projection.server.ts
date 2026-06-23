@@ -44,7 +44,9 @@ export interface RawAdequacyRow {
   skuId: string;
   sku: string;
   name: string;
-  material: string;
+  material: string; // Titanium / Aluminum / Cut-on-Contact / ...
+  partType: string; // Ferrules / Blades / Inserts / ...
+  category: string; // Sku.category
   projectedNeed: number;
   onHand: number;
   onOrder: number;
@@ -62,6 +64,19 @@ function materialOf(sku: string, name: string): string {
   return "Other";
 }
 
+// Classify a raw by the kind of part it is, for "group by ferrule / blades / etc".
+function partTypeOf(sku: string, name: string): string {
+  const s = `${sku} ${name}`.toUpperCase();
+  if (s.includes("FERRULE")) return "Ferrules";
+  if (s.includes("BLADE")) return "Blades";
+  if (s.includes("INSERT")) return "Inserts";
+  if (s.includes("COLLAR")) return "Collars";
+  if (s.includes("O-RING") || s.includes("ORING")) return "O-rings";
+  if (s.includes("STUD") || s.includes("SCREW") || s.includes("PIN")) return "Hardware";
+  if (s.includes("PACK") || s.includes("BOX") || s.includes("LABEL") || s.includes("CARD") || s.includes("BAG")) return "Packaging";
+  return "Other";
+}
+
 export async function computeProjections() {
   const scenario = await getOrCreateScenario();
   const [overrides, sales, skus, invRows, openItems] = await Promise.all([
@@ -74,6 +89,7 @@ export async function computeProjections() {
         sku: true,
         name: true,
         type: true,
+        category: true,
         bomComponents: { select: { componentSkuId: true, quantity: true } },
       },
     }),
@@ -168,6 +184,8 @@ export async function computeProjections() {
       sku: sku.sku,
       name: sku.name,
       material: materialOf(sku.sku, sku.name),
+      partType: partTypeOf(sku.sku, sku.name),
+      category: sku.category ?? "Uncategorized",
       projectedNeed: need,
       onHand: oh,
       onOrder: oo,
@@ -176,18 +194,7 @@ export async function computeProjections() {
   }
   adequacy.sort((a, b) => a.net - b.net);
 
-  const groupMap = new Map<string, { material: string; projectedNeed: number; onHand: number; onOrder: number; net: number }>();
-  for (const r of adequacy) {
-    const g = groupMap.get(r.material) ?? { material: r.material, projectedNeed: 0, onHand: 0, onOrder: 0, net: 0 };
-    g.projectedNeed += r.projectedNeed;
-    g.onHand += r.onHand;
-    g.onOrder += r.onOrder;
-    g.net += r.net;
-    groupMap.set(r.material, g);
-  }
-  const materialGroups = Array.from(groupMap.values()).sort((a, b) => a.net - b.net);
-
-  return { scenario, rows, adequacy, materialGroups };
+  return { scenario, rows, adequacy };
 }
 
 // Pull DtC sales for YTD + the comparison window from Shopify and cache per SKU.
