@@ -372,6 +372,8 @@ model ForecastTemplateItem {
 model ForecastScenario {
   id               String    @id @default(cuid())
   globalMultiplier Float     @default(2.0)
+  salesStart       DateTime?
+  salesEnd         DateTime?
   comparisonStart  DateTime
   comparisonEnd    DateTime
   horizonStart     DateTime
