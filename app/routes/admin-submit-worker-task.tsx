@@ -25,11 +25,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw new Response("Unauthorized", { status: 403 });
   }
 
-  // Get all workers
+  // Workers, plus any non-worker (e.g. admin) flagged to log time.
   const workers = await prisma.user.findMany({
     where: {
-      role: "WORKER",
-      isActive: true
+      isActive: true,
+      OR: [{ role: "WORKER" }, { canLogTime: true }],
     },
     select: {
       id: true,

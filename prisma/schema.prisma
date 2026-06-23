@@ -18,6 +18,7 @@ model User {
   updatedAt              DateTime          @updatedAt
   role                   UserRole          @default(WORKER)
   payRate                Float?
+  canLogTime             Boolean           @default(false)
   auditLogs              AuditLog[]
   clockEvents            ClockEvent[]
   purchaseOrdersApproved PurchaseOrder[]   @relation("POApprovedBy")

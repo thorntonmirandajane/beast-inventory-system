@@ -55,6 +55,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     const hashedPassword = await hashPassword(password);
     const payRate = payRateStr ? parseFloat(payRateStr) : null;
+    const canLogTime = formData.get("canLogTime") === "on";
 
     const newUser = await prisma.user.create({
       data: {
@@ -64,6 +65,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         lastName,
         role,
         payRate,
+        canLogTime,
       },
     });
 
@@ -85,14 +87,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const isActive = formData.get("isActive") === "true";
     const payRateStr = formData.get("payRate") as string;
     const payRate = payRateStr ? parseFloat(payRateStr) : null;
+    const canLogTime = formData.get("canLogTime") === "on";
     const emailInput = ((formData.get("email") as string) || "").trim().toLowerCase();
 
     const data: {
       role: UserRole;
       isActive: boolean;
       payRate: number | null;
+      canLogTime: boolean;
       email?: string;
-    } = { role, isActive, payRate };
+    } = { role, isActive, payRate, canLogTime };
 
     // Allow changing the login/email later (e.g. a worker provides a real
     // email). Blank is ignored so we never wipe the login identifier.
@@ -252,6 +256,12 @@ export default function Users() {
                   min="0"
                 />
               </div>
+              <div className="form-group mb-0 flex items-end">
+                <label className="flex items-center gap-2 text-sm" title="Allow logging time even if not a Worker (e.g. an admin)">
+                  <input type="checkbox" name="canLogTime" />
+                  Can log time
+                </label>
+              </div>
             </div>
             <div className="mt-4">
               <button
@@ -353,6 +363,13 @@ export default function Users() {
                           min="0"
                           defaultValue={u.payRate || ""}
                         />
+                        <label
+                          className="flex items-center gap-1 text-xs whitespace-nowrap"
+                          title="Allow this user to log time / be selected for time entry even if not a Worker"
+                        >
+                          <input type="checkbox" name="canLogTime" defaultChecked={u.canLogTime} />
+                          Logs time
+                        </label>
                         <button
                           type="submit"
                           className="btn btn-sm btn-secondary"
