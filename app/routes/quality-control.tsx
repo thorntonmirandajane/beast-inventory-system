@@ -285,6 +285,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message: "Task added — entry is pending approval." };
   }
 
+  if (intent === "delete-line") {
+    const lineId = formData.get("lineId") as string;
+    const entryId = formData.get("entryId") as string;
+    const line = await prisma.timeEntryLine.findUnique({ where: { id: lineId } });
+    if (!line) return { error: "Task line not found." };
+    await prisma.timeEntryLine.delete({ where: { id: lineId } });
+
+    // Recompute expected/efficiency from the remaining lines.
+    const entry = await prisma.workerTimeEntry.findUnique({ where: { id: entryId }, include: { lines: true } });
+    if (entry) {
+      const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
+      const efficiency = trackableEfficiency(expectedMinutes, entry.actualMinutes, entry.miscMinutes);
+      await prisma.workerTimeEntry.update({ where: { id: entryId }, data: { expectedMinutes, efficiency } });
+    }
+    await createAuditLog(user.id, "QC_DELETE_LINE", "WorkerTimeEntry", entryId, { lineId, processName: line.processName });
+    return { success: true, message: "Task removed from this entry." };
+  }
+
   if (intent === "set-misc") {
     const entryId = formData.get("entryId") as string;
     const miscHours = parseFloat(formData.get("miscHours") as string);
@@ -906,13 +924,28 @@ export default function QualityControl() {
                         )}
                       </td>
                       <td>
-                        {timeEntry.status === "PENDING" && !line.isRejected && (
-                          <button
-                            onClick={() => setRejectModalLine(line)}
-                            className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
-                          >
-                            Reject
-                          </button>
+                        {timeEntry.status === "PENDING" && (
+                          <div className="flex gap-2">
+                            {!line.isRejected && (
+                              <button
+                                onClick={() => setRejectModalLine(line)}
+                                className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
+                              >
+                                Reject
+                              </button>
+                            )}
+                            <Form
+                              method="post"
+                              onSubmit={(e) => {
+                                if (!confirm("Delete this task line? Use this if the wrong item was selected.")) e.preventDefault();
+                              }}
+                            >
+                              <input type="hidden" name="intent" value="delete-line" />
+                              <input type="hidden" name="lineId" value={line.id} />
+                              <input type="hidden" name="entryId" value={timeEntry.id} />
+                              <button type="submit" className="btn btn-sm btn-secondary">Delete</button>
+                            </Form>
+                          </div>
                         )}
                       </td>
                     </tr>
