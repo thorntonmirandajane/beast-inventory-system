@@ -308,6 +308,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message: `Misc time set to ${miscHours}h.` };
   }
 
+  if (intent === "reopen-pending") {
+    const entryId = formData.get("entryId") as string;
+    const entry = await prisma.workerTimeEntry.findUnique({
+      where: { id: entryId },
+      include: { lines: true },
+    });
+    if (!entry) return { error: "Entry not found." };
+    if (entry.lines.length > 0) {
+      return { error: "This entry already has tasks — reopening could double-move inventory. Reject it instead if needed." };
+    }
+    await prisma.workerTimeEntry.update({
+      where: { id: entryId },
+      data: { status: "PENDING", approvedById: null, approvedAt: null },
+    });
+    await createAuditLog(user.id, "REOPEN_TIME_ENTRY", "WorkerTimeEntry", entryId, {});
+    return { success: true, message: "Re-opened to pending — add tasks and misc time, then approve." };
+  }
+
   if (intent === "delete-entry") {
     const entryId = formData.get("entryId") as string;
     const entry = await prisma.workerTimeEntry.findUnique({
@@ -727,6 +745,20 @@ export default function QualityControl() {
                   <li key={i}>{w}</li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {timeEntry.status !== "PENDING" && timeEntry.lines.length === 0 && (
+            <div className="alert alert-warning mb-6 flex items-center justify-between gap-4">
+              <span>
+                Imported time with no tasks yet (status: <strong>{timeEntry.status}</strong>). Re-open it to add
+                the worker's tasks and misc time, then approve.
+              </span>
+              <Form method="post">
+                <input type="hidden" name="intent" value="reopen-pending" />
+                <input type="hidden" name="entryId" value={timeEntry.id} />
+                <button type="submit" className="btn btn-sm btn-primary" disabled={isSubmitting}>Reopen to Pending</button>
+              </Form>
             </div>
           )}
 

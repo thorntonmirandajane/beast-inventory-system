@@ -69,10 +69,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
 
   const csvFile = formData.get("csvFile") as File | null;
-  const statusInput = ((formData.get("status") as string) || "APPROVED").toUpperCase();
+  const statusInput = ((formData.get("status") as string) || "PENDING").toUpperCase();
   const status: TimeEntryStatus = ["DRAFT", "PENDING", "APPROVED"].includes(statusInput)
     ? (statusInput as TimeEntryStatus)
-    : "APPROVED";
+    : "PENDING";
 
   if (!csvFile || csvFile.size === 0) {
     return { error: "Please choose a CSV file." };
@@ -246,11 +246,14 @@ export default function AdminTimeImport() {
             </div>
             <div className="form-group">
               <label htmlFor="status" className="form-label">Import as</label>
-              <select id="status" name="status" className="form-input" defaultValue="APPROVED">
-                <option value="APPROVED">Approved — counts for payroll immediately</option>
-                <option value="PENDING">Pending — shows in Time Entry Approvals for review</option>
+              <select id="status" name="status" className="form-input" defaultValue="PENDING">
+                <option value="PENDING">Pending — review in QC to add tasks & misc, then approve (recommended)</option>
+                <option value="APPROVED">Approved — counts for payroll immediately (no tasks added)</option>
                 <option value="DRAFT">Draft — not counted until approved</option>
               </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Pending sends each entry to Quality Control, where you add the worker's tasks and any misc time before approving.
+              </p>
             </div>
             <div className="flex gap-3">
               <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
