@@ -334,11 +334,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "set-misc") {
     const entryId = formData.get("entryId") as string;
-    const miscHours = parseFloat(formData.get("miscHours") as string);
-    if (!entryId || isNaN(miscHours) || miscHours < 0) {
-      return { error: "Enter misc hours of 0 or more." };
+    const miscMinutes = parseInt(formData.get("miscMinutes") as string, 10);
+    if (!entryId || isNaN(miscMinutes) || miscMinutes < 0) {
+      return { error: "Enter misc minutes of 0 or more." };
     }
-    const miscMinutes = Math.round(miscHours * 60);
     const entry = await prisma.workerTimeEntry.findUnique({
       where: { id: entryId },
       include: { lines: true },
@@ -352,7 +351,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { miscMinutes, efficiency },
     });
     await createAuditLog(user.id, "SET_MISC_TIME", "WorkerTimeEntry", entryId, { miscMinutes });
-    return { success: true, message: `Misc time set to ${miscHours}h.` };
+    return { success: true, message: `Misc time set to ${miscMinutes} min.` };
   }
 
   if (intent === "reopen-pending") {
@@ -738,10 +737,10 @@ function MiscTimeForm({ entryId, miscMinutes }: { entryId: string; miscMinutes: 
       <input type="hidden" name="entryId" value={entryId} />
       <input
         type="number"
-        name="miscHours"
-        step="0.01"
+        name="miscMinutes"
+        step="1"
         min="0"
-        defaultValue={(miscMinutes / 60).toFixed(2)}
+        defaultValue={miscMinutes}
         className="form-input w-20 py-1 text-sm"
       />
       <button type="submit" className="btn btn-sm btn-secondary" disabled={busy}>
@@ -879,8 +878,8 @@ export default function QualityControl() {
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 items-end">
                 <div>
-                  <label className="text-sm font-medium text-gray-600">Misc Time (hrs)</label>
-                  <p className="text-xs text-gray-500">Pulled off — excluded from efficiency</p>
+                  <label className="text-sm font-medium text-gray-600">Misc Time (min)</label>
+                  <p className="text-xs text-gray-500">Pulled off — excluded from efficiency. Only approved misc time is accepted.</p>
                   <MiscTimeForm entryId={timeEntry.id} miscMinutes={timeEntry.miscMinutes} />
                 </div>
                 <div>

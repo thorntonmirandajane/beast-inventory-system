@@ -148,8 +148,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const clockOutEventId = formData.get("clockOutEventId") as string;
   const clockOutTime = new Date(formData.get("clockOutTime") as string);
   const breakMinutes = parseInt(formData.get("breakMinutes") as string, 10);
-  const miscHours = parseFloat(formData.get("miscHours") as string);
-  const miscMinutes = Number.isFinite(miscHours) && miscHours > 0 ? Math.round(miscHours * 60) : 0;
+  const miscMinutesInput = parseInt(formData.get("miscMinutes") as string, 10);
+  const miscMinutes = Number.isFinite(miscMinutesInput) && miscMinutesInput > 0 ? miscMinutesInput : 0;
 
   // Parse the lines from form data
   const linesJson = formData.get("linesJson") as string;
@@ -490,19 +490,20 @@ export default function ClockOutEntry() {
         <input type="hidden" name="breakMinutes" value={breakMinutes} />
         <input type="hidden" name="linesJson" value={linesJson} />
         <div className="form-group mb-4 max-w-xs">
-          <label htmlFor="miscHours" className="form-label">Misc time (hours)</label>
+          <label htmlFor="miscMinutes" className="form-label">Misc time (minutes)</label>
           <input
-            id="miscHours"
+            id="miscMinutes"
             type="number"
-            name="miscHours"
-            step="0.25"
+            name="miscMinutes"
+            step="1"
             min="0"
             defaultValue="0"
-            inputMode="decimal"
+            inputMode="numeric"
             className="form-input"
           />
           <p className="text-xs text-gray-500 mt-1">
-            Time pulled off for other projects — doesn't count against your efficiency.
+            Minutes pulled off for other projects — doesn't count against your efficiency.
+            Subject to manager approval; only approved misc time will be accepted.
           </p>
         </div>
         <div className="flex gap-3">
