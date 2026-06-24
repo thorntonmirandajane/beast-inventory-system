@@ -303,6 +303,35 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message: "Task removed from this entry." };
   }
 
+  if (intent === "edit-times") {
+    const entryId = formData.get("entryId") as string;
+    const dateStr = formData.get("date") as string;
+    const inStr = formData.get("clockInTime") as string;
+    const outStr = formData.get("clockOutTime") as string;
+    const breakMinutes = parseInt(formData.get("breakMinutes") as string, 10) || 0;
+    if (!entryId || !dateStr || !inStr || !outStr) return { error: "Date, clock-in and clock-out are required." };
+    const clockIn = new Date(`${dateStr}T${inStr}`);
+    const clockOut = new Date(`${dateStr}T${outStr}`);
+    if (clockOut <= clockIn) return { error: "Clock-out must be after clock-in." };
+    if (breakMinutes < 0) return { error: "Break minutes must be 0 or more." };
+    const actualMinutes = Math.floor((clockOut.getTime() - clockIn.getTime()) / 60000) - breakMinutes;
+    if (actualMinutes <= 0) return { error: "Working time must be positive (check the break)." };
+
+    const entry = await prisma.workerTimeEntry.findUnique({ where: { id: entryId }, include: { lines: true } });
+    if (!entry) return { error: "Entry not found." };
+    const expectedMinutes = entry.expectedMinutes ?? entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
+    const efficiency = trackableEfficiency(expectedMinutes, actualMinutes, entry.miscMinutes);
+    await prisma.workerTimeEntry.update({
+      where: { id: entryId },
+      data: { clockInTime: clockIn, clockOutTime: clockOut, breakMinutes, actualMinutes, efficiency },
+    });
+    // Keep the linked clock events in sync.
+    if (entry.clockInEventId) await prisma.clockEvent.update({ where: { id: entry.clockInEventId }, data: { timestamp: clockIn } }).catch(() => {});
+    if (entry.clockOutEventId) await prisma.clockEvent.update({ where: { id: entry.clockOutEventId }, data: { timestamp: clockOut } }).catch(() => {});
+    await createAuditLog(user.id, "EDIT_TIME_ENTRY_TIMES", "WorkerTimeEntry", entryId, { clockIn, clockOut, breakMinutes, actualMinutes });
+    return { success: true, message: "Shift times updated." };
+  }
+
   if (intent === "set-misc") {
     const entryId = formData.get("entryId") as string;
     const miscHours = parseFloat(formData.get("miscHours") as string);
@@ -562,6 +591,49 @@ function RejectTaskModal({
         </form>
       </div>
     </div>
+  );
+}
+
+function EditTimesForm({
+  timeEntry,
+}: {
+  timeEntry: { id: string; clockInTime: string | Date; clockOutTime: string | Date | null; breakMinutes: number };
+}) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const busy = fetcher.state !== "idle";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ci = new Date(timeEntry.clockInTime);
+  const co = timeEntry.clockOutTime ? new Date(timeEntry.clockOutTime) : null;
+  const dateVal = `${ci.getFullYear()}-${pad(ci.getMonth() + 1)}-${pad(ci.getDate())}`;
+  const inVal = `${pad(ci.getHours())}:${pad(ci.getMinutes())}`;
+  const outVal = co ? `${pad(co.getHours())}:${pad(co.getMinutes())}` : "";
+
+  return (
+    <details className="mt-4 border-t pt-3">
+      <summary className="text-sm text-blue-600 cursor-pointer">Adjust shift times</summary>
+      {fetcher.data?.error && <div className="alert alert-error my-2 text-sm">{fetcher.data.error}</div>}
+      <fetcher.Form method="post" className="grid grid-cols-2 md:grid-cols-5 gap-3 items-end mt-3">
+        <input type="hidden" name="intent" value="edit-times" />
+        <input type="hidden" name="entryId" value={timeEntry.id} />
+        <div className="form-group mb-0">
+          <label className="form-label text-sm">Date</label>
+          <input type="date" name="date" defaultValue={dateVal} className="form-input" required />
+        </div>
+        <div className="form-group mb-0">
+          <label className="form-label text-sm">Clock In</label>
+          <input type="time" name="clockInTime" defaultValue={inVal} className="form-input" required />
+        </div>
+        <div className="form-group mb-0">
+          <label className="form-label text-sm">Clock Out</label>
+          <input type="time" name="clockOutTime" defaultValue={outVal} className="form-input" required />
+        </div>
+        <div className="form-group mb-0">
+          <label className="form-label text-sm">Break (min)</label>
+          <input type="number" name="breakMinutes" min="0" defaultValue={timeEntry.breakMinutes ?? 0} className="form-input" />
+        </div>
+        <button type="submit" className="btn btn-secondary" disabled={busy}>{busy ? "Saving…" : "Save times"}</button>
+      </fetcher.Form>
+    </details>
   );
 }
 
@@ -849,6 +921,8 @@ export default function QualityControl() {
                   )}
                 </div>
               </div>
+
+              <EditTimesForm timeEntry={timeEntry} />
             </div>
           </div>
 

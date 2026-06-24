@@ -44,12 +44,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const breakMinutes = parseInt(formData.get("breakMinutes") as string, 10) || 0;
     const notes = formData.get("notes") as string;
 
-    if (!workerId || !clockInDate || !clockInTime || !clockOutTime) {
-      return { error: "All fields except break minutes and notes are required" };
+    if (!workerId || !clockInDate || !clockInTime) {
+      return { error: "Worker, date, and clock-in time are required." };
     }
 
-    // Parse timestamps
     const clockInTimestamp = new Date(`${clockInDate}T${clockInTime}`);
+
+    // No clock-out provided → open shift: just log the clock-in so the worker is
+    // on the clock and can clock out normally (which creates their entry).
+    if (!clockOutTime) {
+      const clockInEvent = await prisma.clockEvent.create({
+        data: {
+          userId: workerId,
+          type: "CLOCK_IN",
+          timestamp: clockInTimestamp,
+          notes: `Manual clock-in by admin: ${notes || "forgot to clock in"}`,
+        },
+      });
+      await createAuditLog(user.id, "CREATE_MANUAL_CLOCK_IN", "ClockEvent", clockInEvent.id, {
+        workerId,
+        clockInTime: clockInTimestamp,
+        notes,
+      });
+      return {
+        success: true,
+        message: "Clock-in logged — the worker is now on the clock and can clock out normally when they finish.",
+      };
+    }
+
     const clockOutTimestamp = new Date(`${clockInDate}T${clockOutTime}`);
 
     // Validate times
@@ -148,6 +170,9 @@ export default function AdminManualTimeEntry() {
       {actionData?.error && (
         <div className="alert alert-error">{actionData.error}</div>
       )}
+      {actionData && "success" in actionData && actionData.success && (
+        <div className="alert alert-success">{actionData.message}</div>
+      )}
 
       <div className="card max-w-2xl">
         <div className="card-body">
@@ -209,7 +234,7 @@ export default function AdminManualTimeEntry() {
               </div>
 
               <div className="form-group">
-                <label htmlFor="clockOutTime" className="form-label required">
+                <label htmlFor="clockOutTime" className="form-label">
                   Clock Out Time
                 </label>
                 <input
@@ -217,8 +242,10 @@ export default function AdminManualTimeEntry() {
                   id="clockOutTime"
                   name="clockOutTime"
                   className="form-input"
-                  required
                 />
+                <p className="text-xs text-gray-500 mt-1">
+                  Leave blank if they're still working — logs just a clock-in (open shift).
+                </p>
               </div>
             </div>
 
