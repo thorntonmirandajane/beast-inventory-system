@@ -537,7 +537,9 @@ export async function getWorkerTasks(userId: string, includeBacklog = true) {
 
   const whereClause: any = {
     userId,
-    status: { in: ["PENDING", "IN_PROGRESS"] },
+    // TaskStatus is PENDING | COMPLETED | CANCELLED (IN_PROGRESS was removed).
+    // Open tasks = PENDING.
+    status: "PENDING",
   };
 
   if (!includeBacklog) {
