@@ -10,10 +10,12 @@ services:
     runtime: node
     plan: free
     buildCommand: npm ci --include=dev --ignore-scripts && npx prisma migrate deploy && npx prisma generate && npx tsx prisma/rename-skus-coc-cb.ts && npx tsx scripts/backfill-grain-diameter.ts && npm run build
-    startCommand: npm run start
+    startCommand: TZ=America/Denver npm run start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: TZ
+        value: America/Denver
       - key: DATABASE_URL
         fromDatabase:
           name: beast-inventory-db
