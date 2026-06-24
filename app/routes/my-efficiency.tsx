@@ -240,12 +240,11 @@ export default function MyEfficiency() {
                 meeting or exceeding expectations
               </li>
               <li>
-                <strong className="text-yellow-700">80-99%:</strong> Good performance, room for
-                improvement
+                <strong className="text-yellow-700">80-99%:</strong> Room for improvement
               </li>
               <li>
-                <strong className="text-red-700">Below 80%:</strong> Consider ways to improve
-                workflow
+                <strong className="text-red-700">Below 80%:</strong> Below expectations — this
+                needs to improve
               </li>
             </ul>
             <p className="mt-3 text-xs text-blue-700">
