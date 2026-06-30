@@ -30,3 +30,11 @@ services:
         sync: false
       - key: CLOUDINARY_URL
         sync: false
+      # ShipHero (Bowmar Archery LLC) — on-hand inventory for forecasting.
+      # Set values in the Render dashboard.
+      - key: SHIPHERO_USERNAME
+        sync: false
+      - key: SHIPHERO_PASSWORD
+        sync: false
+      - key: SHIPHERO_WAREHOUSE
+        value: Apex

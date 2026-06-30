@@ -5,11 +5,11 @@ import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import {
-  getGallatinInventory,
   getUnfulfilledLineItems,
   aggregateUnfulfilledBySku,
   type UnfulfilledLineItem,
 } from "../utils/shopify.server";
+import { getOnHandInventory } from "../utils/shiphero.server";
 import {
   fetchProgrammedOrders,
   type ProgrammedOrdersResponse,
@@ -114,17 +114,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const laborStart = startDate ? new Date(startDate) : new Date();
   const laborEnd = endDate ? new Date(endDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-  // Fetch live Gallatin inventory from Shopify. Used to populate
-  // `currentInGallatin` instead of a manually-entered number. Failures
-  // fall back to whatever's stored on the Forecast row so the page still
-  // loads if Shopify is unreachable.
+  // Fetch live on-hand inventory from ShipHero (the Apex warehouse — the WMS
+  // source of truth). Used to populate `currentInGallatin` with the real
+  // physical count rather than Shopify's `available`, which deducts
+  // committed/reserved units. Failures fall back to whatever's stored on the
+  // Forecast row so the page still loads if ShipHero is unreachable.
   let gallatinInventory: Map<string, number> | null = null;
   let shopifyError: string | null = null;
   try {
-    gallatinInventory = await getGallatinInventory();
+    gallatinInventory = await getOnHandInventory();
   } catch (err) {
     shopifyError = err instanceof Error ? err.message : String(err);
-    console.error("[forecasting] Shopify inventory fetch failed:", shopifyError);
+    console.error("[forecasting] ShipHero on-hand fetch failed:", shopifyError);
   }
 
   // The Forecast tab now also needs unfulfilled + programmed totals per
@@ -180,7 +181,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       programmedQtyBySku.set(k, (programmedQtyBySku.get(k) ?? 0) + row.quantity);
     }
   }
-  // Same normalization for live Gallatin inventory (also Shopify-keyed).
+  // Same normalization for live on-hand inventory (ShipHero SKU-keyed).
   const gallatinQtyByNormSku = new Map<string, number>();
   if (gallatinInventory) {
     for (const [s, q] of gallatinInventory) {
@@ -261,12 +262,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   for (const sku of completedSkus) {
     const forecast = forecastMap.get(sku.id);
-    // Prefer the live Shopify number when available; fall back to the
-    // stored manual value so the page still calculates if Shopify is down.
+    // Prefer the live ShipHero on-hand number when available; fall back to the
+    // stored manual value so the page still calculates if ShipHero is down.
     const skuKey = normSku(sku.sku);
     const liveGallatin = gallatinQtyByNormSku.get(skuKey);
-    // Floor at 0 — Shopify reports negative "available" for oversold items,
-    // but we never show negative on-hand inventory.
+    // Floor at 0 — never show negative on-hand inventory.
     const currentInGallatin = Math.max(0, liveGallatin ?? forecast?.currentInGallatin ?? 0);
     const forecastedQty = forecast?.quantity || 0;
     const unfulfilledQty = unfulfilledQtyBySku.get(skuKey) ?? 0;
@@ -734,7 +734,7 @@ function ForecastRow({
             <span className="font-semibold text-gray-900">{item.currentInGallatin}</span>
             <span
               className="text-xs text-blue-500"
-              title="Live value from Shopify Gallatin location"
+              title="Live on-hand from ShipHero (Apex warehouse)"
             >
               ●
             </span>
@@ -1096,7 +1096,7 @@ export default function Forecasting() {
 
       {shopifyError && tab === "forecast" && (
         <div className="alert alert-warning text-sm">
-          Shopify unavailable — Current in Gallatin numbers may be stale. ({shopifyError})
+          ShipHero unavailable — Current in Gallatin numbers may be stale. ({shopifyError})
         </div>
       )}
 
