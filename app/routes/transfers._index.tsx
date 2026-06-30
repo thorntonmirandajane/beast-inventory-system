@@ -181,9 +181,12 @@ export default function Transfers() {
 
   return (
     <Layout user={user}>
-      <div className="page-header">
-        <h1 className="page-title">Transfers</h1>
-        <p className="page-subtitle">Transfer inventory to external destinations</p>
+      <div className="page-header flex items-start justify-between">
+        <div>
+          <h1 className="page-title">Transfers</h1>
+          <p className="page-subtitle">Transfer inventory to external destinations</p>
+        </div>
+        <Link to="/transfers/import" className="btn btn-secondary">Import from CSV</Link>
       </div>
 
       {actionData?.error && (

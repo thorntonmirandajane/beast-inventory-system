@@ -19,6 +19,7 @@ export default [
   route("skus/:id", "routes/skus.$id.tsx"),
   route("build", "routes/build.tsx"),
   route("transfers", "routes/transfers._index.tsx"),
+  route("transfers/import", "routes/transfers.import.tsx"),
   route("time-clock", "routes/time-clock.tsx"),
   route("time-off-request", "routes/time-off-request.tsx"),
   route("worker-dashboard", "routes/worker-dashboard.tsx"),
