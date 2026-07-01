@@ -5,6 +5,7 @@ import { Layout } from "../components/Layout";
 import { ImageUpload } from "../components/ImageUpload";
 import prisma from "../db.server";
 import { approveTimeEntry, trackableEfficiency } from "../utils/productivity.server";
+import { applyProduction, reverseProduction } from "../utils/inventory.server";
 import { matchesProcess } from "../utils/process";
 import { useState, useEffect } from "react";
 
@@ -301,6 +302,87 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
     await createAuditLog(user.id, "QC_DELETE_LINE", "WorkerTimeEntry", entryId, { lineId, processName: line.processName });
     return { success: true, message: "Task removed from this entry." };
+  }
+
+  if (intent === "edit-line-sku") {
+    const lineId = formData.get("lineId") as string;
+    const newSkuId = formData.get("skuId") as string;
+    const newProcess = formData.get("processName") as string;
+    const secondsPerUnit = parseInt(formData.get("secondsPerUnit") as string, 10) || 0;
+    if (!lineId || !newSkuId || !newProcess) {
+      return { error: "Pick the correct process and SKU." };
+    }
+    const line = await prisma.timeEntryLine.findUnique({ where: { id: lineId }, include: { sku: true } });
+    if (!line) return { error: "Task line not found." };
+    if (!line.skuId) return { error: "This line has no SKU to correct." };
+    if (line.skuId === newSkuId && line.processName === newProcess) {
+      return { error: "That's already the SKU and process on this line." };
+    }
+
+    const base = line.adminAdjustedQuantity ?? line.quantityCompleted;
+    const finalQty = line.isRejected ? 0 : base - (line.rejectionQuantity ?? 0);
+    const warnings: string[] = [];
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        // If inventory already moved for this line, swap it: reverse the wrong
+        // SKU's production, then apply the correct SKU's.
+        if (line.inventoryApplied && finalQty > 0) {
+          const rev = await reverseProduction(line.skuId!, finalQty, {
+            relatedResource: line.timeEntryId,
+            relatedResourceType: "TIME_ENTRY",
+            processName: line.processName,
+            performedById: user.id,
+            notes: `Correction: was wrongly logged as ${line.sku?.sku}`,
+          }, tx);
+          if (!rev.success) throw new Error(rev.error ?? "Reverse failed");
+          warnings.push(...rev.warnings);
+
+          const app = await applyProduction(newSkuId, finalQty, {
+            produce: true,
+            relatedResource: line.timeEntryId,
+            relatedResourceType: "TIME_ENTRY",
+            processName: newProcess,
+            performedById: user.id,
+            notes: "Correction: corrected SKU",
+          }, tx);
+          if (!app.success) throw new Error(app.error ?? "Apply failed");
+          warnings.push(...app.warnings);
+        }
+
+        await tx.timeEntryLine.update({
+          where: { id: lineId },
+          data: {
+            skuId: newSkuId,
+            processName: newProcess,
+            secondsPerUnit,
+            expectedSeconds: line.quantityCompleted * secondsPerUnit,
+          },
+        });
+
+        const entry = await tx.workerTimeEntry.findUnique({ where: { id: line.timeEntryId }, include: { lines: true } });
+        if (entry) {
+          const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
+          const efficiency = trackableEfficiency(expectedMinutes, entry.actualMinutes, entry.miscMinutes);
+          await tx.workerTimeEntry.update({ where: { id: line.timeEntryId }, data: { expectedMinutes, efficiency } });
+        }
+      });
+    } catch (e) {
+      return { error: `Correction failed: ${e instanceof Error ? e.message : String(e)}` };
+    }
+
+    await createAuditLog(user.id, "QC_EDIT_LINE_SKU", "WorkerTimeEntry", line.timeEntryId, {
+      lineId,
+      from: line.sku?.sku,
+      fromProcess: line.processName,
+      toProcess: newProcess,
+      qty: finalQty,
+    });
+    return {
+      success: true,
+      message: line.inventoryApplied && finalQty > 0 ? "SKU corrected — inventory adjusted." : "SKU corrected.",
+      warnings: warnings.length ? warnings : undefined,
+    };
   }
 
   if (intent === "edit-times") {
@@ -636,6 +718,75 @@ function EditTimesForm({
   );
 }
 
+function EditSkuModal({
+  line,
+  processConfigs,
+  skus,
+  applied,
+  onClose,
+}: {
+  line: any;
+  processConfigs: { processName: string; displayName: string; secondsPerUnit: number }[];
+  skus: { id: string; sku: string; name: string; material: string | null }[];
+  applied: boolean;
+  onClose: () => void;
+}) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const [proc, setProc] = useState<string>(line.processName ?? "");
+  const [skuId, setSkuId] = useState<string>(line.skuId ?? "");
+  const cfg = processConfigs.find((p) => p.processName === proc);
+  const filtered = cfg ? skus.filter((s) => matchesProcess(s.material, cfg.displayName)) : skus;
+  const list = filtered.length ? filtered : skus;
+  const busy = fetcher.state !== "idle";
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) onClose();
+  }, [fetcher.state, fetcher.data]);
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="card-header"><h3 className="card-title">Correct Task SKU</h3></div>
+        <div className="card-body space-y-4">
+          {fetcher.data?.error && <div className="alert alert-error text-sm">{fetcher.data.error}</div>}
+          <p className="text-sm text-gray-600">
+            Currently: <strong>{line.sku?.sku ?? "—"}</strong> via{" "}
+            {processConfigs.find((p) => p.processName === line.processName)?.displayName ?? line.processName} · {line.quantityCompleted} units.
+          </p>
+          {applied && (
+            <p className="text-xs text-amber-700">
+              This entry is approved — saving <strong>reverses</strong> the wrong SKU's inventory and <strong>applies</strong> the correct one.
+            </p>
+          )}
+          <fetcher.Form method="post" className="space-y-3">
+            <input type="hidden" name="intent" value="edit-line-sku" />
+            <input type="hidden" name="lineId" value={line.id} />
+            <input type="hidden" name="secondsPerUnit" value={cfg?.secondsPerUnit ?? 0} />
+            <div className="form-group mb-0">
+              <label className="form-label text-sm">Process</label>
+              <select name="processName" value={proc} onChange={(e) => { setProc(e.target.value); setSkuId(""); }} className="form-input" required>
+                <option value="">Select…</option>
+                {processConfigs.map((p) => <option key={p.processName} value={p.processName}>{p.displayName}</option>)}
+              </select>
+            </div>
+            <div className="form-group mb-0">
+              <label className="form-label text-sm">Correct SKU</label>
+              <select name="skuId" value={skuId} onChange={(e) => setSkuId(e.target.value)} className="form-input" required disabled={!proc}>
+                <option value="">{proc ? "Select…" : "Pick a process first"}</option>
+                {list.map((s) => <option key={s.id} value={s.id}>{s.sku} — {s.name}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-3 justify-end pt-2">
+              <button type="button" onClick={onClose} className="btn btn-ghost">Cancel</button>
+              <button type="submit" className="btn btn-primary" disabled={busy || !proc || !skuId}>{busy ? "Saving…" : "Save correction"}</button>
+            </div>
+          </fetcher.Form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AddTaskForm({
   entryId,
   processConfigs,
@@ -760,6 +911,7 @@ export default function QualityControl() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const [rejectModalLine, setRejectModalLine] = useState<any>(null);
+  const [editSkuLine, setEditSkuLine] = useState<any>(null);
 
   const getProcessDisplay = (processName: string) => {
     if (!processConfigs) return processName.replace(/_/g, " ");
@@ -997,29 +1149,40 @@ export default function QualityControl() {
                         )}
                       </td>
                       <td>
-                        {timeEntry.status === "PENDING" && (
-                          <div className="flex gap-2">
-                            {!line.isRejected && (
-                              <button
-                                onClick={() => setRejectModalLine(line)}
-                                className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
-                              >
-                                Reject
-                              </button>
-                            )}
-                            <Form
-                              method="post"
-                              onSubmit={(e) => {
-                                if (!confirm("Delete this task line? Use this if the wrong item was selected.")) e.preventDefault();
-                              }}
+                        <div className="flex gap-2">
+                          {!line.isMisc && line.skuId && (
+                            <button
+                              onClick={() => setEditSkuLine(line)}
+                              className="btn btn-sm btn-secondary"
+                              title="Correct the SKU/process on this task and adjust inventory"
                             >
-                              <input type="hidden" name="intent" value="delete-line" />
-                              <input type="hidden" name="lineId" value={line.id} />
-                              <input type="hidden" name="entryId" value={timeEntry.id} />
-                              <button type="submit" className="btn btn-sm btn-secondary">Delete</button>
-                            </Form>
-                          </div>
-                        )}
+                              Edit SKU
+                            </button>
+                          )}
+                          {timeEntry.status === "PENDING" && (
+                            <>
+                              {!line.isRejected && (
+                                <button
+                                  onClick={() => setRejectModalLine(line)}
+                                  className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
+                                >
+                                  Reject
+                                </button>
+                              )}
+                              <Form
+                                method="post"
+                                onSubmit={(e) => {
+                                  if (!confirm("Delete this task line? Use this if the wrong item was selected.")) e.preventDefault();
+                                }}
+                              >
+                                <input type="hidden" name="intent" value="delete-line" />
+                                <input type="hidden" name="lineId" value={line.id} />
+                                <input type="hidden" name="entryId" value={timeEntry.id} />
+                                <button type="submit" className="btn btn-sm btn-secondary">Delete</button>
+                              </Form>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1121,6 +1284,15 @@ export default function QualityControl() {
               line={rejectModalLine}
               onClose={() => setRejectModalLine(null)}
               processDisplayName={getProcessDisplay(rejectModalLine.processName)}
+            />
+          )}
+          {editSkuLine && (
+            <EditSkuModal
+              line={editSkuLine}
+              processConfigs={processConfigs ?? []}
+              skus={assignableSkus ?? []}
+              applied={timeEntry.status === "APPROVED"}
+              onClose={() => setEditSkuLine(null)}
             />
           )}
         </div>

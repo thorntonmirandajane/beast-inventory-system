@@ -847,6 +847,66 @@ export async function applyProduction(
   return { success: true, warnings };
 }
 
+/**
+ * Undo a previous production of `qty` of `outputSkuId`: remove the produced
+ * output and add its consumed components back. The exact inverse of
+ * applyProduction, used to correct a line that was submitted against the wrong
+ * SKU (reverse the wrong one, then applyProduction the right one).
+ */
+export async function reverseProduction(
+  outputSkuId: string,
+  qty: number,
+  opts: {
+    relatedResource?: string;
+    relatedResourceType?: string;
+    processName?: string;
+    performedById?: string;
+    notes?: string;
+  },
+  client?: PrismaClientOrTx
+): Promise<ApplyProductionResult> {
+  const db = client || prisma;
+  const warnings: string[] = [];
+  if (qty <= 0) return { success: true, warnings };
+
+  const output = await db.sku.findUnique({
+    where: { id: outputSkuId },
+    include: { bomComponents: { include: { componentSku: true } } },
+  });
+  if (!output) return { success: false, error: `SKU not found: ${outputSkuId}`, warnings };
+  if (output.bomComponents.length === 0) {
+    return { success: false, error: `SKU ${output.sku} has no BOM; cannot reverse it`, warnings };
+  }
+
+  const directBom: DirectBomLine[] = output.bomComponents.map((b) => ({
+    componentSkuId: b.componentSkuId,
+    componentType: b.componentSku.type,
+    quantity: b.quantity,
+  }));
+  const moves = planProduction({ skuId: output.id, type: output.type }, qty, directBom);
+
+  for (const move of moves) {
+    if (move.reason === "PRODUCED") {
+      // Original produced the output; reversal removes it.
+      const { shortBy } = await deductStockFifo(db, move.skuId, move.delta, move.state);
+      if (shortBy > 0) warnings.push(`${output.sku} went negative by ${shortBy} in ${move.state} while reversing`);
+      await logInventoryMovement(
+        move.skuId, "CONSUMED", move.delta, move.state, undefined,
+        opts.relatedResource, opts.relatedResourceType, opts.processName, opts.notes ?? "Correction: reversed production", opts.performedById, db
+      );
+    } else {
+      // Original consumed the component; reversal adds it back.
+      const amount = -move.delta;
+      await addStock(db, move.skuId, amount, move.state);
+      await logInventoryMovement(
+        move.skuId, "PRODUCED", amount, undefined, move.state,
+        opts.relatedResource, opts.relatedResourceType, opts.processName, opts.notes ?? "Correction: restored component", opts.performedById, db
+      );
+    }
+  }
+  return { success: true, warnings };
+}
+
 // ============================================
 // OPENING COUNTS / SPOT-CHECK (set absolute counts)
 // ============================================
