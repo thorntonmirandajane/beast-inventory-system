@@ -1127,9 +1127,22 @@ export default function QualityControl() {
       ) : (
         // List View
         <div>
-          <div className="page-header">
-            <h1 className="page-title">Quality Control</h1>
-            <p className="page-subtitle">Review and manage worker task submissions</p>
+          <div className="page-header flex items-start justify-between flex-wrap gap-3">
+            <div>
+              <h1 className="page-title">Quality Control</h1>
+              <p className="page-subtitle">Review and manage worker task submissions</p>
+            </div>
+            <form method="get" action="/reports/approved-production" className="flex items-end gap-2">
+              <div className="form-group mb-0">
+                <label className="form-label text-xs">From</label>
+                <input type="date" name="from" className="form-input py-1 text-sm" />
+              </div>
+              <div className="form-group mb-0">
+                <label className="form-label text-xs">To</label>
+                <input type="date" name="to" className="form-input py-1 text-sm" />
+              </div>
+              <button type="submit" className="btn btn-secondary btn-sm">Export approved (CSV)</button>
+            </form>
           </div>
 
           {actionData?.error && (

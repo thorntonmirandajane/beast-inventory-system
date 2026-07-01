@@ -213,15 +213,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     take: 20,
   });
   timeEntryLines.forEach((line) => {
-    // Only add if clockOutTime and user exist
-    if (line.timeEntry.clockOutTime && line.timeEntry.user) {
+    // Show all approved production. Some entries (admin-submitted / manual / CSV
+    // imported) have no clock-out time — use clock-in as the timestamp so those
+    // still appear and the Activity Log matches the movement ledger.
+    if (line.timeEntry.user) {
       activities.push({
         id: line.id,
         type: "TASK_COMPLETED",
         description: `Completed ${line.quantityCompleted} units of ${line.processName}${line.adminAdjustedQuantity ? ` (adjusted to ${line.adminAdjustedQuantity})` : ""}`,
         quantity: line.adminAdjustedQuantity ?? line.quantityCompleted,
         user: line.timeEntry.user.name,
-        timestamp: line.timeEntry.clockOutTime,
+        timestamp: line.timeEntry.clockOutTime ?? line.timeEntry.clockInTime,
         metadata: { process: line.processName, isRejected: line.isRejected },
       });
     }
