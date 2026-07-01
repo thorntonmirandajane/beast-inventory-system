@@ -521,6 +521,7 @@ model TimeEntryLine {
   rejectionReason       String?
   rejectionQuantity     Int?
   isMisc                Boolean         @default(false)
+  inventoryApplied      Boolean         @default(false)
   miscDescription       String?
   createdAt             DateTime        @default(now())
   sku                   Sku?            @relation("TimeEntryLineSku", fields: [skuId], references: [id])

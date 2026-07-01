@@ -280,6 +280,16 @@ export async function approveTimeEntry(
           continue;
         }
 
+        // Skip lines whose inventory was already applied (e.g. the entry was
+        // approved, re-opened to add a task, and approved again). Without this
+        // the old lines would produce/consume a second time — the duplicate
+        // movement bug.
+        if (line.inventoryApplied) {
+          details.push(`  SKIPPED: inventory already applied for this line`);
+          console.log(`[Approve] Skipping already-applied line ${line.id}`);
+          continue;
+        }
+
         // Calculate base + rejected. A whole-line rejection (isRejected=true)
         // is treated as 100% rejected — the worker still attempted the work,
         // so the components were consumed and the rejected portion (the
@@ -363,6 +373,13 @@ export async function approveTimeEntry(
           }
           details.push(`  Scrapped ${rejectedQuantity} rejected unit(s) of ${skuName}`);
         }
+
+        // Mark this line's inventory as applied so a future re-approval won't
+        // move it again.
+        await tx.timeEntryLine.update({
+          where: { id: line.id },
+          data: { inventoryApplied: true },
+        });
 
         // Mark linked task as completed if any
         if (line.workerTaskId) {
