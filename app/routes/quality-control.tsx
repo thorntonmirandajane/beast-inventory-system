@@ -1142,6 +1142,7 @@ export default function QualityControl() {
                 <input type="date" name="to" className="form-input py-1 text-sm" />
               </div>
               <button type="submit" className="btn btn-secondary btn-sm">Export approved (CSV)</button>
+              <Link to="/reports/duplicate-movements" className="btn btn-secondary btn-sm">Duplicate check</Link>
             </form>
           </div>
 
