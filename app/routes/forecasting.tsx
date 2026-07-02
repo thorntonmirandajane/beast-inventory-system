@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, Link, useNavigation, useFetcher, useSearchParams, Await } from "react-router";
+import { useLoaderData, useActionData, Form, Link, useNavigation, useFetcher, useSearchParams, Await, useAsyncError } from "react-router";
 import React, { useState, Suspense } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
@@ -120,7 +120,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // page shell + "Syncing" pill instantly instead of freezing for minutes while
   // Shopify/ShipHero are queried. The data streams in when ready; with the
   // clients' stale-while-revalidate caches, a warm cache resolves near-instantly.
-  const live = buildForecastData({ tab, basis, laborStart, laborEnd });
+  const live = buildForecastData({ tab, basis, laborStart, laborEnd }).catch((err) => {
+    console.error("[forecasting] buildForecastData failed:", err);
+    throw err;
+  });
   return { user, live };
 };
 
@@ -154,13 +157,28 @@ async function buildForecastData({
     tab === "forecast" || tab === "unfulfilled" || tab === "programmed" || tab === "materials";
 
   // Run a fetch, capturing its result or a stringified error, so the three
-  // integrations can settle independently inside a single Promise.all.
+  // integrations can settle independently inside a single Promise.all. A hard
+  // total cap (below the server's stream timeout) guarantees this deferred data
+  // always resolves in time — if a store is genuinely slow, we degrade to an
+  // error for that integration instead of letting the whole streamed response
+  // time out. The underlying fetch keeps running and warms the cache for the
+  // next load.
+  const INTEGRATION_TIMEOUT_MS = 22000;
   const settle = async <T,>(
     p: Promise<T>,
     label: string
   ): Promise<{ value: T | null; error: string | null }> => {
     try {
-      return { value: await p, error: null };
+      const value = await Promise.race([
+        p,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`timed out after ${INTEGRATION_TIMEOUT_MS / 1000}s`)),
+            INTEGRATION_TIMEOUT_MS
+          )
+        ),
+      ]);
+      return { value, error: null };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       console.error(`[forecasting] ${label} failed:`, error);
@@ -1015,13 +1033,17 @@ function ForecastLoading({ user }: { user: ForecastUser }) {
 }
 
 function ForecastLoadError({ user }: { user: ForecastUser }) {
+  const err = useAsyncError();
+  const message =
+    err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
   return (
     <Layout user={user}>
       <div className="page-header">
         <h1 className="page-title">Forecasting & Capacity</h1>
       </div>
       <div className="alert alert-error">
-        Couldn't load forecasting data. Refresh to try again.
+        <strong>Couldn't load forecasting data.</strong> Refresh to try again.
+        <pre className="mt-2 text-xs whitespace-pre-wrap break-all opacity-80">{message}</pre>
       </div>
     </Layout>
   );
