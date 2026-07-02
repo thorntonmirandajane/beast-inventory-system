@@ -734,10 +734,15 @@ function EditSkuModal({
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
   const [proc, setProc] = useState<string>(line.processName ?? "");
   const [skuId, setSkuId] = useState<string>(line.skuId ?? "");
+  const [confirming, setConfirming] = useState(false);
   const cfg = processConfigs.find((p) => p.processName === proc);
   const filtered = cfg ? skus.filter((s) => matchesProcess(s.material, cfg.displayName)) : skus;
   const list = filtered.length ? filtered : skus;
   const busy = fetcher.state !== "idle";
+
+  const newSku = skus.find((s) => s.id === skuId);
+  const newProcDisplay = cfg?.displayName ?? proc;
+  const oldProcDisplay = processConfigs.find((p) => p.processName === line.processName)?.displayName ?? line.processName;
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.success) onClose();
@@ -750,36 +755,64 @@ function EditSkuModal({
         <div className="card-body space-y-4">
           {fetcher.data?.error && <div className="alert alert-error text-sm">{fetcher.data.error}</div>}
           <p className="text-sm text-gray-600">
-            Currently: <strong>{line.sku?.sku ?? "—"}</strong> via{" "}
-            {processConfigs.find((p) => p.processName === line.processName)?.displayName ?? line.processName} · {line.quantityCompleted} units.
+            Currently: <strong>{line.sku?.sku ?? "—"}</strong> via {oldProcDisplay} · {line.quantityCompleted} units.
           </p>
-          {applied && (
-            <p className="text-xs text-amber-700">
-              This entry is approved — saving <strong>reverses</strong> the wrong SKU's inventory and <strong>applies</strong> the correct one.
-            </p>
-          )}
+
           <fetcher.Form method="post" className="space-y-3">
             <input type="hidden" name="intent" value="edit-line-sku" />
             <input type="hidden" name="lineId" value={line.id} />
             <input type="hidden" name="secondsPerUnit" value={cfg?.secondsPerUnit ?? 0} />
-            <div className="form-group mb-0">
-              <label className="form-label text-sm">Process</label>
-              <select name="processName" value={proc} onChange={(e) => { setProc(e.target.value); setSkuId(""); }} className="form-input" required>
-                <option value="">Select…</option>
-                {processConfigs.map((p) => <option key={p.processName} value={p.processName}>{p.displayName}</option>)}
-              </select>
-            </div>
-            <div className="form-group mb-0">
-              <label className="form-label text-sm">Correct SKU</label>
-              <select name="skuId" value={skuId} onChange={(e) => setSkuId(e.target.value)} className="form-input" required disabled={!proc}>
-                <option value="">{proc ? "Select…" : "Pick a process first"}</option>
-                {list.map((s) => <option key={s.id} value={s.id}>{s.sku} — {s.name}</option>)}
-              </select>
-            </div>
-            <div className="flex gap-3 justify-end pt-2">
-              <button type="button" onClick={onClose} className="btn btn-ghost">Cancel</button>
-              <button type="submit" className="btn btn-primary" disabled={busy || !proc || !skuId}>{busy ? "Saving…" : "Save correction"}</button>
-            </div>
+
+            {!confirming ? (
+              <>
+                <div className="form-group mb-0">
+                  <label className="form-label text-sm">Process</label>
+                  <select value={proc} onChange={(e) => { setProc(e.target.value); setSkuId(""); }} className="form-input" required>
+                    <option value="">Select…</option>
+                    {processConfigs.map((p) => <option key={p.processName} value={p.processName}>{p.displayName}</option>)}
+                  </select>
+                </div>
+                <div className="form-group mb-0">
+                  <label className="form-label text-sm">Correct SKU</label>
+                  <select value={skuId} onChange={(e) => setSkuId(e.target.value)} className="form-input" required disabled={!proc}>
+                    <option value="">{proc ? "Select…" : "Pick a process first"}</option>
+                    {list.map((s) => <option key={s.id} value={s.id}>{s.sku} — {s.name}</option>)}
+                  </select>
+                </div>
+                <div className="flex gap-3 justify-end pt-2">
+                  <button type="button" onClick={onClose} className="btn btn-ghost">Cancel</button>
+                  <button type="button" onClick={() => setConfirming(true)} className="btn btn-primary" disabled={!proc || !skuId}>
+                    Review change
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <input type="hidden" name="processName" value={proc} />
+                <input type="hidden" name="skuId" value={skuId} />
+                <div className="rounded-lg border border-gray-200 p-3 text-sm space-y-2 bg-gray-50">
+                  <div className="font-medium text-gray-800">Confirm this correction:</div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-red-600 line-through">{line.sku?.sku} ({oldProcDisplay})</span>
+                    <span>→</span>
+                    <span className="text-green-700 font-semibold">{newSku?.sku} ({newProcDisplay})</span>
+                  </div>
+                  <div className="text-gray-600">{line.quantityCompleted} units{line.adminAdjustedQuantity ? ` (adjusted to ${line.adminAdjustedQuantity})` : ""}</div>
+                  {applied ? (
+                    <div className="text-amber-700 text-xs">
+                      Inventory will change: <strong>reverse</strong> {line.sku?.sku} + its components, then{" "}
+                      <strong>build</strong> {newSku?.sku} + consume its components.
+                    </div>
+                  ) : (
+                    <div className="text-gray-500 text-xs">Entry not yet approved — no inventory moves now; it applies the correct SKU when approved.</div>
+                  )}
+                </div>
+                <div className="flex gap-3 justify-end pt-2">
+                  <button type="button" onClick={() => setConfirming(false)} className="btn btn-ghost" disabled={busy}>← Back</button>
+                  <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Confirm & save"}</button>
+                </div>
+              </>
+            )}
           </fetcher.Form>
         </div>
       </div>
