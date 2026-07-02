@@ -17,83 +17,74 @@ import {
 } from "../utils/queued-orders-client.server";
 import { resolveProcessConfig } from "../utils/process";
 
-// Recursive function to explode BOM and find all raw materials at any depth
-async function explodeBomRecursively(
+// In-memory SKU info for the BOM explosion (loaded once).
+type ExplosionSku = {
+  id: string;
+  sku: string;
+  name: string;
+  type: string;
+  material: string | null;
+  bomComponents: { componentSkuId: string; quantity: number }[];
+};
+
+// Explode a completed SKU's BOM down to sub-assemblies + raws, allocating from a
+// SHARED availability `pool`. The pool is drawn down as each product consumes it,
+// so a component shared by several products isn't counted more than once — the
+// stored `available` on each map entry is the amount ALLOCATED to that product
+// (not the full stock), which makes shortfalls add up correctly across products.
+function explodeBomShared(
   skuId: string,
   quantity: number,
   rawMaterials: Map<string, { skuId: string; sku: string; name: string; needed: number; available: number }>,
   assemblies: Map<string, { skuId: string; sku: string; name: string; type: string; material: string | null; qtyPerUnit: number; totalNeeded: number; available: number }>,
+  skuInfo: Map<string, ExplosionSku>,
+  pool: Map<string, number>,
   visited: Set<string> = new Set()
-): Promise<void> {
-  // Prevent infinite loops from circular references
+): void {
   if (visited.has(skuId)) return;
   visited.add(skuId);
 
-  const sku = await prisma.sku.findUnique({
-    where: { id: skuId },
-    include: {
-      inventoryItems: {
-        where: { quantity: { not: 0 } },
-      },
-      bomComponents: {
-        include: {
-          componentSku: {
-            include: {
-              inventoryItems: {
-                where: { quantity: { not: 0 } },
-              },
-            },
-          },
-        },
-      },
-    },
-  });
-
+  const sku = skuInfo.get(skuId);
   if (!sku) return;
 
   for (const bomComp of sku.bomComponents) {
-    const comp = bomComp.componentSku;
+    const comp = skuInfo.get(bomComp.componentSkuId);
+    if (!comp) continue;
+
     const qtyNeeded = bomComp.quantity * quantity;
-    const available = comp.inventoryItems.reduce((sum, item) => sum + item.quantity, 0);
+    const availNow = Math.max(0, pool.get(comp.id) ?? 0);
+    const allocated = Math.min(qtyNeeded, availNow);
+    pool.set(comp.id, availNow - allocated); // draw down the shared pool
+    const shortfall = qtyNeeded - allocated;
 
     if (comp.type === "RAW") {
-      // Raw material - accumulate it
       const existing = rawMaterials.get(comp.id);
       if (existing) {
         existing.needed += qtyNeeded;
+        existing.available += allocated;
       } else {
-        rawMaterials.set(comp.id, {
-          skuId: comp.id,
-          sku: comp.sku,
-          name: comp.name,
-          needed: qtyNeeded,
-          available,
-        });
+        rawMaterials.set(comp.id, { skuId: comp.id, sku: comp.sku, name: comp.name, needed: qtyNeeded, available: allocated });
       }
     } else if (comp.type === "ASSEMBLY") {
-      // Track the assembly
-      const existingAssembly = assemblies.get(comp.id);
-      if (existingAssembly) {
-        existingAssembly.totalNeeded += qtyNeeded;
+      const existing = assemblies.get(comp.id);
+      if (existing) {
+        existing.totalNeeded += qtyNeeded;
+        existing.available += allocated;
       } else {
         assemblies.set(comp.id, {
           skuId: comp.id,
           sku: comp.sku,
           name: comp.name,
           type: comp.type,
-          material: comp.material, // the process used to build this assembly
+          material: comp.material,
           qtyPerUnit: bomComp.quantity,
           totalNeeded: qtyNeeded,
-          available,
+          available: allocated,
         });
       }
-
-      // Calculate shortfall - how many we still need to build
-      const shortfall = Math.max(0, qtyNeeded - available);
-
-      // Recursively explode this assembly's BOM for the shortfall quantity
+      // Build the shortfall (what stock couldn't cover) from its own components.
       if (shortfall > 0) {
-        await explodeBomRecursively(comp.id, shortfall, rawMaterials, assemblies, visited);
+        explodeBomShared(comp.id, shortfall, rawMaterials, assemblies, skuInfo, pool, new Set(visited));
       }
     }
   }
@@ -318,6 +309,29 @@ async function buildForecastData({
     buildTimeHours: number;
   }> = [];
 
+  // Load every SKU's BOM + on-hand once, and build ONE shared availability pool.
+  // Every completed SKU's explosion draws from this pool, so components shared by
+  // multiple products aren't counted twice.
+  const explosionRows = await prisma.sku.findMany({
+    where: { isActive: true },
+    select: {
+      id: true,
+      sku: true,
+      name: true,
+      type: true,
+      material: true,
+      bomComponents: { select: { componentSkuId: true, quantity: true } },
+      inventoryItems: { where: { quantity: { not: 0 } }, select: { quantity: true } },
+    },
+  });
+  const skuInfo = new Map<string, ExplosionSku>();
+  const initialAvailable = new Map<string, number>();
+  for (const s of explosionRows) {
+    skuInfo.set(s.id, { id: s.id, sku: s.sku, name: s.name, type: s.type, material: s.material, bomComponents: s.bomComponents });
+    initialAvailable.set(s.id, s.inventoryItems.reduce((sum, i) => sum + i.quantity, 0));
+  }
+  const pool = new Map(initialAvailable); // decremented as products are exploded
+
   for (const sku of completedSkus) {
     const forecast = forecastMap.get(sku.id);
     // Prefer the live ShipHero on-hand number when available; fall back to the
@@ -347,7 +361,7 @@ async function buildForecastData({
     // SKU is sufficient (needToBuild = 0). With qty 0 this lists the immediate
     // components and their per-unit quantities (availability/totals are only
     // rendered when needToBuild > 0).
-    await explodeBomRecursively(sku.id, needToBuild, rawMaterialsMap, assembliesMap);
+    explodeBomShared(sku.id, needToBuild, rawMaterialsMap, assembliesMap, skuInfo, pool);
 
     // Process labor for EVERY stage that must be built — not just the final
     // pack: the pack process for `needToBuild`, plus each sub-assembly's
@@ -435,28 +449,13 @@ async function buildForecastData({
     return total + (weeklyHours / 7 * daysDiff);
   }, 0);
 
-  // Aggregate all raw material shortages
-  const allRawMaterialShortages: Record<string, typeof forecastData[0]["rawMaterialsNeeded"][0] & { shortfall: number; forSkus: string[] }> = {};
-  for (const item of forecastData) {
-    for (const raw of item.rawMaterialsNeeded) {
-      const shortfall = Math.max(0, raw.needed - raw.available);
-      if (shortfall > 0) {
-        if (!allRawMaterialShortages[raw.skuId]) {
-          allRawMaterialShortages[raw.skuId] = { ...raw, shortfall: 0, forSkus: [] };
-        }
-        allRawMaterialShortages[raw.skuId].shortfall += shortfall;
-        allRawMaterialShortages[raw.skuId].forSkus.push(item.sku);
-      }
-    }
-  }
-
-  // Full raw-materials requirement report for the range: every raw needed across
-  // all completed SKUs, aggregated once. needed = Σ per-SKU need; on-hand taken
-  // once; short = max(0, needed − on-hand). This is the purchasing view (vs the
-  // shortages-only list above).
+  // Full raw-materials requirement report: every raw needed across all completed
+  // SKUs. needed = Σ per-SKU need; available = the single shared on-hand (NOT
+  // per-product); short = max(0, needed − available). Using the shared pool's
+  // starting stock here is what stops the double-count.
   const rawReportMap = new Map<
     string,
-    { sku: string; name: string; needed: number; available: number; forSkus: string[] }
+    { skuId: string; sku: string; name: string; needed: number; available: number; forSkus: string[] }
   >();
   for (const item of forecastData) {
     for (const raw of item.rawMaterialsNeeded) {
@@ -467,10 +466,11 @@ async function buildForecastData({
         if (!e.forSkus.includes(item.sku)) e.forSkus.push(item.sku);
       } else {
         rawReportMap.set(raw.skuId, {
+          skuId: raw.skuId,
           sku: raw.sku,
           name: raw.name,
           needed: raw.needed,
-          available: raw.available,
+          available: initialAvailable.get(raw.skuId) ?? 0,
           forSkus: [item.sku],
         });
       }
@@ -479,6 +479,11 @@ async function buildForecastData({
   const rawMaterialsReport = Array.from(rawReportMap.values())
     .map((r) => ({ ...r, short: Math.max(0, r.needed - r.available) }))
     .sort((a, b) => b.short - a.short || b.needed - a.needed);
+
+  // Shortages-only view (same aggregated data, short > 0).
+  const allRawMaterialShortages = rawMaterialsReport
+    .filter((r) => r.short > 0)
+    .map((r) => ({ skuId: r.skuId, sku: r.sku, name: r.name, needed: r.needed, available: r.available, shortfall: r.short, forSkus: r.forSkus }));
 
   const totalLaborHoursNeeded = Object.values(totalProcessRequirements).reduce((sum, p) => sum + p.hours, 0);
 
@@ -512,7 +517,7 @@ async function buildForecastData({
     basis,
     forecastData,
     totalProcessRequirements,
-    allRawMaterialShortages: Object.values(allRawMaterialShortages),
+    allRawMaterialShortages,
     rawMaterialsReport,
     laborStart: laborStart.toISOString().split('T')[0],
     laborEnd: laborEnd.toISOString().split('T')[0],
