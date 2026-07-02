@@ -38,3 +38,9 @@ services:
         sync: false
       - key: SHIPHERO_WAREHOUSE
         value: Apex
+      # Beast Broadhead Shopify store (read-only) — powers the Beast column on
+      # the forecasting Unfulfilled tab. Set values in the Render dashboard.
+      - key: BEAST_SHOPIFY_STORE
+        sync: false
+      - key: BEAST_SHOPIFY_TOKEN
+        sync: false

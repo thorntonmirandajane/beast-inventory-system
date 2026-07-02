@@ -241,7 +241,14 @@ const norm = (s: string) => s.trim().toUpperCase();
 // dropping to 0 on a transient throttle, so on a fetch error we keep whatever's
 // already cached rather than clearing it.
 const DATA_TTL_MS = 5 * 60 * 1000;
-const onHandCache = new Map<string, { qty: number; at: number }>();
+const onHandCache = new Map<string, { qty: number; at: number; refreshing?: boolean }>();
+
+// Count of in-flight background refreshes so the UI can show a "Syncing" pill
+// while stale on-hand values are being refreshed behind an instant render.
+let pendingRefreshes = 0;
+export function isShipheroSyncing(): boolean {
+  return pendingRefreshes > 0;
+}
 
 // Aliases per request. 20 keeps us well under ShipHero's query-complexity limit
 // while cutting ~116 SKUs down to ~6 round-trips.
@@ -307,40 +314,49 @@ export async function getOnHandForSkus(
   }
 
   const now = Date.now();
-  const toFetch: string[] = [];
+  const missing: string[] = []; // no cached value — must block-fetch
+  const stale: string[] = []; //   cached but old — serve now, refresh in bg
   for (const [n, orig] of origByNorm) {
     const hit = onHandCache.get(n);
-    if (!hit || now - hit.at >= DATA_TTL_MS) toFetch.push(orig);
+    if (!hit) missing.push(orig);
+    else if (now - hit.at >= DATA_TTL_MS && !hit.refreshing) stale.push(orig);
   }
 
-  if (toFetch.length > 0) {
+  // Block only on SKUs we have nothing cached for (cold start / new SKUs).
+  if (missing.length > 0) {
     const warehouseId = await getApexWarehouseId();
-    let lastErr: unknown = null;
-    let anyBatchSucceeded = false;
-
-    for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
-      const group = toFetch.slice(i, i + BATCH_SIZE);
-      try {
-        const batch = await fetchOnHandBatch(warehouseId, group);
-        for (const [n, qty] of batch) {
-          onHandCache.set(n, { qty, at: now });
-        }
-        anyBatchSucceeded = true;
-      } catch (err) {
-        // Keep cached values for this group; don't clear them to 0.
-        lastErr = err;
-        console.error(
-          "[shiphero] on-hand batch failed (serving cached where available):",
-          err instanceof Error ? err.message : err
-        );
-      }
-    }
-
-    // Total failure with nothing cached to fall back on — let the caller show
-    // its "ShipHero unavailable" banner rather than silently reporting 0s.
+    const { anyBatchSucceeded, lastErr } = await fetchAndCache(warehouseId, missing);
     if (!anyBatchSucceeded && onHandCache.size === 0 && lastErr) {
+      // Total failure with nothing cached — let the caller show its banner.
       throw lastErr;
     }
+  }
+
+  // Refresh stale SKUs in the background (stale-while-revalidate): the page gets
+  // the last-known numbers instantly and picks up fresh ones on the next load.
+  if (stale.length > 0) {
+    for (const orig of stale) {
+      const hit = onHandCache.get(norm(orig));
+      if (hit) hit.refreshing = true;
+    }
+    pendingRefreshes++;
+    (async () => {
+      const warehouseId = await getApexWarehouseId();
+      await fetchAndCache(warehouseId, stale);
+    })()
+      .catch((err) =>
+        console.error(
+          "[shiphero] background on-hand refresh failed:",
+          err instanceof Error ? err.message : err
+        )
+      )
+      .finally(() => {
+        for (const orig of stale) {
+          const hit = onHandCache.get(norm(orig));
+          if (hit) hit.refreshing = false;
+        }
+        pendingRefreshes--;
+      });
   }
 
   const result = new Map<string, number>();
@@ -349,4 +365,36 @@ export async function getOnHandForSkus(
     if (hit) result.set(orig, hit.qty);
   }
   return result;
+}
+
+/**
+ * Fetch on-hand for the given SKUs in batches and write results into the cache.
+ * Never throws; reports whether any batch succeeded so callers can decide
+ * whether a total failure warrants surfacing an error.
+ */
+async function fetchAndCache(
+  warehouseId: string,
+  skus: string[]
+): Promise<{ anyBatchSucceeded: boolean; lastErr: unknown }> {
+  let lastErr: unknown = null;
+  let anyBatchSucceeded = false;
+  for (let i = 0; i < skus.length; i += BATCH_SIZE) {
+    const group = skus.slice(i, i + BATCH_SIZE);
+    try {
+      const batch = await fetchOnHandBatch(warehouseId, group);
+      const at = Date.now();
+      for (const [n, qty] of batch) {
+        onHandCache.set(n, { qty, at });
+      }
+      anyBatchSucceeded = true;
+    } catch (err) {
+      // Keep cached values for this group; don't clear them to 0.
+      lastErr = err;
+      console.error(
+        "[shiphero] on-hand batch failed (serving cached where available):",
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+  return { anyBatchSucceeded, lastErr };
 }

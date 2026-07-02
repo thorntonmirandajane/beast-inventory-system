@@ -1,15 +1,16 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, Link, useNavigation, useFetcher, useSearchParams } from "react-router";
-import React, { useState } from "react";
+import { useLoaderData, useActionData, Form, Link, useNavigation, useFetcher, useSearchParams, useRevalidator } from "react-router";
+import React, { useState, useEffect } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import {
   getUnfulfilledLineItems,
   aggregateUnfulfilledBySku,
+  isShopifySyncing,
   type UnfulfilledLineItem,
 } from "../utils/shopify.server";
-import { getOnHandForSkus } from "../utils/shiphero.server";
+import { getOnHandForSkus, isShipheroSyncing } from "../utils/shiphero.server";
 import {
   fetchProgrammedOrders,
   type ProgrammedOrdersResponse,
@@ -123,53 +124,61 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { sku: "asc" },
   });
 
-  // Live on-hand from ShipHero (the Apex warehouse — the WMS source of truth).
-  // Used to populate `currentInGallatin` with the real physical count rather
-  // than Shopify's `available`, which deducts committed/reserved units. Failures
-  // fall back to whatever's stored on the Forecast row so the page still loads
-  // if ShipHero is unreachable.
-  let gallatinInventory: Map<string, number> | null = null;
-  let shopifyError: string | null = null;
-  try {
-    gallatinInventory = await getOnHandForSkus(
-      allCompletedAndRawSkus.map((s) => s.sku)
-    );
-  } catch (err) {
-    shopifyError = err instanceof Error ? err.message : String(err);
-    console.error("[forecasting] ShipHero on-hand fetch failed:", shopifyError);
-  }
-
-  // The Forecast tab now also needs unfulfilled + programmed totals per
-  // SKU for the new columns and the Need-to-Build calculation, so we
-  // fetch them whenever the user is on Forecast, Unfulfilled, or
-  // Programmed. (Caching in the clients keeps repeated visits cheap.)
+  // All three external integrations feed the tabs (unfulfilled + programmed for
+  // Need-to-Build, ShipHero for Current in Gallatin). Fetch them CONCURRENTLY —
+  // they're independent, and running them in parallel instead of one-after-another
+  // is the biggest lever on this page's load time. The clients cache with
+  // stale-while-revalidate, so repeat loads paint instantly from cache and
+  // refresh in the background (see the `syncing` flag below).
   const needsExternalData =
     tab === "forecast" || tab === "unfulfilled" || tab === "programmed" || tab === "materials";
 
-  let unfulfilledItems: UnfulfilledLineItem[] | null = null;
-  let unfulfilledError: string | null = null;
-  if (needsExternalData) {
+  // Run a fetch, capturing its result or a stringified error, so the three
+  // integrations can settle independently inside a single Promise.all.
+  const settle = async <T,>(
+    p: Promise<T>,
+    label: string
+  ): Promise<{ value: T | null; error: string | null }> => {
     try {
-      unfulfilledItems = await getUnfulfilledLineItems();
+      return { value: await p, error: null };
     } catch (err) {
-      unfulfilledError = err instanceof Error ? err.message : String(err);
-      console.error("[forecasting] Unfulfilled fetch failed:", unfulfilledError);
+      const error = err instanceof Error ? err.message : String(err);
+      console.error(`[forecasting] ${label} failed:`, error);
+      return { value: null, error };
     }
-  }
+  };
 
-  let programmedOrders: ProgrammedOrdersResponse | null = null;
-  let programmedError: string | null = null;
-  if (needsExternalData) {
-    try {
-      programmedOrders = await fetchProgrammedOrders({
-        from: laborStart.toISOString().split("T")[0],
-        to: laborEnd.toISOString().split("T")[0],
-      });
-    } catch (err) {
-      programmedError = err instanceof Error ? err.message : String(err);
-      console.error("[forecasting] Programmed orders fetch failed:", programmedError);
-    }
-  }
+  const skipped = <T,>() =>
+    Promise.resolve<{ value: T | null; error: string | null }>({ value: null, error: null });
+
+  const [gallatinR, unfulfilledR, programmedR] = await Promise.all([
+    // Live on-hand from ShipHero (Apex) → Current in Gallatin.
+    settle(getOnHandForSkus(allCompletedAndRawSkus.map((s) => s.sku)), "ShipHero on-hand"),
+    // Unfulfilled line items from BOTH Shopify stores (Archery + Beast).
+    needsExternalData
+      ? settle(getUnfulfilledLineItems(), "Unfulfilled")
+      : skipped<UnfulfilledLineItem[]>(),
+    needsExternalData
+      ? settle(
+          fetchProgrammedOrders({
+            from: laborStart.toISOString().split("T")[0],
+            to: laborEnd.toISOString().split("T")[0],
+          }),
+          "Programmed orders"
+        )
+      : skipped<ProgrammedOrdersResponse>(),
+  ]);
+
+  const gallatinInventory = gallatinR.value;
+  const shopifyError = gallatinR.error;
+  const unfulfilledItems = unfulfilledR.value;
+  const unfulfilledError = unfulfilledR.error;
+  const programmedOrders = programmedR.value;
+  const programmedError = programmedR.error;
+
+  // True when a client is refreshing stale data in the background — drives the
+  // "Syncing with Shopify" pill so the page can render instantly from cache.
+  const syncing = isShopifySyncing() || isShipheroSyncing();
 
   // Per-SKU rollup maps used by the Forecast tab columns. Shopify variant SKUs
   // and our DB SKUs can differ in case (e.g. "COC-TI-3PACK-100g-2.0in" vs
@@ -482,6 +491,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     unfulfilledError,
     programmedOrders,
     programmedError,
+    syncing,
   };
 };
 
@@ -968,11 +978,24 @@ export default function Forecasting() {
     unfulfilledError,
     programmedOrders,
     programmedError,
+    syncing,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const [searchParams] = useSearchParams();
+  const revalidator = useRevalidator();
+
+  // Stale-while-revalidate: the loader served cached numbers instantly and a
+  // background refresh is pulling live data. Poll until it clears so the fresh
+  // numbers swap in on their own, without the user having to reload.
+  useEffect(() => {
+    if (!syncing) return;
+    const t = setTimeout(() => {
+      if (revalidator.state === "idle") revalidator.revalidate();
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [syncing, revalidator]);
 
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
 
@@ -990,11 +1013,21 @@ export default function Forecasting() {
     return `/forecasting?${next.toString()}`;
   };
 
+  const isSyncing = syncing || revalidator.state !== "idle" || navigation.state === "loading";
+
   return (
     <Layout user={user}>
-      <div className="page-header">
-        <h1 className="page-title">Forecasting & Capacity</h1>
-        <p className="page-subtitle">Plan production based on forecasted demand</p>
+      <div className="page-header flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="page-title">Forecasting & Capacity</h1>
+          <p className="page-subtitle">Plan production based on forecasted demand</p>
+        </div>
+        {isSyncing && (
+          <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-sm font-medium">
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            Syncing with Shopify…
+          </span>
+        )}
       </div>
 
       {actionData?.error && (
@@ -1523,7 +1556,13 @@ function UnfulfilledTab({
   error,
 }: {
   items: UnfulfilledLineItem[] | null;
-  bySku: { sku: string; quantity: number; orderCount: number }[];
+  bySku: {
+    sku: string;
+    quantity: number;
+    beastQuantity: number;
+    archeryQuantity: number;
+    orderCount: number;
+  }[];
   error: string | null;
 }) {
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
@@ -1566,7 +1605,7 @@ function UnfulfilledTab({
       <div className="card-header">
         <h2 className="card-title">Unfulfilled Line Items</h2>
         <p className="text-sm text-gray-500">
-          Live from Shopify · {items.length} line item{items.length !== 1 ? "s" : ""} across {bySku.length} SKU{bySku.length !== 1 ? "s" : ""}
+          Live from Shopify (Beast + Archery) · {items.length} line item{items.length !== 1 ? "s" : ""} across {bySku.length} SKU{bySku.length !== 1 ? "s" : ""}
         </p>
       </div>
       <div className="overflow-x-auto">
@@ -1575,6 +1614,8 @@ function UnfulfilledTab({
             <tr>
               <th></th>
               <th>SKU</th>
+              <th className="text-right">Beast Unfulfilled</th>
+              <th className="text-right">Archery Unfulfilled</th>
               <th className="text-right">Total Unfulfilled</th>
               <th className="text-right">Order Count</th>
             </tr>
@@ -1593,6 +1634,12 @@ function UnfulfilledTab({
                       <span className="text-lg font-bold">{isOpen ? "−" : "+"}</span>
                     </td>
                     <td className="font-mono text-sm">{row.sku.toUpperCase()}</td>
+                    <td className="text-right">
+                      {row.beastQuantity > 0 ? row.beastQuantity : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="text-right">
+                      {row.archeryQuantity > 0 ? row.archeryQuantity : <span className="text-gray-300">—</span>}
+                    </td>
                     <td className="text-right font-semibold text-orange-600">
                       {row.quantity}
                     </td>
@@ -1600,11 +1647,12 @@ function UnfulfilledTab({
                   </tr>
                   {isOpen && (
                     <tr>
-                      <td colSpan={4} className="bg-gray-50 p-0">
+                      <td colSpan={6} className="bg-gray-50 p-0">
                         <div className="p-4">
                           <table className="w-full text-sm">
                             <thead>
                               <tr className="text-left text-gray-600">
+                                <th className="pb-2">Store</th>
                                 <th className="pb-2">Order</th>
                                 <th className="pb-2">Title</th>
                                 <th className="pb-2">Created</th>
@@ -1613,7 +1661,12 @@ function UnfulfilledTab({
                             </thead>
                             <tbody>
                               {skuItems.map((li, idx) => (
-                                <tr key={`${li.orderId}-${idx}`} className="border-t border-gray-200">
+                                <tr key={`${li.source}-${li.orderId}-${idx}`} className="border-t border-gray-200">
+                                  <td className="py-2">
+                                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${li.source === "beast" ? "bg-purple-100 text-purple-700" : "bg-emerald-100 text-emerald-700"}`}>
+                                      {li.source === "beast" ? "Beast" : "Archery"}
+                                    </span>
+                                  </td>
                                   <td className="py-2 font-mono">{li.orderName}</td>
                                   <td className="py-2">{li.title}</td>
                                   <td className="py-2">

@@ -1,13 +1,20 @@
-// Read-only Shopify Admin API client for the Bowmar (archery) store.
+// Read-only Shopify Admin API client for the Bowmar stores.
 // Beast Inventory uses this to surface live "Current in Gallatin" inventory
-// and unfulfilled line items on the forecasting page.
+// and unfulfilled line items (from BOTH the Bowmar Archery and Beast Broadhead
+// stores) on the forecasting page.
 //
 // CONSTRAINT: read-only — only GraphQL `query {}` calls, never `mutation {}`,
 // and only GET requests over REST. Beast must not write back to Shopify.
 
 const API_VERSION = "2024-10";
 
-function getCreds() {
+export type StoreSource = "archery" | "beast";
+interface StoreCreds {
+  shop: string;
+  token: string;
+}
+
+function getArcheryCreds(): StoreCreds {
   const shop = process.env.ARCHERY_SHOPIFY_STORE;
   const token = process.env.ARCHERY_SHOPIFY_TOKEN;
   if (!shop || !token) {
@@ -18,16 +25,27 @@ function getCreds() {
   return { shop, token };
 }
 
+// Beast store is optional — if its env vars aren't set (e.g. locally, or before
+// they're added in Render) we simply skip it rather than erroring, so the
+// Archery data keeps working on its own.
+function getBeastCreds(): StoreCreds | null {
+  const shop = process.env.BEAST_SHOPIFY_STORE;
+  const token = process.env.BEAST_SHOPIFY_TOKEN;
+  if (!shop || !token) return null;
+  return { shop, token };
+}
+
 async function shopifyGraphQL<T>(
   query: string,
-  variables: Record<string, unknown> = {}
+  variables: Record<string, unknown> = {},
+  creds: StoreCreds = getArcheryCreds()
 ): Promise<T> {
   // Hard guard: never let a caller smuggle a mutation through this client.
   if (/\bmutation\b/i.test(query)) {
     throw new Error("Shopify client is read-only; mutations are not allowed");
   }
 
-  const { shop, token } = getCreds();
+  const { shop, token } = creds;
   const url = `https://${shop}/admin/api/${API_VERSION}/graphql.json`;
 
   let res: Response | undefined;
@@ -87,20 +105,43 @@ let cachedGallatinId: string | null = null;
 let cachedAt = 0;
 const LOCATION_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-// Generic in-memory TTL cache for the slower Shopify queries (inventory +
-// unfulfilled). 5 minutes keeps the forecasting page snappy without making
-// stale data a real concern for an internal tool. Survives until the Render
-// service restarts.
+// Stale-while-revalidate in-memory cache for the slower Shopify queries
+// (inventory + unfulfilled + sales). When a cached value goes stale we return it
+// immediately AND kick a background refresh, so the forecasting page paints with
+// the last-known numbers instantly instead of blocking on Shopify. Survives
+// until the Render service restarts.
 const DATA_TTL_MS = 5 * 60 * 1000;
-const dataCache = new Map<string, { value: unknown; at: number }>();
+const dataCache = new Map<string, { value: unknown; at: number; refreshing: boolean }>();
+
+// Count of in-flight background refreshes, so the UI can show a "Syncing with
+// Shopify" pill while live data is being pulled behind a stale render.
+let pendingRefreshes = 0;
+export function isShopifySyncing(): boolean {
+  return pendingRefreshes > 0;
+}
 
 async function cached<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
   const hit = dataCache.get(key);
-  if (hit && Date.now() - hit.at < DATA_TTL_MS) {
-    return hit.value as T;
+  if (hit) {
+    const isStale = Date.now() - hit.at >= DATA_TTL_MS;
+    if (isStale && !hit.refreshing) {
+      hit.refreshing = true;
+      pendingRefreshes++;
+      fetcher()
+        .then((v) => dataCache.set(key, { value: v, at: Date.now(), refreshing: false }))
+        .catch((err) => {
+          hit.refreshing = false; // keep the stale value; try again next time
+          console.error(`[shopify] background refresh failed for ${key}:`, err instanceof Error ? err.message : err);
+        })
+        .finally(() => {
+          pendingRefreshes--;
+        });
+    }
+    return hit.value as T; // serve cached immediately (stale-while-revalidate)
   }
+  // Cold cache — block on the first fetch.
   const value = await fetcher();
-  dataCache.set(key, { value, at: Date.now() });
+  dataCache.set(key, { value, at: Date.now(), refreshing: false });
   return value;
 }
 
@@ -205,18 +246,37 @@ export interface UnfulfilledLineItem {
   sku: string;
   title: string;
   quantity: number; // remaining fulfillable & unfulfilled (excludes removed/canceled)
+  source: StoreSource; // which Shopify store the order came from
 }
 
 /**
- * Fetch open, unfulfilled (or partially fulfilled) orders and return their
- * remaining-unfulfilled line items. Aggregating-by-SKU is the caller's job
- * (the forecasting page does this so it can also drill into individual orders).
+ * Fetch open, unfulfilled (or partially fulfilled) orders from BOTH the Archery
+ * and Beast stores and return their remaining-unfulfilled line items, each
+ * tagged with its source store. Aggregating-by-SKU is the caller's job (the
+ * forecasting page does this so it can also drill into individual orders).
+ *
+ * The Beast store is optional: if its credentials aren't configured we return
+ * only Archery's items. Both stores are fetched concurrently and cached per
+ * store, so a slow store doesn't hold up the other.
  */
 export async function getUnfulfilledLineItems(): Promise<UnfulfilledLineItem[]> {
-  return cached("unfulfilled-line-items", () => fetchUnfulfilledLineItemsUncached());
+  const archery = cached("unfulfilled:archery", () =>
+    fetchUnfulfilledForStore(getArcheryCreds(), "archery")
+  );
+
+  const beastCreds = getBeastCreds();
+  const beast = beastCreds
+    ? cached("unfulfilled:beast", () => fetchUnfulfilledForStore(beastCreds, "beast"))
+    : Promise.resolve([] as UnfulfilledLineItem[]);
+
+  const [archeryItems, beastItems] = await Promise.all([archery, beast]);
+  return [...archeryItems, ...beastItems];
 }
 
-async function fetchUnfulfilledLineItemsUncached(): Promise<UnfulfilledLineItem[]> {
+async function fetchUnfulfilledForStore(
+  creds: StoreCreds,
+  source: StoreSource
+): Promise<UnfulfilledLineItem[]> {
   const items: UnfulfilledLineItem[] = [];
   let cursor: string | null = null;
 
@@ -253,7 +313,8 @@ async function fetchUnfulfilledLineItemsUncached(): Promise<UnfulfilledLineItem[
         }
       }
     `,
-      { cursor }
+      { cursor },
+      creds
     );
 
     const orders = data.orders;
@@ -288,6 +349,7 @@ async function fetchUnfulfilledLineItemsUncached(): Promise<UnfulfilledLineItem[
           sku: li.sku,
           title: li.title,
           quantity: remaining,
+          source,
         });
       }
     }
@@ -303,24 +365,35 @@ async function fetchUnfulfilledLineItemsUncached(): Promise<UnfulfilledLineItem[
 // Convenience: aggregate unfulfilled by SKU
 // ============================================================
 
+export interface UnfulfilledSkuAgg {
+  quantity: number; // total across both stores
+  beastQuantity: number;
+  archeryQuantity: number;
+  orderCount: number; // distinct orders across both stores
+}
+
 export function aggregateUnfulfilledBySku(
   items: UnfulfilledLineItem[]
-): Map<string, { quantity: number; orderCount: number }> {
-  const map = new Map<string, { quantity: number; orderCount: number }>();
+): Map<string, UnfulfilledSkuAgg> {
+  const map = new Map<string, UnfulfilledSkuAgg>();
   const ordersPerSku = new Map<string, Set<string>>();
   for (const it of items) {
-    const existing = map.get(it.sku);
-    if (existing) {
-      existing.quantity += it.quantity;
-    } else {
-      map.set(it.sku, { quantity: it.quantity, orderCount: 0 });
+    let agg = map.get(it.sku);
+    if (!agg) {
+      agg = { quantity: 0, beastQuantity: 0, archeryQuantity: 0, orderCount: 0 };
+      map.set(it.sku, agg);
     }
+    agg.quantity += it.quantity;
+    if (it.source === "beast") agg.beastQuantity += it.quantity;
+    else agg.archeryQuantity += it.quantity;
+
     let s = ordersPerSku.get(it.sku);
     if (!s) {
       s = new Set();
       ordersPerSku.set(it.sku, s);
     }
-    s.add(it.orderId);
+    // Namespace by source: order gids can collide between the two stores.
+    s.add(`${it.source}:${it.orderId}`);
   }
   for (const [sku, agg] of map.entries()) {
     agg.orderCount = ordersPerSku.get(sku)?.size ?? 0;
