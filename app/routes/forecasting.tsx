@@ -1,6 +1,6 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, Link, useNavigation, useFetcher, useSearchParams, useRevalidator } from "react-router";
-import React, { useState, useEffect } from "react";
+import { useLoaderData, useActionData, Form, Link, useNavigation, useFetcher, useSearchParams, Await } from "react-router";
+import React, { useState, Suspense } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -115,6 +115,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const laborStart = startDate ? new Date(startDate) : new Date();
   const laborEnd = endDate ? new Date(endDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
+  // DEFER the heavy work (external integrations + BOM explosion) as a streamed
+  // promise. The loader returns immediately, so navigating to a tab paints the
+  // page shell + "Syncing" pill instantly instead of freezing for minutes while
+  // Shopify/ShipHero are queried. The data streams in when ready; with the
+  // clients' stale-while-revalidate caches, a warm cache resolves near-instantly.
+  const live = buildForecastData({ tab, basis, laborStart, laborEnd });
+  return { user, live };
+};
+
+async function buildForecastData({
+  tab,
+  basis,
+  laborStart,
+  laborEnd,
+}: {
+  tab: string;
+  basis: string;
+  laborStart: Date;
+  laborEnd: Date;
+}) {
   // Beast's own SKUs (bounded set, ~116). We fetch live on-hand for just these
   // from ShipHero rather than scanning the whole Apex warehouse (5,000+ SKUs),
   // which would exhaust ShipHero's credit budget and throttle to zeros.
@@ -470,7 +490,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     : [];
 
   return {
-    user,
     tab,
     basis,
     forecastData,
@@ -493,7 +512,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     programmedError,
     syncing,
   };
-};
+}
 
 function parseTime(timeStr: string): number {
   const [hours, minutes] = timeStr.split(":").map(Number);
@@ -956,9 +975,60 @@ function ForecastRow({
   );
 }
 
+type ForecastLiveData = Awaited<ReturnType<typeof buildForecastData>>;
+type ForecastUser = Awaited<ReturnType<typeof requireUser>>;
+
+// Streaming shell: paints the chrome (Layout + header + "Syncing" pill) instantly
+// on every navigation, then streams in the heavy data. Keeps tab clicks snappy
+// instead of blocking the whole page while Shopify/ShipHero are queried.
 export default function Forecasting() {
+  const { user, live } = useLoaderData<typeof loader>();
+  return (
+    <Suspense fallback={<ForecastLoading user={user} />}>
+      <Await resolve={live} errorElement={<ForecastLoadError user={user} />}>
+        {(data) => <ForecastView user={user} data={data as ForecastLiveData} />}
+      </Await>
+    </Suspense>
+  );
+}
+
+function ForecastLoading({ user }: { user: ForecastUser }) {
+  return (
+    <Layout user={user}>
+      <div className="page-header flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="page-title">Forecasting & Capacity</h1>
+          <p className="page-subtitle">Plan production based on forecasted demand</p>
+        </div>
+        <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-sm font-medium">
+          <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+          Syncing with Shopify…
+        </span>
+      </div>
+      <div className="card">
+        <div className="card-body text-gray-500 text-sm">
+          Loading live orders and inventory…
+        </div>
+      </div>
+    </Layout>
+  );
+}
+
+function ForecastLoadError({ user }: { user: ForecastUser }) {
+  return (
+    <Layout user={user}>
+      <div className="page-header">
+        <h1 className="page-title">Forecasting & Capacity</h1>
+      </div>
+      <div className="alert alert-error">
+        Couldn't load forecasting data. Refresh to try again.
+      </div>
+    </Layout>
+  );
+}
+
+function ForecastView({ user, data }: { user: ForecastUser; data: ForecastLiveData }) {
   const {
-    user,
     tab,
     basis,
     forecastData,
@@ -978,24 +1048,11 @@ export default function Forecasting() {
     unfulfilledError,
     programmedOrders,
     programmedError,
-    syncing,
-  } = useLoaderData<typeof loader>();
+  } = data;
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
   const [searchParams] = useSearchParams();
-  const revalidator = useRevalidator();
-
-  // Stale-while-revalidate: the loader served cached numbers instantly and a
-  // background refresh is pulling live data. Poll until it clears so the fresh
-  // numbers swap in on their own, without the user having to reload.
-  useEffect(() => {
-    if (!syncing) return;
-    const t = setTimeout(() => {
-      if (revalidator.state === "idle") revalidator.revalidate();
-    }, 4000);
-    return () => clearTimeout(t);
-  }, [syncing, revalidator]);
 
   const [expandedSku, setExpandedSku] = useState<string | null>(null);
 
@@ -1013,7 +1070,7 @@ export default function Forecasting() {
     return `/forecasting?${next.toString()}`;
   };
 
-  const isSyncing = syncing || revalidator.state !== "idle" || navigation.state === "loading";
+  const isSyncing = navigation.state === "loading";
 
   return (
     <Layout user={user}>

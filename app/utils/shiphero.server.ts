@@ -40,6 +40,7 @@ async function authenticate(): Promise<TokenState> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
+      signal: AbortSignal.timeout(20000),
     });
   } else {
     const username = process.env.SHIPHERO_USERNAME;
@@ -53,6 +54,7 @@ async function authenticate(): Promise<TokenState> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
+      signal: AbortSignal.timeout(20000),
     });
   }
 
@@ -114,6 +116,7 @@ async function shipheroGraphQL<T>(
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(25000),
     });
 
     // Expired/invalid token — force a re-auth and retry once.

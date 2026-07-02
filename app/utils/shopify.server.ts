@@ -57,6 +57,8 @@ async function shopifyGraphQL<T>(
         "X-Shopify-Access-Token": token,
       },
       body: JSON.stringify({ query, variables }),
+      // Cap each request so a slow/hung Shopify page can't stall the loader.
+      signal: AbortSignal.timeout(25000),
     });
     if (res.status !== 429) break;
     const retryAfter = parseFloat(res.headers.get("retry-after") || "2");

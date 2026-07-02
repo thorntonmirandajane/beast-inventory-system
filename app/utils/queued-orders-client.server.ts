@@ -68,6 +68,7 @@ export async function fetchProgrammedOrders(
   const res = await fetch(url.toString(), {
     method: "GET",
     headers: { "x-beast-secret": secret },
+    signal: AbortSignal.timeout(20000),
   });
 
   if (!res.ok) {
