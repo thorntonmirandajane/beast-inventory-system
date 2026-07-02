@@ -227,98 +227,126 @@ export async function getApexWarehouseId(): Promise<string> {
 // ============================================================
 // On-hand inventory
 // ============================================================
+//
+// We fetch on-hand only for the specific SKUs beast cares about (~116), not the
+// whole warehouse. The Apex warehouse holds every Bowmar product (5,000+ SKUs),
+// and paging through all of them costs ~3,700 of ShipHero's 4,004 credit budget
+// per refresh — one refresh nearly drains the quota and throttling then zeros
+// out the page. warehouse_products' `sku` filter is case-insensitive and cheap
+// (~1-2 credits each), and GraphQL aliases let us batch many SKUs per request.
 
-// 5-minute TTL cache mirrors the Shopify client: keeps the forecasting page
-// snappy without making stale numbers a concern for an internal tool.
+const norm = (s: string) => s.trim().toUpperCase();
+
+// 5-minute TTL, cached per normalized SKU. Serving a slightly stale value beats
+// dropping to 0 on a transient throttle, so on a fetch error we keep whatever's
+// already cached rather than clearing it.
 const DATA_TTL_MS = 5 * 60 * 1000;
-const dataCache = new Map<string, { value: unknown; at: number }>();
+const onHandCache = new Map<string, { qty: number; at: number }>();
 
-async function cached<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
-  const hit = dataCache.get(key);
-  if (hit && Date.now() - hit.at < DATA_TTL_MS) {
-    return hit.value as T;
-  }
-  const value = await fetcher();
-  dataCache.set(key, { value, at: Date.now() });
-  return value;
-}
+// Aliases per request. 20 keeps us well under ShipHero's query-complexity limit
+// while cutting ~116 SKUs down to ~6 round-trips.
+const BATCH_SIZE = 20;
 
-interface WarehouseProductEdge {
-  node: {
-    on_hand: number | null;
-    product: { sku: string | null } | null;
-  };
-  cursor: string;
+/**
+ * Fetch on-hand for a batch of SKUs in a single aliased query. Returns a map
+ * keyed by normalized SKU. Sums rows defensively in case a SKU filter matches
+ * more than one warehouse_product row.
+ */
+async function fetchOnHandBatch(
+  warehouseId: string,
+  skus: string[]
+): Promise<Map<string, number>> {
+  const decls = skus.map((_, i) => `$sku${i}: String`).join(", ");
+  const body = skus
+    .map(
+      (_, i) =>
+        `a${i}: warehouse_products(warehouse_id: $warehouseId, sku: $sku${i}) { data(first: 5) { edges { node { on_hand } } } }`
+    )
+    .join("\n");
+  const variables: Record<string, unknown> = { warehouseId };
+  skus.forEach((s, i) => {
+    variables[`sku${i}`] = s;
+  });
+
+  const data: any = await shipheroGraphQL(
+    `query($warehouseId: String!, ${decls}) { ${body} }`,
+    variables
+  );
+
+  const result = new Map<string, number>();
+  skus.forEach((s, i) => {
+    const edges = data[`a${i}`]?.data?.edges ?? [];
+    const qty = edges.reduce(
+      (sum: number, e: any) => sum + (e.node?.on_hand ?? 0),
+      0
+    );
+    result.set(norm(s), qty);
+  });
+  return result;
 }
 
 /**
- * Page through warehouse_products for a warehouse and return a SKU -> on_hand
- * map. Keeps the per-node field set minimal (on_hand + sku) so ShipHero's
- * query-complexity budget allows a large page size.
+ * Live on-hand at the Apex warehouse for the given SKUs, keyed by the SKU
+ * strings as passed in. Same map shape the forecasting page expects.
+ *
+ * Resilient by design: fresh cached SKUs are served without a network call;
+ * only stale/missing SKUs are fetched, in batches. If a batch fails (e.g.
+ * ShipHero throttling), we keep the previously-cached values for those SKUs
+ * instead of zeroing them. We only surface an error if we end up with no data
+ * at all, so the forecasting page can show its "unavailable" banner.
  */
-async function fetchOnHandForWarehouse(
-  warehouseId: string
+export async function getOnHandForSkus(
+  requestedSkus: string[]
 ): Promise<Map<string, number>> {
-  const skuToOnHand = new Map<string, number>();
-  const customerAccountId = process.env.SHIPHERO_CUSTOMER_ACCOUNT_ID;
-  let cursor: string | null = null;
+  // De-dup by normalized SKU, remembering one original casing per SKU to return.
+  const origByNorm = new Map<string, string>();
+  for (const s of requestedSkus) {
+    if (!s) continue;
+    const n = norm(s);
+    if (!origByNorm.has(n)) origByNorm.set(n, s);
+  }
 
-  // ShipHero rejects a null customer_account_id, so only declare + pass the
-  // argument when it's actually set (3PL parent-account logins).
-  const customerArgDecl = customerAccountId ? ", $customerAccountId: String" : "";
-  const customerArgUse = customerAccountId ? "customer_account_id: $customerAccountId" : "";
+  const now = Date.now();
+  const toFetch: string[] = [];
+  for (const [n, orig] of origByNorm) {
+    const hit = onHandCache.get(n);
+    if (!hit || now - hit.at >= DATA_TTL_MS) toFetch.push(orig);
+  }
 
-  while (true) {
-    const data: any = await shipheroGraphQL(
-      `
-      query($warehouseId: String!${customerArgDecl}, $cursor: String) {
-        warehouse_products(
-          warehouse_id: $warehouseId
-          ${customerArgUse}
-        ) {
-          data(first: 200, after: $cursor) {
-            edges {
-              node {
-                on_hand
-                product { sku }
-              }
-              cursor
-            }
-            pageInfo { hasNextPage endCursor }
-          }
+  if (toFetch.length > 0) {
+    const warehouseId = await getApexWarehouseId();
+    let lastErr: unknown = null;
+    let anyBatchSucceeded = false;
+
+    for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
+      const group = toFetch.slice(i, i + BATCH_SIZE);
+      try {
+        const batch = await fetchOnHandBatch(warehouseId, group);
+        for (const [n, qty] of batch) {
+          onHandCache.set(n, { qty, at: now });
         }
+        anyBatchSucceeded = true;
+      } catch (err) {
+        // Keep cached values for this group; don't clear them to 0.
+        lastErr = err;
+        console.error(
+          "[shiphero] on-hand batch failed (serving cached where available):",
+          err instanceof Error ? err.message : err
+        );
       }
-    `,
-      customerAccountId
-        ? { warehouseId, customerAccountId, cursor }
-        : { warehouseId, cursor }
-    );
-
-    const conn = data.warehouse_products?.data;
-    if (!conn) break;
-
-    for (const edge of conn.edges as WarehouseProductEdge[]) {
-      const sku = edge.node.product?.sku;
-      if (!sku) continue;
-      const onHand = edge.node.on_hand ?? 0;
-      // Sum defensively in case a SKU appears across multiple bins/rows.
-      skuToOnHand.set(sku, (skuToOnHand.get(sku) ?? 0) + onHand);
     }
 
-    if (!conn.pageInfo?.hasNextPage) break;
-    cursor = conn.pageInfo.endCursor;
+    // Total failure with nothing cached to fall back on — let the caller show
+    // its "ShipHero unavailable" banner rather than silently reporting 0s.
+    if (!anyBatchSucceeded && onHandCache.size === 0 && lastErr) {
+      throw lastErr;
+    }
   }
 
-  return skuToOnHand;
-}
-
-/**
- * Live on-hand inventory at the Apex warehouse, keyed by SKU. Same shape as the
- * old Shopify `getGallatinInventory()` so the forecasting page can drop it in.
- */
-export async function getOnHandInventory(): Promise<Map<string, number>> {
-  return cached("apex-on-hand", async () => {
-    const warehouseId = await getApexWarehouseId();
-    return fetchOnHandForWarehouse(warehouseId);
-  });
+  const result = new Map<string, number>();
+  for (const [n, orig] of origByNorm) {
+    const hit = onHandCache.get(n);
+    if (hit) result.set(orig, hit.qty);
+  }
+  return result;
 }

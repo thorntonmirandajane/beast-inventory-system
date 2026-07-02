@@ -1,30 +1,33 @@
 // Smoke test for the ShipHero on-hand integration. Authenticates, resolves the
-// Apex warehouse, pulls on-hand by SKU, and prints a sample. Use this to verify
-// credentials + that the warehouse name and query shape match the live API.
+// Apex warehouse, then pulls on-hand for beast's own SKUs (batched per-SKU, not
+// a full warehouse scan) and prints a sample. Use this to verify credentials +
+// that the warehouse name and query shape match the live API.
 //
 // Run: npx tsx --env-file=.env scripts/test-shiphero.ts
 
-import { getApexWarehouseId, getOnHandInventory } from "../app/utils/shiphero.server";
+import prisma from "../app/db.server";
+import { getApexWarehouseId, getOnHandForSkus } from "../app/utils/shiphero.server";
 
 async function main() {
   console.log("Resolving Apex warehouse id...");
   const warehouseId = await getApexWarehouseId();
   console.log("  warehouse id:", warehouseId);
 
-  console.log("Fetching on-hand inventory...");
-  const onHand = await getOnHandInventory();
-  console.log(`  ${onHand.size} SKUs returned`);
+  const skus = await prisma.sku.findMany({
+    where: { isActive: true, type: { in: ["RAW", "ASSEMBLY", "COMPLETED"] } },
+    select: { sku: true },
+    orderBy: { sku: "asc" },
+  });
+  console.log(`\nFetching on-hand for ${skus.length} beast SKUs...`);
+  const t0 = Date.now();
+  const onHand = await getOnHandForSkus(skus.map((s) => s.sku));
+  console.log(`  done in ${(Date.now() - t0) / 1000}s, ${onHand.size} SKUs returned`);
 
-  const sample = [...onHand.entries()]
-    .filter(([, qty]) => qty > 0)
-    .slice(0, 15);
-  console.log("\nSample (first 15 with on_hand > 0):");
-  for (const [sku, qty] of sample) {
-    console.log(`  ${sku.padEnd(24)} ${qty}`);
+  const nonZero = [...onHand.entries()].filter(([, q]) => q > 0);
+  console.log(`\nSKUs with on_hand > 0 (${nonZero.length}):`);
+  for (const [sku, qty] of nonZero.slice(0, 20)) {
+    console.log(`  ${sku.padEnd(28)} ${qty}`);
   }
-
-  const total = [...onHand.values()].reduce((a, b) => a + b, 0);
-  console.log(`\nTotal units on hand across all SKUs: ${total}`);
 }
 
 main()

@@ -9,7 +9,7 @@ import {
   aggregateUnfulfilledBySku,
   type UnfulfilledLineItem,
 } from "../utils/shopify.server";
-import { getOnHandInventory } from "../utils/shiphero.server";
+import { getOnHandForSkus } from "../utils/shiphero.server";
 import {
   fetchProgrammedOrders,
   type ProgrammedOrdersResponse,
@@ -114,15 +114,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const laborStart = startDate ? new Date(startDate) : new Date();
   const laborEnd = endDate ? new Date(endDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-  // Fetch live on-hand inventory from ShipHero (the Apex warehouse — the WMS
-  // source of truth). Used to populate `currentInGallatin` with the real
-  // physical count rather than Shopify's `available`, which deducts
-  // committed/reserved units. Failures fall back to whatever's stored on the
-  // Forecast row so the page still loads if ShipHero is unreachable.
+  // Beast's own SKUs (bounded set, ~116). We fetch live on-hand for just these
+  // from ShipHero rather than scanning the whole Apex warehouse (5,000+ SKUs),
+  // which would exhaust ShipHero's credit budget and throttle to zeros.
+  const allCompletedAndRawSkus = await prisma.sku.findMany({
+    where: { isActive: true, type: { in: ["RAW", "ASSEMBLY", "COMPLETED"] } },
+    select: { id: true, sku: true, name: true, type: true },
+    orderBy: { sku: "asc" },
+  });
+
+  // Live on-hand from ShipHero (the Apex warehouse — the WMS source of truth).
+  // Used to populate `currentInGallatin` with the real physical count rather
+  // than Shopify's `available`, which deducts committed/reserved units. Failures
+  // fall back to whatever's stored on the Forecast row so the page still loads
+  // if ShipHero is unreachable.
   let gallatinInventory: Map<string, number> | null = null;
   let shopifyError: string | null = null;
   try {
-    gallatinInventory = await getOnHandInventory();
+    gallatinInventory = await getOnHandForSkus(
+      allCompletedAndRawSkus.map((s) => s.sku)
+    );
   } catch (err) {
     shopifyError = err instanceof Error ? err.message : String(err);
     console.error("[forecasting] ShipHero on-hand fetch failed:", shopifyError);
@@ -424,14 +435,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const totalLaborHoursNeeded = Object.values(totalProcessRequirements).reduce((sum, p) => sum + p.hours, 0);
 
-  // Build a list of Gallatin inventory rows (SKU + live qty) that beast
-  // doesn't otherwise know about — useful as a quick reference on the
-  // Forecast tab. Only include SKUs that exist in beast's catalog.
-  const allCompletedAndRawSkus = await prisma.sku.findMany({
-    where: { isActive: true, type: { in: ["RAW", "ASSEMBLY", "COMPLETED"] } },
-    select: { id: true, sku: true, name: true, type: true },
-    orderBy: { sku: "asc" },
-  });
+  // Build a list of Gallatin inventory rows (SKU + live qty) from beast's own
+  // catalog (fetched above) — a quick on-hand reference on the Forecast tab.
   const gallatinRows = gallatinInventory
     ? allCompletedAndRawSkus
         .map((s) => {
