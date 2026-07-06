@@ -759,9 +759,12 @@ export default function Schedules() {
 
   return (
     <Layout user={user}>
-      <div className="page-header">
-        <h1 className="page-title">{isWorkerView ? "My Schedule" : "Worker Schedules"}</h1>
-        <p className="page-subtitle">{isWorkerView ? "View your schedule" : "Manage worker schedules"}</p>
+      <div className="page-header flex items-start justify-between">
+        <div>
+          <h1 className="page-title">{isWorkerView ? "My Schedule" : "Worker Schedules"}</h1>
+          <p className="page-subtitle">{isWorkerView ? "View your schedule" : "Manage worker schedules"}</p>
+        </div>
+        {!isWorkerView && <Link to="/schedules/import" className="btn btn-secondary">Import from CSV</Link>}
       </div>
 
       {actionData?.error && (
