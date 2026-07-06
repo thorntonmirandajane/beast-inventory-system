@@ -10,6 +10,7 @@ import { useMemo, useState } from "react";
 import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { carrierTrackingUrl } from "../utils/carriers";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireRole(request, ["ADMIN"]);
@@ -618,8 +619,20 @@ export default function PurchaseOrders() {
                         </div>
                         {po.status === "IN_ROUTE" && po.trackingNumber && (
                           <div className="text-right">
-                            <div className="text-gray-500">Tracking</div>
-                            <div className="font-mono text-xs">{po.trackingNumber}</div>
+                            <div className="text-gray-500">{po.carrier || "Tracking"}</div>
+                            {carrierTrackingUrl(po.carrier, po.trackingNumber) ? (
+                              <a
+                                href={carrierTrackingUrl(po.carrier, po.trackingNumber)!}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="font-mono text-xs text-blue-600 hover:underline"
+                              >
+                                {po.trackingNumber} ↗
+                              </a>
+                            ) : (
+                              <div className="font-mono text-xs">{po.trackingNumber}</div>
+                            )}
                           </div>
                         )}
                         {po.status === "SUBMITTED" && totalOrdered > 0 && (

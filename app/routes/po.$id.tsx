@@ -12,6 +12,7 @@ import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { addInventory } from "../utils/inventory.server";
+import { CARRIERS, carrierTrackingUrl } from "../utils/carriers";
 import { ImageUpload } from "../components/ImageUpload";
 import { MultiImageUpload } from "../components/MultiImageUpload";
 
@@ -147,6 +148,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   if (intent === "mark-in-route") {
     const trackingNumber = ((formData.get("trackingNumber") as string) || "").trim() || null;
+    const carrier = ((formData.get("carrier") as string) || "").trim() || null;
     const routesJson = formData.get("routesJson") as string;
     const routes: { poItemId: string; quantity: number }[] = routesJson ? JSON.parse(routesJson) : [];
     const valid = routes.filter((r) => r.quantity > 0);
@@ -180,9 +182,9 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     if (isFull) {
       await prisma.purchaseOrder.update({
         where: { id: parent.id },
-        data: { status: "IN_ROUTE", trackingNumber },
+        data: { status: "IN_ROUTE", trackingNumber, carrier },
       });
-      await createAuditLog(user.id, "MARK_PO_IN_ROUTE", "PurchaseOrder", parent.id, { poNumber: parent.poNumber, trackingNumber });
+      await createAuditLog(user.id, "MARK_PO_IN_ROUTE", "PurchaseOrder", parent.id, { poNumber: parent.poNumber, trackingNumber, carrier });
       return { success: true, message: `${parent.poNumber} marked in route${trackingNumber ? ` (tracking ${trackingNumber})` : ""}.` };
     }
 
@@ -198,6 +200,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
           parentPOId: parent.id,
           status: "IN_ROUTE",
           trackingNumber,
+          carrier,
           createdById: user.id,
           items: {
             create: valid.map((s) => {
@@ -454,6 +457,7 @@ export default function POShow() {
   }, [po.items]);
   const [routeDraft, setRouteDraft] = useState<Record<string, number>>(initialRouteDraft);
   const [routeTracking, setRouteTracking] = useState("");
+  const [routeCarrier, setRouteCarrier] = useState("");
   const routeTotal = Object.values(routeDraft).reduce((s, n) => s + (n || 0), 0);
   const routesJson = JSON.stringify(
     Object.entries(routeDraft).filter(([, q]) => q > 0).map(([poItemId, quantity]) => ({ poItemId, quantity }))
@@ -567,6 +571,18 @@ export default function POShow() {
           <h1 className="page-title font-mono">{po.poNumber}</h1>
           <div className="flex items-center gap-2 mt-1 flex-wrap">
             <span className={`badge ${getStatusColor(po.status)}`}>{po.status}</span>
+            {po.status === "IN_ROUTE" && po.trackingNumber && (
+              <span className="text-sm text-gray-600">
+                {po.carrier ? `${po.carrier}: ` : "Tracking: "}
+                {carrierTrackingUrl(po.carrier, po.trackingNumber) ? (
+                  <a href={carrierTrackingUrl(po.carrier, po.trackingNumber)!} target="_blank" rel="noreferrer" className="font-mono text-blue-600 hover:underline">
+                    {po.trackingNumber} ↗
+                  </a>
+                ) : (
+                  <span className="font-mono">{po.trackingNumber}</span>
+                )}
+              </span>
+            )}
             {po.parentPO && (
               <span className="badge bg-purple-100 text-purple-800">Child PO</span>
             )}
@@ -762,16 +778,28 @@ export default function POShow() {
               <input type="hidden" name="intent" value="mark-in-route" />
               <input type="hidden" name="routesJson" value={routesJson} />
 
-              <div className="form-group mb-4 max-w-md">
-                <label className="form-label">Tracking number (optional)</label>
-                <input
-                  type="text"
-                  name="trackingNumber"
-                  value={routeTracking}
-                  onChange={(e) => setRouteTracking(e.target.value)}
-                  className="form-input"
-                  placeholder="e.g. 1Z999..."
-                />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 max-w-2xl">
+                <div className="form-group mb-0">
+                  <label className="form-label">Carrier (optional)</label>
+                  <select name="carrier" value={routeCarrier} onChange={(e) => setRouteCarrier(e.target.value)} className="form-input">
+                    <option value="">—</option>
+                    {CARRIERS.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div className="form-group mb-0 md:col-span-2">
+                  <label className="form-label">Tracking number (optional)</label>
+                  <input
+                    type="text"
+                    name="trackingNumber"
+                    value={routeTracking}
+                    onChange={(e) => setRouteTracking(e.target.value)}
+                    className="form-input"
+                    placeholder="e.g. 1Z999..."
+                  />
+                  {carrierTrackingUrl(routeCarrier, routeTracking) && (
+                    <p className="text-xs text-blue-600 mt-1">✓ Will be a clickable {routeCarrier} tracking link.</p>
+                  )}
+                </div>
               </div>
 
               <div className="overflow-x-auto mb-4">
