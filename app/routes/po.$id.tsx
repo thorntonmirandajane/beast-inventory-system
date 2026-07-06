@@ -145,6 +145,84 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { success: true, message: `Split into ${childPoNumber}`, childId: child.id };
   }
 
+  if (intent === "mark-in-route") {
+    const trackingNumber = ((formData.get("trackingNumber") as string) || "").trim() || null;
+    const routesJson = formData.get("routesJson") as string;
+    const routes: { poItemId: string; quantity: number }[] = routesJson ? JSON.parse(routesJson) : [];
+    const valid = routes.filter((r) => r.quantity > 0);
+    if (valid.length === 0) return { error: "Enter a quantity for at least one item that's shipping." };
+
+    const parent = await prisma.purchaseOrder.findUnique({
+      where: { id: poId },
+      include: { items: true, children: true },
+    });
+    if (!parent) return { error: "PO not found" };
+    if (parent.status !== "SUBMITTED" && parent.status !== "PARTIAL") {
+      return { error: `Can't mark a ${parent.status.toLowerCase()} PO in route` };
+    }
+
+    for (const r of valid) {
+      const item = parent.items.find((i) => i.id === r.poItemId);
+      if (!item) return { error: "Invalid line item" };
+      const remaining = item.quantityOrdered - item.quantityReceived;
+      if (r.quantity > remaining) {
+        return { error: `Only ${remaining} remaining for ${item.skuId} — can't put ${r.quantity} in route` };
+      }
+    }
+
+    // Full shipment = every remaining line is fully in route → just flip this PO.
+    const routeMap = new Map(valid.map((r) => [r.poItemId, r.quantity]));
+    const isFull = parent.items.every((i) => {
+      const remaining = i.quantityOrdered - i.quantityReceived;
+      return remaining === 0 || routeMap.get(i.id) === remaining;
+    });
+
+    if (isFull) {
+      await prisma.purchaseOrder.update({
+        where: { id: parent.id },
+        data: { status: "IN_ROUTE", trackingNumber },
+      });
+      await createAuditLog(user.id, "MARK_PO_IN_ROUTE", "PurchaseOrder", parent.id, { poNumber: parent.poNumber, trackingNumber });
+      return { success: true, message: `${parent.poNumber} marked in route${trackingNumber ? ` (tracking ${trackingNumber})` : ""}.` };
+    }
+
+    // Partial shipment → split the shipped portion into a child PO that is IN_ROUTE.
+    const childPoNumber = `${parent.poNumber}-${parent.children.length + 1}`;
+    const child = await prisma.$transaction(async (tx) => {
+      const srcItems = await tx.pOItem.findMany({ where: { id: { in: valid.map((s) => s.poItemId) } } });
+      const newChild = await tx.purchaseOrder.create({
+        data: {
+          poNumber: childPoNumber,
+          vendorName: parent.vendorName,
+          estimatedArrival: parent.estimatedArrival,
+          parentPOId: parent.id,
+          status: "IN_ROUTE",
+          trackingNumber,
+          createdById: user.id,
+          items: {
+            create: valid.map((s) => {
+              const src = srcItems.find((i) => i.id === s.poItemId)!;
+              return { skuId: src.skuId, quantityOrdered: s.quantity, manufacturerId: src.manufacturerId, unitCost: src.unitCost };
+            }),
+          },
+        },
+      });
+      for (const s of valid) {
+        await tx.pOItem.update({ where: { id: s.poItemId }, data: { quantityOrdered: { decrement: s.quantity } } });
+      }
+      await tx.pOItem.deleteMany({ where: { purchaseOrderId: parent.id, quantityOrdered: 0, quantityReceived: 0 } });
+      return newChild;
+    });
+
+    await createAuditLog(user.id, "MARK_PO_IN_ROUTE", "PurchaseOrder", child.id, {
+      parentPoNumber: parent.poNumber,
+      childPoNumber,
+      trackingNumber,
+      routes: valid,
+    });
+    return { success: true, message: `${childPoNumber} split off and marked in route${trackingNumber ? ` (tracking ${trackingNumber})` : ""}.`, childId: child.id };
+  }
+
   if (intent === "receive") {
     const trackingNumber = (formData.get("trackingNumber") as string) || null;
     const carrier = (formData.get("carrier") as string) || null;
@@ -171,7 +249,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       include: { items: true },
     });
     if (!po) return { error: "PO not found" };
-    if (po.status !== "SUBMITTED" && po.status !== "PARTIAL") {
+    if (po.status !== "SUBMITTED" && po.status !== "PARTIAL" && po.status !== "IN_ROUTE") {
       return { error: `Cannot receive a ${po.status.toLowerCase()} PO` };
     }
 
@@ -321,6 +399,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 function getStatusColor(status: string) {
   switch (status) {
     case "SUBMITTED": return "bg-yellow-100 text-yellow-800";
+    case "IN_ROUTE": return "bg-indigo-100 text-indigo-800";
     case "PARTIAL": return "bg-orange-100 text-orange-800";
     case "RECEIVED": return "bg-blue-100 text-blue-800";
     case "APPROVED": return "bg-green-100 text-green-800";
@@ -337,14 +416,17 @@ export default function POShow() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const canEdit = po.status === "SUBMITTED";
-  const canReceive = po.status === "SUBMITTED";
+  const canReceive = po.status === "SUBMITTED" || po.status === "IN_ROUTE";
   const canSplit = po.status === "SUBMITTED" && po.items.some((i) => i.quantityOrdered > 0);
+  const canRoute = po.status === "SUBMITTED" && po.items.some((i) => i.quantityOrdered - i.quantityReceived > 0);
 
   const initiallyOpenReceive = canReceive && searchParams.get("receive") === "1";
   const initiallyOpenSplit = canSplit && searchParams.get("split") === "1";
+  const initiallyOpenRoute = canRoute && searchParams.get("inroute") === "1";
 
   const [showSplit, setShowSplit] = useState(initiallyOpenSplit);
   const [showReceive, setShowReceive] = useState(initiallyOpenReceive);
+  const [showRoute, setShowRoute] = useState(initiallyOpenRoute);
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -357,8 +439,36 @@ export default function POShow() {
       next.delete("split");
       changed = true;
     }
+    if (showRoute && next.get("inroute") === "1") {
+      next.delete("inroute");
+      changed = true;
+    }
     if (changed) setSearchParams(next, { replace: true });
-  }, [showReceive, showSplit, searchParams, setSearchParams]);
+  }, [showReceive, showSplit, showRoute, searchParams, setSearchParams]);
+
+  // ============ IN-ROUTE FORM STATE ============
+  const initialRouteDraft = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const item of po.items) m[item.id] = item.quantityOrdered - item.quantityReceived;
+    return m;
+  }, [po.items]);
+  const [routeDraft, setRouteDraft] = useState<Record<string, number>>(initialRouteDraft);
+  const [routeTracking, setRouteTracking] = useState("");
+  const routeTotal = Object.values(routeDraft).reduce((s, n) => s + (n || 0), 0);
+  const routesJson = JSON.stringify(
+    Object.entries(routeDraft).filter(([, q]) => q > 0).map(([poItemId, quantity]) => ({ poItemId, quantity }))
+  );
+  const routeValid = Object.entries(routeDraft).every(([id, qty]) => {
+    const item = po.items.find((i) => i.id === id);
+    if (!item) return false;
+    const remaining = item.quantityOrdered - item.quantityReceived;
+    return qty >= 0 && qty <= remaining;
+  });
+  const routeIsFull = po.items.every((i) => {
+    const remaining = i.quantityOrdered - i.quantityReceived;
+    return remaining === 0 || routeDraft[i.id] === remaining;
+  });
+  const canSubmitRoute = routeTotal > 0 && routeValid;
 
   // ============ SPLIT FORM STATE ============
   const [splitDraft, setSplitDraft] = useState<Record<string, number>>({});
@@ -472,10 +582,19 @@ export default function POShow() {
         </div>
         <div className="flex gap-2 flex-wrap">
           <Link to={`/po/${po.id}/pdf`} className="btn btn-ghost">View PDF</Link>
+          {canRoute && (
+            <button
+              type="button"
+              onClick={() => { setShowRoute((v) => !v); setShowSplit(false); setShowReceive(false); }}
+              className="btn btn-secondary"
+            >
+              {showRoute ? "Close" : "🚚 Mark In Route"}
+            </button>
+          )}
           {canSplit && (
             <button
               type="button"
-              onClick={() => { setShowSplit((v) => !v); setShowReceive(false); }}
+              onClick={() => { setShowSplit((v) => !v); setShowReceive(false); setShowRoute(false); }}
               className="btn btn-secondary"
             >
               {showSplit ? "Close split" : "↳ Split PO"}
@@ -484,7 +603,7 @@ export default function POShow() {
           {canReceive && (
             <button
               type="button"
-              onClick={() => { setShowReceive((v) => !v); setShowSplit(false); }}
+              onClick={() => { setShowReceive((v) => !v); setShowSplit(false); setShowRoute(false); }}
               className="btn btn-primary"
             >
               {showReceive ? "Close" : "+ Receive"}
@@ -628,6 +747,93 @@ export default function POShow() {
       </div>
 
       {/* Split Form */}
+      {showRoute && (
+        <div className="card mb-6 border-2 border-blue-300">
+          <div className="card-header">
+            <h2 className="card-title">🚚 Mark In Route</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Add the tracking number and the quantity that's actually shipping. If everything ships,
+              this PO moves to <strong>In Route</strong>. If only part ships, that part is split into a
+              child PO marked In Route — the rest stays open.
+            </p>
+          </div>
+          <div className="card-body">
+            <Form method="post">
+              <input type="hidden" name="intent" value="mark-in-route" />
+              <input type="hidden" name="routesJson" value={routesJson} />
+
+              <div className="form-group mb-4 max-w-md">
+                <label className="form-label">Tracking number (optional)</label>
+                <input
+                  type="text"
+                  name="trackingNumber"
+                  value={routeTracking}
+                  onChange={(e) => setRouteTracking(e.target.value)}
+                  className="form-input"
+                  placeholder="e.g. 1Z999..."
+                />
+              </div>
+
+              <div className="overflow-x-auto mb-4">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th className="text-right">Remaining</th>
+                      <th className="text-right">Shipping now</th>
+                      <th className="text-right">Stays open</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {po.items.map((item) => {
+                      const remaining = item.quantityOrdered - item.quantityReceived;
+                      const q = routeDraft[item.id] ?? 0;
+                      return (
+                        <tr key={item.id}>
+                          <td>
+                            <div className="font-mono text-sm">{item.sku.sku.toUpperCase()}</div>
+                            <div className="text-xs text-gray-500">{item.sku.name}</div>
+                          </td>
+                          <td className="text-right">{remaining}</td>
+                          <td className="text-right">
+                            <input
+                              type="number"
+                              className="form-input w-28 text-right"
+                              min="0"
+                              max={remaining}
+                              value={q || ""}
+                              onChange={(e) => {
+                                const v = parseInt(e.target.value, 10) || 0;
+                                setRouteDraft((prev) => ({ ...prev, [item.id]: Math.max(0, Math.min(remaining, v)) }));
+                              }}
+                              placeholder="0"
+                            />
+                          </td>
+                          <td className="text-right">
+                            <span className={q < remaining ? "font-semibold text-blue-700" : "text-gray-400"}>{remaining - q}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-sm text-gray-500 mb-3">
+                {routeIsFull ? "Full shipment — this PO will move to In Route." : "Partial — a child PO will be split off and marked In Route."}
+              </p>
+
+              <div className="flex gap-3">
+                <button type="submit" className="btn btn-primary" disabled={isSubmitting || !canSubmitRoute}>
+                  {isSubmitting ? "Working…" : `Mark In Route (${routeTotal} units)`}
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => { setShowRoute(false); setRouteDraft(initialRouteDraft); }}>Cancel</button>
+              </div>
+            </Form>
+          </div>
+        </div>
+      )}
+
       {showSplit && (
         <div className="card mb-6 border-2 border-purple-300">
           <div className="card-header">

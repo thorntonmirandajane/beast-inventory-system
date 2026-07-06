@@ -57,6 +57,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const counts = {
     all: await prisma.purchaseOrder.count(),
     submitted: await prisma.purchaseOrder.count({ where: { status: "SUBMITTED" } }),
+    inRoute: await prisma.purchaseOrder.count({ where: { status: "IN_ROUTE" } }),
     partial: await prisma.purchaseOrder.count({ where: { status: "PARTIAL" } }),
     received: await prisma.purchaseOrder.count({ where: { status: "RECEIVED" } }),
     approved: await prisma.purchaseOrder.count({ where: { status: "APPROVED" } }),
@@ -265,6 +266,7 @@ export default function PurchaseOrders() {
   const tabs = [
     { id: "all", label: "All", count: counts.all },
     { id: "submitted", label: "Submitted", count: counts.submitted },
+    { id: "in_route", label: "In Route", count: counts.inRoute },
     { id: "received", label: "Received", count: counts.received },
     { id: "approved", label: "Approved", count: counts.approved },
     { id: "master", label: "Master", count: counts.all },
@@ -328,6 +330,7 @@ export default function PurchaseOrders() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case "SUBMITTED": return "bg-yellow-100 text-yellow-800";
+    case "IN_ROUTE": return "bg-indigo-100 text-indigo-800";
       case "PARTIAL": return "bg-orange-100 text-orange-800";
       case "RECEIVED": return "bg-blue-100 text-blue-800";
       case "APPROVED": return "bg-green-100 text-green-800";
@@ -613,6 +616,21 @@ export default function PurchaseOrders() {
                           <div className="text-gray-500">Progress</div>
                           <div>{totalReceived}/{totalOrdered}</div>
                         </div>
+                        {po.status === "IN_ROUTE" && po.trackingNumber && (
+                          <div className="text-right">
+                            <div className="text-gray-500">Tracking</div>
+                            <div className="font-mono text-xs">{po.trackingNumber}</div>
+                          </div>
+                        )}
+                        {po.status === "SUBMITTED" && totalOrdered > 0 && (
+                          <Link
+                            to={`/po/${po.id}?inroute=1`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="btn btn-secondary btn-sm whitespace-nowrap"
+                          >
+                            🚚 In Route
+                          </Link>
+                        )}
                         {po.status === "SUBMITTED" && totalOrdered > 0 && (
                           <Link
                             to={`/po/${po.id}?split=1`}
@@ -622,7 +640,7 @@ export default function PurchaseOrders() {
                             ↳ Split
                           </Link>
                         )}
-                        {po.status === "SUBMITTED" && totalOrdered > 0 && (
+                        {(po.status === "SUBMITTED" || po.status === "IN_ROUTE") && totalOrdered > 0 && (
                           <Link
                             to={`/po/${po.id}?receive=1`}
                             onClick={(e) => e.stopPropagation()}

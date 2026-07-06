@@ -583,6 +583,7 @@ enum InventoryState {
 
 enum POStatus {
   SUBMITTED
+  IN_ROUTE
   PARTIAL
   RECEIVED
   APPROVED
