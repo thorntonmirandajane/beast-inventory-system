@@ -455,15 +455,17 @@ async function buildForecastData({
   // starting stock here is what stops the double-count.
   const rawReportMap = new Map<
     string,
-    { skuId: string; sku: string; name: string; needed: number; available: number; forSkus: string[] }
+    { skuId: string; sku: string; name: string; needed: number; available: number; forSkus: string[]; breakdown: { sku: string; needed: number; allocated: number }[] }
   >();
   for (const item of forecastData) {
     for (const raw of item.rawMaterialsNeeded) {
       if (raw.needed <= 0) continue;
       const e = rawReportMap.get(raw.skuId);
+      const line = { sku: item.sku, needed: raw.needed, allocated: raw.available };
       if (e) {
         e.needed += raw.needed;
         if (!e.forSkus.includes(item.sku)) e.forSkus.push(item.sku);
+        e.breakdown.push(line);
       } else {
         rawReportMap.set(raw.skuId, {
           skuId: raw.skuId,
@@ -472,12 +474,13 @@ async function buildForecastData({
           needed: raw.needed,
           available: initialAvailable.get(raw.skuId) ?? 0,
           forSkus: [item.sku],
+          breakdown: [line],
         });
       }
     }
   }
   const rawMaterialsReport = Array.from(rawReportMap.values())
-    .map((r) => ({ ...r, short: Math.max(0, r.needed - r.available) }))
+    .map((r) => ({ ...r, short: Math.max(0, r.needed - r.available), breakdown: r.breakdown.sort((a, b) => b.needed - a.needed) }))
     .sort((a, b) => b.short - a.short || b.needed - a.needed);
 
   // Shortages-only view (same aggregated data, short > 0).
@@ -1560,11 +1563,12 @@ function RawMaterialsTab({
   from,
   to,
 }: {
-  rows: { sku: string; name: string; needed: number; available: number; short: number; forSkus: string[] }[];
+  rows: { skuId: string; sku: string; name: string; needed: number; available: number; short: number; forSkus: string[]; breakdown: { sku: string; needed: number; allocated: number }[] }[];
   from: string;
   to: string;
 }) {
   const shortRows = rows.filter((r) => r.short > 0);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   if (rows.length === 0) {
     return (
@@ -1592,6 +1596,7 @@ function RawMaterialsTab({
         <table className="data-table">
           <thead>
             <tr>
+              <th className="w-8"></th>
               <th>Raw Material SKU</th>
               <th>Name</th>
               <th className="text-right">Needed</th>
@@ -1601,28 +1606,73 @@ function RawMaterialsTab({
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.sku} className={r.short > 0 ? "bg-red-50" : ""}>
-                <td className="font-mono text-sm">{r.sku}</td>
-                <td className="text-sm">{r.name}</td>
-                <td className="text-right">{r.needed.toLocaleString()}</td>
-                <td className="text-right">{r.available.toLocaleString()}</td>
-                <td className="text-right">
-                  {r.short > 0 ? (
-                    <span className="font-bold text-red-600">-{r.short.toLocaleString()}</span>
-                  ) : (
-                    <span className="text-green-600">0</span>
+            {rows.map((r) => {
+              const isOpen = expanded === r.skuId;
+              const totalAllocated = r.breakdown.reduce((s, b) => s + b.allocated, 0);
+              return (
+                <React.Fragment key={r.skuId}>
+                  <tr className={`${r.short > 0 ? "bg-red-50" : ""} cursor-pointer`} onClick={() => setExpanded(isOpen ? null : r.skuId)}>
+                    <td className="text-center text-gray-400">{isOpen ? "▾" : "▸"}</td>
+                    <td className="font-mono text-sm">{r.sku}</td>
+                    <td className="text-sm">{r.name}</td>
+                    <td className="text-right">{r.needed.toLocaleString()}</td>
+                    <td className="text-right">{r.available.toLocaleString()}</td>
+                    <td className="text-right">
+                      {r.short > 0 ? (
+                        <span className="font-bold text-red-600">-{r.short.toLocaleString()}</span>
+                      ) : (
+                        <span className="text-green-600">0</span>
+                      )}
+                    </td>
+                    <td className="text-xs text-gray-500">{r.forSkus.join(", ")}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={7} className="bg-gray-50 p-4">
+                        <div className="text-sm font-medium mb-2">Demand for {r.sku} by product</div>
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-left border-b text-gray-500">
+                              <th className="py-1 pr-4">Product</th>
+                              <th className="py-1 pr-4 text-right">Needs</th>
+                              <th className="py-1 pr-4 text-right">Got from stock</th>
+                              <th className="py-1 pr-4 text-right">Short</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {r.breakdown.map((b, i) => (
+                              <tr key={i} className="border-b last:border-0">
+                                <td className="py-1 pr-4 font-mono">{b.sku}</td>
+                                <td className="py-1 pr-4 text-right">{b.needed.toLocaleString()}</td>
+                                <td className="py-1 pr-4 text-right text-green-700">{b.allocated.toLocaleString()}</td>
+                                <td className="py-1 pr-4 text-right">
+                                  {b.needed - b.allocated > 0 ? <span className="text-red-600">-{(b.needed - b.allocated).toLocaleString()}</span> : "0"}
+                                </td>
+                              </tr>
+                            ))}
+                            <tr className="font-semibold border-t-2">
+                              <td className="py-1 pr-4">Total</td>
+                              <td className="py-1 pr-4 text-right">{r.needed.toLocaleString()}</td>
+                              <td className="py-1 pr-4 text-right text-green-700">{totalAllocated.toLocaleString()}</td>
+                              <td className="py-1 pr-4 text-right">{r.short > 0 ? <span className="text-red-600">-{r.short.toLocaleString()}</span> : "0"}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                        <p className="text-xs text-gray-500 mt-2">
+                          "Got from stock" is each product's allocated share of the {r.available.toLocaleString()} on hand.
+                          The total ({totalAllocated.toLocaleString()}) never exceeds on hand — that's the shared-pool fix.
+                        </p>
+                      </td>
+                    </tr>
                   )}
-                </td>
-                <td className="text-xs text-gray-500">{r.forSkus.join(", ")}</td>
-              </tr>
-            ))}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
         <p className="text-xs text-gray-400 mt-3">
-          Needed explodes the full bill of materials to raw, netting existing sub-assembly stock
-          at each level. On Hand is current raw inventory; Short = Needed − On Hand. Open POs are
-          not yet subtracted.
+          Click a row to see which products drive that material and how the on-hand stock was allocated.
+          Needed explodes the full BOM to raw, netting sub-assembly stock at each level. Open POs are not yet subtracted.
         </p>
       </div>
     </div>
