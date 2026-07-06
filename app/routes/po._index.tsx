@@ -86,8 +86,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "At least one item is required" };
     }
 
-    const poCount = await prisma.purchaseOrder.count({ where: { parentPOId: null } });
-    const poNumber = `PO-${String(poCount + 1).padStart(5, "0")}`;
+    // Use the entered PO number if given; otherwise auto-generate the next one
+    // after the highest existing PO-##### (count+1 collided after any deletion).
+    const providedPo = ((formData.get("poNumber") as string) || "").trim();
+    let poNumber: string;
+    if (providedPo) {
+      const clash = await prisma.purchaseOrder.findUnique({ where: { poNumber: providedPo } });
+      if (clash) return { error: `PO number "${providedPo}" already exists — use a different one or leave it blank.` };
+      poNumber = providedPo;
+    } else {
+      const existing = await prisma.purchaseOrder.findMany({
+        where: { poNumber: { startsWith: "PO-" } },
+        select: { poNumber: true },
+      });
+      let maxNum = 0;
+      for (const p of existing) {
+        const m = /^PO-(\d+)$/.exec(p.poNumber);
+        if (m) maxNum = Math.max(maxNum, parseInt(m[1], 10));
+      }
+      poNumber = `PO-${String(maxNum + 1).padStart(5, "0")}`;
+    }
 
     const po = await prisma.purchaseOrder.create({
       data: {
@@ -363,7 +381,11 @@ export default function PurchaseOrders() {
                 })))}
               />
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="form-group mb-0">
+                  <label className="form-label">PO Number</label>
+                  <input type="text" name="poNumber" className="form-input" placeholder="Auto-generated if blank" />
+                </div>
                 <div className="form-group mb-0">
                   <label className="form-label">Estimated Arrival</label>
                   <input type="date" name="estimatedArrival" className="form-input" />
