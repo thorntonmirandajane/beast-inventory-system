@@ -6,6 +6,7 @@ import {
   Link,
   useNavigation,
   useSearchParams,
+  useFetcher,
 } from "react-router";
 import { useEffect, useState, useMemo } from "react";
 import { requireRole, createAuditLog } from "../utils/auth.server";
@@ -396,6 +397,23 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     return { success: true, message: `${po.poNumber} reverted to SUBMITTED` };
   }
 
+  if (intent === "update-notes") {
+    const notes = ((formData.get("notes") as string) || "").trim() || null;
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: poId } });
+    if (!po) return { error: "PO not found" };
+
+    await prisma.purchaseOrder.update({
+      where: { id: poId },
+      data: { notes },
+    });
+
+    await createAuditLog(user.id, "UPDATE_PO_NOTES", "PurchaseOrder", poId, {
+      poNumber: po.poNumber,
+    });
+
+    return { success: true, message: notes ? "Notes saved." : "Notes cleared." };
+  }
+
   return { error: "Invalid action" };
 };
 
@@ -416,6 +434,8 @@ export default function POShow() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  const notesFetcher = useFetcher<typeof action>();
+  const notesSaving = notesFetcher.state !== "idle";
 
   const [searchParams, setSearchParams] = useSearchParams();
   const canEdit = po.status === "SUBMITTED";
@@ -700,12 +720,34 @@ export default function POShow() {
               </div>
             </div>
           )}
-          {po.notes && (
-            <div className="col-span-2 md:col-span-4">
-              <div className="text-gray-500">Notes</div>
-              <div>{po.notes}</div>
-            </div>
-          )}
+          <div className="col-span-2 md:col-span-4">
+            <div className="text-gray-500 mb-1">Notes</div>
+            <notesFetcher.Form method="post" className="flex flex-col gap-2">
+              <input type="hidden" name="intent" value="update-notes" />
+              <textarea
+                name="notes"
+                rows={3}
+                defaultValue={po.notes ?? ""}
+                placeholder="Add notes about this PO…"
+                className="form-input w-full text-sm"
+              />
+              <div className="flex items-center gap-3">
+                <button
+                  type="submit"
+                  className="btn btn-sm btn-secondary"
+                  disabled={notesSaving}
+                >
+                  {notesSaving ? "Saving…" : "Save Notes"}
+                </button>
+                {notesFetcher.data?.success && !notesSaving && (
+                  <span className="text-xs text-green-600">{notesFetcher.data.message}</span>
+                )}
+                {notesFetcher.data?.error && !notesSaving && (
+                  <span className="text-xs text-red-600">{notesFetcher.data.error}</span>
+                )}
+              </div>
+            </notesFetcher.Form>
+          </div>
         </div>
       </div>
 
