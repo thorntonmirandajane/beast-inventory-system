@@ -545,33 +545,33 @@ export interface FulfilledLineItem {
   title: string;
   quantity: number;
   channel: FulfillmentChannel;
-  serviceLabel: string; // raw service (or location) name, shown for transparency
+  serviceLabel: string; // the app/service that marked it fulfilled (timeline actor)
+  locationName: string | null; // where it shipped from — "Utah" for both channels
 }
 
-// Substrings (case-insensitive) that mark a fulfillment as ShipHero rather than
-// Utah/in-house. Override with SHIPHERO_SERVICE_MATCH="shiphero,apex,..." if the
-// service or location is named differently in the store. Everything that does
-// NOT match here is treated as Utah.
+// Substrings (case-insensitive) in the fulfillment SERVICE / app name that mark a
+// fulfillment as ShipHero. Per the Shopify order timeline, ShipHero fulfillments
+// read "ShipHero Inventory & Shipping marked … as fulfilled from Utah", while
+// in-house ones read "OD Auto-Fulfill marked …" — the LOCATION is "Utah" for both,
+// so location can't be the signal; only the service/app name can. Everything that
+// doesn't match here is treated as Utah (in-house). Override with
+// SHIPHERO_SERVICE_MATCH="shiphero,..." if the service is named differently.
 function shipheroMatchers(): string[] {
   const raw = process.env.SHIPHERO_SERVICE_MATCH;
   if (raw && raw.trim()) {
     return raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   }
-  return ["shiphero", "apex"];
+  return ["shiphero"];
 }
 
 function classifyChannel(
   serviceName: string | null,
-  serviceHandle: string | null,
-  locationName: string | null
+  serviceHandle: string | null
 ): { channel: FulfillmentChannel; serviceLabel: string } {
-  const haystack = [serviceName, serviceHandle, locationName]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
+  // Match ONLY on the service/app identity — never the location (always "Utah").
+  const haystack = [serviceName, serviceHandle].filter(Boolean).join(" ").toLowerCase();
   const isShiphero = shipheroMatchers().some((m) => haystack.includes(m));
-  // Prefer the human service name for the label, then location, then handle.
-  const serviceLabel = serviceName || locationName || serviceHandle || "Unknown";
+  const serviceLabel = serviceName || serviceHandle || "Manual / in-house";
   return { channel: isShiphero ? "shiphero" : "utah", serviceLabel };
 }
 
@@ -656,7 +656,8 @@ async function fetchFulfilledForStore(
       );
     } catch (err) {
       // If this store/API doesn't expose Fulfillment.service, retry without it
-      // (location name still drives classification) and remember for next time.
+      // and remember for the session. (Without a service name everything falls to
+      // Utah, so the transparency table will make that obvious if it ever happens.)
       const msg = err instanceof Error ? err.message : String(err);
       if (!fulfillmentServiceUnavailable && /service/i.test(msg)) {
         fulfillmentServiceUnavailable = true;
@@ -679,9 +680,9 @@ async function fetchFulfilledForStore(
 
         const { channel, serviceLabel } = classifyChannel(
           f.service?.serviceName ?? null,
-          f.service?.handle ?? null,
-          f.location?.name ?? null
+          f.service?.handle ?? null
         );
+        const locationName = f.location?.name ?? null;
 
         for (const liEdge of f.fulfillmentLineItems?.edges ?? []) {
           const li = liEdge.node;
@@ -697,6 +698,7 @@ async function fetchFulfilledForStore(
             sku,
             title: li.lineItem?.title ?? "",
             quantity: qty,
+            locationName,
             channel,
             serviceLabel,
           });
@@ -750,7 +752,8 @@ export interface FulfilledSkuRow {
 }
 
 export interface FulfilledServiceRow {
-  label: string; // raw service/location name as Shopify reports it
+  label: string; // the fulfillment service / app, as Shopify reports it
+  location: string | null; // where it shipped from (e.g. "Utah")
   channel: FulfillmentChannel;
   units: number;
   orders: number;
@@ -799,14 +802,23 @@ export function aggregateFulfilled(
     row.total += it.quantity;
     row[it.channel] += it.quantity;
 
-    let svc = serviceRows.get(it.serviceLabel);
+    // Key the transparency rows by service + location so we can see exactly what
+    // Shopify reported for each (this is what we verify the ShipHero/Utah split on).
+    const svcKey = `${it.serviceLabel} ${it.locationName ?? ""}`;
+    let svc = serviceRows.get(svcKey);
     if (!svc) {
-      svc = { label: it.serviceLabel, channel: it.channel, units: 0, orders: 0 };
-      serviceRows.set(it.serviceLabel, svc);
-      serviceOrderSets.set(it.serviceLabel, new Set());
+      svc = {
+        label: it.serviceLabel,
+        location: it.locationName,
+        channel: it.channel,
+        units: 0,
+        orders: 0,
+      };
+      serviceRows.set(svcKey, svc);
+      serviceOrderSets.set(svcKey, new Set());
     }
     svc.units += it.quantity;
-    serviceOrderSets.get(it.serviceLabel)!.add(orderKey);
+    serviceOrderSets.get(svcKey)!.add(orderKey);
   }
 
   for (const [label, svc] of serviceRows) {

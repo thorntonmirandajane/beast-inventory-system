@@ -85,7 +85,7 @@ export default function FulfilledOrders() {
 
       {/* Date picker */}
       <div className="card mb-4">
-        <div className="card-body flex flex-wrap items-end gap-4">
+        <div className="card-body">
           <Form method="get" className="flex items-end gap-3 flex-wrap">
             <div className="form-group mb-0">
               <label className="form-label">Fulfillment date (Mountain Time)</label>
@@ -100,19 +100,19 @@ export default function FulfilledOrders() {
             <button type="submit" className="btn btn-primary" disabled={isLoading}>
               {isLoading ? "Loading…" : "View"}
             </button>
+            {report && report.totalUnits > 0 && (
+              <Link
+                to={`/fulfilled-orders?date=${date}&format=csv`}
+                reloadDocument
+                className="btn btn-secondary"
+              >
+                Export CSV
+              </Link>
+            )}
+            {syncing && (
+              <span className="badge badge-blue">Syncing with Shopify… refresh in a moment</span>
+            )}
           </Form>
-          {report && report.totalUnits > 0 && (
-            <Link
-              to={`/fulfilled-orders?date=${date}&format=csv`}
-              reloadDocument
-              className="btn btn-secondary"
-            >
-              Export CSV
-            </Link>
-          )}
-          {syncing && (
-            <span className="badge badge-blue">Syncing with Shopify… refresh in a moment</span>
-          )}
         </div>
       </div>
 
@@ -197,9 +197,12 @@ export default function FulfilledOrders() {
             </div>
           </div>
 
-          {/* Transparency: exactly how each fulfillment service/location was labeled
-              in Shopify, and which bucket it fell into. Confirm the ShipHero/Utah
-              split here — anything misclassified can be tuned via SHIPHERO_SERVICE_MATCH. */}
+          {/* Transparency: exactly which app/service marked each fulfillment (the
+              Shopify timeline actor, e.g. "ShipHero Inventory & Shipping" vs
+              "OD Auto-Fulfill") and where it shipped from. The location is "Utah"
+              for both channels, so the ShipHero/Utah split is decided by Service,
+              not Location. Confirm it here — anything misclassified can be tuned via
+              the SHIPHERO_SERVICE_MATCH env var. */}
           {report.byService.length > 0 && (
             <div className="card mb-6">
               <div className="card-header">
@@ -209,7 +212,8 @@ export default function FulfilledOrders() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Service / Location</th>
+                      <th>Service / App</th>
+                      <th>Location</th>
                       <th>Counted as</th>
                       <th className="text-right">Orders</th>
                       <th className="text-right">Units</th>
@@ -217,8 +221,9 @@ export default function FulfilledOrders() {
                   </thead>
                   <tbody>
                     {report.byService.map((s) => (
-                      <tr key={s.label}>
+                      <tr key={`${s.label}|${s.location ?? ""}`}>
                         <td className="text-sm">{s.label}</td>
+                        <td className="text-sm text-gray-500">{s.location ?? "—"}</td>
                         <td>
                           <span className={`badge ${s.channel === "shiphero" ? "badge-blue" : "badge-green"}`}>
                             {s.channel === "shiphero" ? "ShipHero" : "Utah"}
