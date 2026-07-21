@@ -40,6 +40,7 @@ export default [
   route("capacity", "routes/capacity.tsx"),
   route("capacity/import", "routes/capacity.import.tsx"),
   route("forecasting", "routes/forecasting.tsx"),
+  route("fulfilled-orders", "routes/fulfilled-orders.tsx"),
   route("projections", "routes/projections.tsx"),
   route("daily-assignments", "routes/daily-assignments.tsx"),
   route("quality-control", "routes/quality-control.tsx"),

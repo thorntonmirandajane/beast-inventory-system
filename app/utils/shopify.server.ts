@@ -520,3 +520,307 @@ async function fetchSalesBySkuUncached(start: string, end: string): Promise<Map<
 
   return out;
 }
+
+// ============================================================
+// Fulfilled orders on a given day (ShipHero vs Utah)
+// ------------------------------------------------------------
+// Powers the "Fulfilled Orders" tab: for a chosen calendar day (Mountain Time),
+// how many orders shipped, how many of each SKU, split by which fulfillment
+// SERVICE shipped them. ShipHero registers as a third-party fulfillment service
+// in Shopify; anything Bowmar ships in-house (the manual/default service at the
+// Utah location) is bucketed as "Utah". Read from each fulfillment's `service`
+// (with `location` as a secondary signal), which is the structured equivalent of
+// the "Fulfilled by ShipHero" line you see in the Shopify order timeline.
+// ============================================================
+
+export type FulfillmentChannel = "shiphero" | "utah";
+
+export interface FulfilledLineItem {
+  store: StoreSource;
+  orderId: string;
+  orderName: string;
+  fulfillmentId: string;
+  fulfilledAt: string; // ISO timestamp the fulfillment was created
+  sku: string;
+  title: string;
+  quantity: number;
+  channel: FulfillmentChannel;
+  serviceLabel: string; // raw service (or location) name, shown for transparency
+}
+
+// Substrings (case-insensitive) that mark a fulfillment as ShipHero rather than
+// Utah/in-house. Override with SHIPHERO_SERVICE_MATCH="shiphero,apex,..." if the
+// service or location is named differently in the store. Everything that does
+// NOT match here is treated as Utah.
+function shipheroMatchers(): string[] {
+  const raw = process.env.SHIPHERO_SERVICE_MATCH;
+  if (raw && raw.trim()) {
+    return raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  }
+  return ["shiphero", "apex"];
+}
+
+function classifyChannel(
+  serviceName: string | null,
+  serviceHandle: string | null,
+  locationName: string | null
+): { channel: FulfillmentChannel; serviceLabel: string } {
+  const haystack = [serviceName, serviceHandle, locationName]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const isShiphero = shipheroMatchers().some((m) => haystack.includes(m));
+  // Prefer the human service name for the label, then location, then handle.
+  const serviceLabel = serviceName || locationName || serviceHandle || "Unknown";
+  return { channel: isShiphero ? "shiphero" : "utah", serviceLabel };
+}
+
+// Format a UTC instant as its calendar day (YYYY-MM-DD) in US Mountain Time,
+// so a fulfillment created at 11pm MT lands on the right day regardless of the
+// server's timezone. en-CA yields ISO-style YYYY-MM-DD.
+const MT_DAY_FMT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Denver",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+function mountainDay(iso: string): string {
+  return MT_DAY_FMT.format(new Date(iso));
+}
+
+// We can't filter Shopify's order search by "fulfilled on day D" directly, so we
+// query orders UPDATED in a window around D (a fulfillment bumps updated_at) and
+// then keep only the fulfillments whose own createdAt lands on MT day D. Pad the
+// window: start earlier than either possible MT midnight (DST), and extend the
+// end so an order fulfilled on D but edited later is still returned.
+const UPDATED_BUFFER_DAYS = 30;
+function updatedWindowUtc(dateYmd: string): { startIso: string; endIso: string } {
+  // MST midnight = 07:00Z; MDT midnight = 06:00Z. Start 2h before the earlier one.
+  const startApprox = Date.parse(`${dateYmd}T00:00:00-07:00`);
+  const start = new Date(startApprox - 2 * 3600 * 1000);
+  // MDT end-of-day is 05:59Z next day; pad the far side for late edits.
+  const endApprox = Date.parse(`${dateYmd}T23:59:59-06:00`);
+  const end = new Date(endApprox + (UPDATED_BUFFER_DAYS * 24 + 2) * 3600 * 1000);
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
+}
+
+// `Fulfillment.service` is not available on every store/API combo. Once a store
+// rejects it we fall back to a location-only query for the rest of the session.
+let fulfillmentServiceUnavailable = false;
+
+function fulfilledQuery(withService: boolean): string {
+  const serviceField = withService ? "service { serviceName handle }" : "";
+  return `
+    query($cursor: String, $q: String) {
+      orders(first: 100, after: $cursor, query: $q, sortKey: UPDATED_AT) {
+        pageInfo { hasNextPage endCursor }
+        edges {
+          node {
+            id
+            name
+            cancelledAt
+            fulfillments(first: 10) {
+              id
+              status
+              createdAt
+              ${serviceField}
+              location { name }
+              fulfillmentLineItems(first: 100) {
+                edges { node { quantity lineItem { sku title } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+}
+
+async function fetchFulfilledForStore(
+  creds: StoreCreds,
+  source: StoreSource,
+  dateYmd: string
+): Promise<FulfilledLineItem[]> {
+  const items: FulfilledLineItem[] = [];
+  const { startIso, endIso } = updatedWindowUtc(dateYmd);
+  const q = `updated_at:>=${startIso} updated_at:<=${endIso}`;
+  let cursor: string | null = null;
+
+  while (true) {
+    let data: any;
+    try {
+      data = await shopifyGraphQL(
+        fulfilledQuery(!fulfillmentServiceUnavailable),
+        { cursor, q },
+        creds
+      );
+    } catch (err) {
+      // If this store/API doesn't expose Fulfillment.service, retry without it
+      // (location name still drives classification) and remember for next time.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!fulfillmentServiceUnavailable && /service/i.test(msg)) {
+        fulfillmentServiceUnavailable = true;
+        data = await shopifyGraphQL(fulfilledQuery(false), { cursor, q }, creds);
+      } else {
+        throw err;
+      }
+    }
+
+    const orders = data.orders;
+    if (!orders) break;
+
+    for (const orderEdge of orders.edges) {
+      const order = orderEdge.node;
+      if (order.cancelledAt) continue; // canceled orders didn't really ship
+      for (const f of order.fulfillments ?? []) {
+        // Only count fulfillments that actually shipped (success), on MT day D.
+        if (f.status && f.status !== "SUCCESS") continue;
+        if (mountainDay(f.createdAt) !== dateYmd) continue;
+
+        const { channel, serviceLabel } = classifyChannel(
+          f.service?.serviceName ?? null,
+          f.service?.handle ?? null,
+          f.location?.name ?? null
+        );
+
+        for (const liEdge of f.fulfillmentLineItems?.edges ?? []) {
+          const li = liEdge.node;
+          const sku = li.lineItem?.sku;
+          const qty = li.quantity ?? 0;
+          if (!sku || qty <= 0) continue;
+          items.push({
+            store: source,
+            orderId: order.id,
+            orderName: order.name,
+            fulfillmentId: f.id,
+            fulfilledAt: f.createdAt,
+            sku,
+            title: li.lineItem?.title ?? "",
+            quantity: qty,
+            channel,
+            serviceLabel,
+          });
+        }
+      }
+    }
+
+    if (!orders.pageInfo.hasNextPage) break;
+    cursor = orders.pageInfo.endCursor;
+  }
+
+  return items;
+}
+
+/**
+ * All fulfilled line items across BOTH stores for a single Mountain-Time day.
+ * `dateYmd` is YYYY-MM-DD. Cached per day (SWR) so re-opening the same date is
+ * instant. Aggregation into the report shape is `aggregateFulfilled`'s job.
+ */
+export async function getFulfilledOnDate(dateYmd: string): Promise<FulfilledLineItem[]> {
+  const archery = cached(`fulfilled:archery:${dateYmd}`, () =>
+    fetchFulfilledForStore(getArcheryCreds(), "archery", dateYmd)
+  );
+
+  const beastCreds = getBeastCreds();
+  const beast = beastCreds
+    ? cached(`fulfilled:beast:${dateYmd}`, () =>
+        fetchFulfilledForStore(beastCreds, "beast", dateYmd)
+      )
+    : Promise.resolve([] as FulfilledLineItem[]);
+
+  const [archeryItems, beastItems] = await Promise.all([archery, beast]);
+  return [...archeryItems, ...beastItems];
+}
+
+// ============================================================
+// Aggregate fulfilled line items into the report shape the tab renders.
+// ============================================================
+
+export interface FulfilledChannelTotals {
+  orders: number; // distinct orders shipped by this channel
+  units: number;
+}
+
+export interface FulfilledSkuRow {
+  sku: string;
+  title: string;
+  total: number;
+  shiphero: number;
+  utah: number;
+}
+
+export interface FulfilledServiceRow {
+  label: string; // raw service/location name as Shopify reports it
+  channel: FulfillmentChannel;
+  units: number;
+  orders: number;
+}
+
+export interface FulfilledReport {
+  date: string;
+  totalOrders: number;
+  totalUnits: number;
+  shiphero: FulfilledChannelTotals;
+  utah: FulfilledChannelTotals;
+  bySku: FulfilledSkuRow[];
+  byService: FulfilledServiceRow[];
+  storeUnits: { archery: number; beast: number };
+}
+
+export function aggregateFulfilled(
+  items: FulfilledLineItem[],
+  date: string
+): FulfilledReport {
+  const skuRows = new Map<string, FulfilledSkuRow>();
+  const serviceRows = new Map<string, FulfilledServiceRow>();
+  const serviceOrderSets = new Map<string, Set<string>>();
+
+  const allOrders = new Set<string>();
+  const shipheroOrders = new Set<string>();
+  const utahOrders = new Set<string>();
+  let totalUnits = 0;
+  const channelUnits = { shiphero: 0, utah: 0 };
+  const storeUnits = { archery: 0, beast: 0 };
+
+  for (const it of items) {
+    // Order gids can collide between the two stores; namespace by store.
+    const orderKey = `${it.store}:${it.orderId}`;
+    allOrders.add(orderKey);
+    (it.channel === "shiphero" ? shipheroOrders : utahOrders).add(orderKey);
+    totalUnits += it.quantity;
+    channelUnits[it.channel] += it.quantity;
+    storeUnits[it.store] += it.quantity;
+
+    let row = skuRows.get(it.sku);
+    if (!row) {
+      row = { sku: it.sku, title: it.title, total: 0, shiphero: 0, utah: 0 };
+      skuRows.set(it.sku, row);
+    }
+    row.total += it.quantity;
+    row[it.channel] += it.quantity;
+
+    let svc = serviceRows.get(it.serviceLabel);
+    if (!svc) {
+      svc = { label: it.serviceLabel, channel: it.channel, units: 0, orders: 0 };
+      serviceRows.set(it.serviceLabel, svc);
+      serviceOrderSets.set(it.serviceLabel, new Set());
+    }
+    svc.units += it.quantity;
+    serviceOrderSets.get(it.serviceLabel)!.add(orderKey);
+  }
+
+  for (const [label, svc] of serviceRows) {
+    svc.orders = serviceOrderSets.get(label)?.size ?? 0;
+  }
+
+  return {
+    date,
+    totalOrders: allOrders.size,
+    totalUnits,
+    shiphero: { orders: shipheroOrders.size, units: channelUnits.shiphero },
+    utah: { orders: utahOrders.size, units: channelUnits.utah },
+    bySku: [...skuRows.values()].sort((a, b) => b.total - a.total || a.sku.localeCompare(b.sku)),
+    byService: [...serviceRows.values()].sort((a, b) => b.units - a.units),
+    storeUnits,
+  };
+}
