@@ -589,17 +589,18 @@ function mountainDay(iso: string): string {
 }
 
 // We can't filter Shopify's order search by "fulfilled on day D" directly, so we
-// query orders UPDATED in a window around D (a fulfillment bumps updated_at) and
-// then keep only the fulfillments whose own createdAt lands on MT day D. Pad the
-// window: start earlier than either possible MT midnight (DST), and extend the
-// end so an order fulfilled on D but edited later is still returned.
+// query orders UPDATED across the range (a fulfillment bumps updated_at) and then
+// keep only the fulfillments whose own createdAt lands on an MT day within
+// [from, to]. Pad the window: start earlier than either possible MT midnight
+// (DST), and extend the end so an order fulfilled in-range but edited later is
+// still returned.
 const UPDATED_BUFFER_DAYS = 30;
-function updatedWindowUtc(dateYmd: string): { startIso: string; endIso: string } {
+function updatedWindowUtc(fromYmd: string, toYmd: string): { startIso: string; endIso: string } {
   // MST midnight = 07:00Z; MDT midnight = 06:00Z. Start 2h before the earlier one.
-  const startApprox = Date.parse(`${dateYmd}T00:00:00-07:00`);
+  const startApprox = Date.parse(`${fromYmd}T00:00:00-07:00`);
   const start = new Date(startApprox - 2 * 3600 * 1000);
   // MDT end-of-day is 05:59Z next day; pad the far side for late edits.
-  const endApprox = Date.parse(`${dateYmd}T23:59:59-06:00`);
+  const endApprox = Date.parse(`${toYmd}T23:59:59-06:00`);
   const end = new Date(endApprox + (UPDATED_BUFFER_DAYS * 24 + 2) * 3600 * 1000);
   return { startIso: start.toISOString(), endIso: end.toISOString() };
 }
@@ -639,10 +640,11 @@ function fulfilledQuery(withService: boolean): string {
 async function fetchFulfilledForStore(
   creds: StoreCreds,
   source: StoreSource,
-  dateYmd: string
+  fromYmd: string,
+  toYmd: string
 ): Promise<FulfilledLineItem[]> {
   const items: FulfilledLineItem[] = [];
-  const { startIso, endIso } = updatedWindowUtc(dateYmd);
+  const { startIso, endIso } = updatedWindowUtc(fromYmd, toYmd);
   const q = `updated_at:>=${startIso} updated_at:<=${endIso}`;
   let cursor: string | null = null;
 
@@ -674,9 +676,11 @@ async function fetchFulfilledForStore(
       const order = orderEdge.node;
       if (order.cancelledAt) continue; // canceled orders didn't really ship
       for (const f of order.fulfillments ?? []) {
-        // Only count fulfillments that actually shipped (success), on MT day D.
+        // Only count fulfillments that actually shipped (success), whose MT day
+        // falls within the requested [from, to] range (inclusive).
         if (f.status && f.status !== "SUCCESS") continue;
-        if (mountainDay(f.createdAt) !== dateYmd) continue;
+        const day = mountainDay(f.createdAt);
+        if (day < fromYmd || day > toYmd) continue;
 
         const { channel, serviceLabel } = classifyChannel(
           f.service?.serviceName ?? null,
@@ -714,19 +718,23 @@ async function fetchFulfilledForStore(
 }
 
 /**
- * All fulfilled line items across BOTH stores for a single Mountain-Time day.
- * `dateYmd` is YYYY-MM-DD. Cached per day (SWR) so re-opening the same date is
- * instant. Aggregation into the report shape is `aggregateFulfilled`'s job.
+ * All fulfilled line items across BOTH stores for a Mountain-Time date range
+ * [fromYmd, toYmd] (inclusive; YYYY-MM-DD). Pass the same value twice for a
+ * single day. Cached per (store, range) so re-opening the same window is instant.
+ * Aggregation into the report shape is `aggregateFulfilled`'s job.
  */
-export async function getFulfilledOnDate(dateYmd: string): Promise<FulfilledLineItem[]> {
-  const archery = cached(`fulfilled:archery:${dateYmd}`, () =>
-    fetchFulfilledForStore(getArcheryCreds(), "archery", dateYmd)
+export async function getFulfilledInRange(
+  fromYmd: string,
+  toYmd: string
+): Promise<FulfilledLineItem[]> {
+  const archery = cached(`fulfilled:archery:${fromYmd}:${toYmd}`, () =>
+    fetchFulfilledForStore(getArcheryCreds(), "archery", fromYmd, toYmd)
   );
 
   const beastCreds = getBeastCreds();
   const beast = beastCreds
-    ? cached(`fulfilled:beast:${dateYmd}`, () =>
-        fetchFulfilledForStore(beastCreds, "beast", dateYmd)
+    ? cached(`fulfilled:beast:${fromYmd}:${toYmd}`, () =>
+        fetchFulfilledForStore(beastCreds, "beast", fromYmd, toYmd)
       )
     : Promise.resolve([] as FulfilledLineItem[]);
 
@@ -760,7 +768,8 @@ export interface FulfilledServiceRow {
 }
 
 export interface FulfilledReport {
-  date: string;
+  from: string;
+  to: string;
   totalOrders: number;
   totalUnits: number;
   shiphero: FulfilledChannelTotals;
@@ -772,7 +781,8 @@ export interface FulfilledReport {
 
 export function aggregateFulfilled(
   items: FulfilledLineItem[],
-  date: string
+  from: string,
+  to: string
 ): FulfilledReport {
   const skuRows = new Map<string, FulfilledSkuRow>();
   const serviceRows = new Map<string, FulfilledServiceRow>();
@@ -826,7 +836,8 @@ export function aggregateFulfilled(
   }
 
   return {
-    date,
+    from,
+    to,
     totalOrders: allOrders.size,
     totalUnits,
     shiphero: { orders: shipheroOrders.size, units: channelUnits.shiphero },

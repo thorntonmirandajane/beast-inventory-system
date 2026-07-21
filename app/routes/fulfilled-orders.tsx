@@ -1,9 +1,10 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData, Form, useNavigation, Link } from "react-router";
+import { useState } from "react";
 import { requireRole } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import {
-  getFulfilledOnDate,
+  getFulfilledInRange,
   aggregateFulfilled,
   isShopifySyncing,
   type FulfilledReport,
@@ -25,22 +26,32 @@ const csvCell = (v: string | number) => {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
+// A valid YYYY-MM-DD, or null.
+function cleanYmd(v: string | null): string | null {
+  return v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireRole(request, ["ADMIN", "MANAGER"]);
   const url = new URL(request.url);
+  const today = mountainToday();
 
-  const date = url.searchParams.get("date") || mountainToday();
+  // Backwards compatible with the old single-date `?date=` links.
+  const legacy = cleanYmd(url.searchParams.get("date"));
+  let from = cleanYmd(url.searchParams.get("from")) || legacy || today;
+  let to = cleanYmd(url.searchParams.get("to")) || legacy || today;
+  if (from > to) [from, to] = [to, from]; // tolerate a reversed range
 
   let report: FulfilledReport | null = null;
   let error: string | null = null;
   try {
-    const items = await getFulfilledOnDate(date);
-    report = aggregateFulfilled(items, date);
+    const items = await getFulfilledInRange(from, to);
+    report = aggregateFulfilled(items, from, to);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
 
-  // CSV export of the per-SKU breakdown for the selected day.
+  // CSV export of the per-SKU breakdown for the selected range.
   if (report && url.searchParams.get("format") === "csv") {
     const header = ["SKU", "Product", "ShipHero", "Utah", "Total"];
     const rows = report.bySku.map((r) => [r.sku, r.title, r.shiphero, r.utah, r.total]);
@@ -48,51 +59,98 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const csv = [header, ...rows, totals]
       .map((r) => r.map(csvCell).join(","))
       .join("\n");
+    const stamp = from === to ? from : `${from}_to_${to}`;
     return new Response(csv, {
       headers: {
         "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="fulfilled-orders_${date}.csv"`,
+        "Content-Disposition": `attachment; filename="fulfilled-orders_${stamp}.csv"`,
       },
     });
   }
 
-  return { user, report, error, date, syncing: isShopifySyncing() };
+  return { user, report, error, from, to, syncing: isShopifySyncing() };
 };
 
 const num = (n: number) => n.toLocaleString();
 
-export default function FulfilledOrders() {
-  const { user, report, error, date, syncing } = useLoaderData<typeof loader>();
-  const navigation = useNavigation();
-  const isLoading = navigation.state === "loading";
-
-  const prettyDate = new Date(`${date}T12:00:00`).toLocaleDateString("en-US", {
+const fmtDay = (ymd: string) =>
+  new Date(`${ymd}T12:00:00`).toLocaleDateString("en-US", {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
   });
 
+type SortKey = "sku" | "title" | "shiphero" | "utah" | "total";
+type SortDir = "asc" | "desc";
+
+export default function FulfilledOrders() {
+  const { user, report, error, from, to, syncing } = useLoaderData<typeof loader>();
+  const navigation = useNavigation();
+  const isLoading = navigation.state === "loading";
+
+  const [sortKey, setSortKey] = useState<SortKey>("total");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Text columns default A→Z; number columns default high→low.
+      setSortDir(key === "sku" || key === "title" ? "asc" : "desc");
+    }
+  };
+
+  const sortedSkus = report
+    ? [...report.bySku].sort((a, b) => {
+        let cmp: number;
+        if (sortKey === "sku") cmp = a.sku.localeCompare(b.sku);
+        else if (sortKey === "title") cmp = a.title.localeCompare(b.title);
+        else cmp = a[sortKey] - b[sortKey];
+        if (cmp === 0) cmp = a.sku.localeCompare(b.sku); // stable tiebreak
+        return sortDir === "asc" ? cmp : -cmp;
+      })
+    : [];
+
+  const arrow = (key: SortKey) =>
+    key === sortKey ? (sortDir === "asc" ? " ▲" : " ▼") : "";
+
+  const rangeLabel =
+    from === to ? fmtDay(from) : `${fmtDay(from)} — ${fmtDay(to)}`;
+
+  const exportHref = `/fulfilled-orders?from=${from}&to=${to}&format=csv`;
+
   return (
     <Layout user={user}>
       <div className="page-header">
         <h1 className="page-title">Fulfilled Orders</h1>
         <p className="page-subtitle">
-          Orders shipped on a given day, by SKU, split by ShipHero vs. Utah (in-house).
+          Orders shipped over a date range, by SKU, split by ShipHero vs. Utah (in-house).
           Both the Bowmar Archery and Beast Broadhead stores.
         </p>
       </div>
 
-      {/* Date picker */}
+      {/* Date range + controls (single inline row) */}
       <div className="card mb-4">
         <div className="card-body">
           <Form method="get" className="flex items-end gap-3 flex-wrap">
             <div className="form-group mb-0">
-              <label className="form-label">Fulfillment date (Mountain Time)</label>
+              <label className="form-label">From (Mountain Time)</label>
               <input
                 type="date"
-                name="date"
-                defaultValue={date}
+                name="from"
+                defaultValue={from}
+                max={mountainToday()}
+                className="form-input"
+              />
+            </div>
+            <div className="form-group mb-0">
+              <label className="form-label">To</label>
+              <input
+                type="date"
+                name="to"
+                defaultValue={to}
                 max={mountainToday()}
                 className="form-input"
               />
@@ -101,11 +159,7 @@ export default function FulfilledOrders() {
               {isLoading ? "Loading…" : "View"}
             </button>
             {report && report.totalUnits > 0 && (
-              <Link
-                to={`/fulfilled-orders?date=${date}&format=csv`}
-                reloadDocument
-                className="btn btn-secondary"
-              >
+              <Link to={exportHref} reloadDocument className="btn btn-secondary">
                 Export CSV
               </Link>
             )}
@@ -124,7 +178,7 @@ export default function FulfilledOrders() {
 
       {report && (
         <>
-          <p className="text-sm text-gray-500 mb-3">{prettyDate}</p>
+          <p className="text-sm text-gray-500 mb-3">{rangeLabel}</p>
 
           {/* Summary tiles */}
           <div className="stats-grid mb-6">
@@ -149,7 +203,7 @@ export default function FulfilledOrders() {
             </div>
           </div>
 
-          {/* Per-SKU breakdown */}
+          {/* Per-SKU breakdown — click a column header to sort */}
           <div className="card mb-6">
             <div className="card-header">
               <h2 className="card-title">By SKU ({report.bySku.length})</h2>
@@ -158,15 +212,25 @@ export default function FulfilledOrders() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>SKU</th>
-                    <th>Product</th>
-                    <th className="text-right">ShipHero</th>
-                    <th className="text-right">Utah</th>
-                    <th className="text-right">Total</th>
+                    <th className="cursor-pointer select-none" onClick={() => toggleSort("sku")}>
+                      SKU{arrow("sku")}
+                    </th>
+                    <th className="cursor-pointer select-none" onClick={() => toggleSort("title")}>
+                      Product{arrow("title")}
+                    </th>
+                    <th className="cursor-pointer select-none text-right" onClick={() => toggleSort("shiphero")}>
+                      ShipHero{arrow("shiphero")}
+                    </th>
+                    <th className="cursor-pointer select-none text-right" onClick={() => toggleSort("utah")}>
+                      Utah{arrow("utah")}
+                    </th>
+                    <th className="cursor-pointer select-none text-right" onClick={() => toggleSort("total")}>
+                      Total{arrow("total")}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {report.bySku.map((r) => (
+                  {sortedSkus.map((r) => (
                     <tr key={r.sku}>
                       <td className="font-mono text-sm">{r.sku}</td>
                       <td className="text-sm">{r.title}</td>
@@ -178,7 +242,7 @@ export default function FulfilledOrders() {
                   {report.bySku.length === 0 && (
                     <tr>
                       <td colSpan={5} className="text-center text-gray-500 py-6">
-                        No orders were fulfilled on this day.
+                        No orders were fulfilled in this range.
                       </td>
                     </tr>
                   )}
