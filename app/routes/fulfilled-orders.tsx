@@ -22,6 +22,14 @@ interface TransferCandidate {
   available: number; // completed on-hand at Gallatin, the transfer ceiling
 }
 
+// A Utah-fulfilled SKU that can't go on a transfer, and why.
+interface ExcludedSku {
+  sku: string;
+  title: string;
+  utah: number;
+  reason: "not-completed" | "no-stock"; // not a completed product, or 0 at Gallatin
+}
+
 // Today's calendar day in US Mountain Time (matches how fulfillments are bucketed).
 const MT_TODAY_FMT = new Intl.DateTimeFormat("en-CA", {
   timeZone: "America/Denver",
@@ -91,8 +99,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Build the "Create Transfer" candidates: SKUs fulfilled in-house (Utah) that
   // map to an active COMPLETED product with on-hand stock at Gallatin. Same
   // eligibility rule the Transfers tab uses, so the /transfers action accepts them.
+  // Anything not transferable is captured in `excludedSkus` with the reason, so the
+  // difference between "Utah fulfilled" and "units transferred" is explainable.
   let transferCandidates: TransferCandidate[] = [];
-  let ineligibleCount = 0;
+  let excludedSkus: ExcludedSku[] = [];
   if (report) {
     const utahRows = report.bySku.filter((r) => r.utah > 0);
     const skuStrings = utahRows.map((r) => r.sku);
@@ -125,7 +135,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           available: match.available,
         });
       } else {
-        ineligibleCount++; // not a stocked completed product — can't be transferred
+        excludedSkus.push({
+          sku: r.sku,
+          title: r.title,
+          utah: r.utah,
+          reason: match ? "no-stock" : "not-completed",
+        });
       }
     }
   }
@@ -138,7 +153,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     to,
     syncing: isShopifySyncing(),
     transferCandidates,
-    ineligibleCount,
+    excludedSkus,
     debug,
   };
 };
@@ -157,7 +172,7 @@ type SortKey = "sku" | "title" | "shiphero" | "utah" | "total";
 type SortDir = "asc" | "desc";
 
 export default function FulfilledOrders() {
-  const { user, report, error, from, to, syncing, transferCandidates, ineligibleCount, debug } =
+  const { user, report, error, from, to, syncing, transferCandidates, excludedSkus, debug } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
@@ -211,6 +226,19 @@ export default function FulfilledOrders() {
     qty: Math.min(c.utah, c.available),
   }));
   const totalTransferUnits = transferDefaults.reduce((s, c) => s + c.qty, 0);
+
+  // Accounting for the gap between "Utah fulfilled" and "units transferred":
+  const totalUtahUnits = report?.utah.units ?? 0;
+  const cappedUnits = transferDefaults.reduce((s, c) => s + Math.max(0, c.utah - c.available), 0);
+  const notCompletedUnits = excludedSkus
+    .filter((e) => e.reason === "not-completed")
+    .reduce((s, e) => s + e.utah, 0);
+  const noStockUnits = excludedSkus
+    .filter((e) => e.reason === "no-stock")
+    .reduce((s, e) => s + e.utah, 0);
+  const notCompletedCount = excludedSkus.filter((e) => e.reason === "not-completed").length;
+  const noStockCount = excludedSkus.filter((e) => e.reason === "no-stock").length;
+  const [showExcluded, setShowExcluded] = useState(false);
 
   return (
     <Layout user={user}>
@@ -466,18 +494,77 @@ export default function FulfilledOrders() {
                   <button className="btn btn-primary" onClick={() => setShowTransfer(true)}>
                     Create Transfer
                   </button>
-                  {ineligibleCount > 0 && (
-                    <p className="text-xs text-gray-500 mt-2">
-                      {ineligibleCount} Utah-fulfilled SKU{ineligibleCount === 1 ? "" : "s"} aren't
-                      stocked completed products and were left out.
-                    </p>
-                  )}
                 </>
               ) : (
-                <p className="text-sm text-gray-500">
-                  No in-house (Utah) fulfillments in this range map to stocked completed products,
-                  so there's nothing to transfer.
+                <p className="text-sm text-gray-500 mb-2">
+                  None of this range's in-house (Utah) fulfillments map to a stocked completed
+                  product at Gallatin, so there's nothing to transfer.
                 </p>
+              )}
+
+              {/* Accounting: why "units transferred" is less than "Utah fulfilled" */}
+              {excludedSkus.length + (cappedUnits > 0 ? 1 : 0) > 0 && (
+                <div className="mt-4 text-sm text-gray-600 border-t border-gray-100 pt-3">
+                  <div className="mb-1">
+                    Of <b>{num(totalUtahUnits)}</b> units fulfilled in-house (Utah),{" "}
+                    <b>{num(totalTransferUnits)}</b> can transfer. The rest can't come off Gallatin
+                    stock:
+                  </div>
+                  <ul className="list-disc ml-5 space-y-0.5 text-gray-500">
+                    {notCompletedUnits > 0 && (
+                      <li>
+                        {num(notCompletedUnits)} units ({notCompletedCount} SKU
+                        {notCompletedCount === 1 ? "" : "s"}) — not completed products built at
+                        Gallatin
+                      </li>
+                    )}
+                    {noStockUnits > 0 && (
+                      <li>
+                        {num(noStockUnits)} units ({noStockCount} SKU{noStockCount === 1 ? "" : "s"})
+                        — no on-hand stock at Gallatin
+                      </li>
+                    )}
+                    {cappedUnits > 0 && (
+                      <li>{num(cappedUnits)} units — capped to what's on hand at Gallatin</li>
+                    )}
+                  </ul>
+                  {excludedSkus.length > 0 && (
+                    <button
+                      className="btn btn-ghost btn-sm mt-2"
+                      onClick={() => setShowExcluded((v) => !v)}
+                    >
+                      {showExcluded ? "Hide" : "Show"} left-out SKUs ({excludedSkus.length})
+                    </button>
+                  )}
+                  {showExcluded && (
+                    <div className="overflow-x-auto mt-2">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>SKU</th>
+                            <th>Product</th>
+                            <th className="text-right">Utah units</th>
+                            <th>Reason</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {excludedSkus.map((e) => (
+                            <tr key={e.sku}>
+                              <td className="font-mono text-sm">{e.sku}</td>
+                              <td className="text-sm">{e.title}</td>
+                              <td className="text-right">{num(e.utah)}</td>
+                              <td className="text-sm text-gray-500">
+                                {e.reason === "not-completed"
+                                  ? "Not a completed product at Gallatin"
+                                  : "No Gallatin stock on hand"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
