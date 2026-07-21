@@ -765,6 +765,79 @@ export async function getFulfilledInRange(
 }
 
 // ============================================================
+// Diagnostic: dump the raw fulfillments + ALL timeline events (appTitle +
+// message) for orders in a range, optionally filtered to a SKU. Used to see
+// exactly which field/text identifies a ShipHero fulfillment. Not cached.
+// ============================================================
+
+export interface DebugOrder {
+  store: StoreSource;
+  orderName: string;
+  fulfillments: { createdAt: string; location: string | null; skus: string[] }[];
+  events: { createdAt: string; appTitle: string | null; message: string }[];
+}
+
+export async function getFulfilledDebug(
+  fromYmd: string,
+  toYmd: string,
+  skuNeedle?: string
+): Promise<DebugOrder[]> {
+  const stores: [StoreCreds, StoreSource][] = [[getArcheryCreds(), "archery"]];
+  const beast = getBeastCreds();
+  if (beast) stores.push([beast, "beast"]);
+
+  const needle = skuNeedle?.trim().toLowerCase() || null;
+  const out: DebugOrder[] = [];
+  const MAX = 15;
+
+  for (const [creds, source] of stores) {
+    if (out.length >= MAX) break;
+    const { startIso, endIso } = updatedWindowUtc(fromYmd, toYmd);
+    const q = `updated_at:>=${startIso} updated_at:<=${endIso}`;
+    let cursor: string | null = null;
+
+    while (out.length < MAX) {
+      const data: any = await shopifyGraphQL(FULFILLED_QUERY, { cursor, q }, creds);
+      const orders = data.orders;
+      if (!orders) break;
+
+      for (const oe of orders.edges) {
+        const order = oe.node;
+        if (order.cancelledAt) continue;
+
+        const fulfillments: DebugOrder["fulfillments"] = [];
+        for (const f of order.fulfillments ?? []) {
+          if (f.status && f.status !== "SUCCESS") continue;
+          const day = mountainDay(f.createdAt);
+          if (day < fromYmd || day > toYmd) continue;
+          const skus = (f.fulfillmentLineItems?.edges ?? []).map(
+            (e: any) => `${e.node.lineItem?.sku ?? "?"} ×${e.node.quantity}`
+          );
+          fulfillments.push({ createdAt: f.createdAt, location: f.location?.name ?? null, skus });
+        }
+        if (!fulfillments.length) continue;
+        if (needle && !fulfillments.some((f) => f.skus.some((s) => s.toLowerCase().includes(needle))))
+          continue;
+
+        const events = (order.events?.edges ?? []).map((e: any) => ({
+          createdAt: e.node.createdAt,
+          appTitle: (e.node.appTitle ?? null) as string | null,
+          message: String(e.node.message ?? "").replace(/<[^>]+>/g, "").trim().slice(0, 160),
+        }));
+
+        out.push({ store: source, orderName: order.name, fulfillments, events });
+        if (out.length >= MAX) break;
+      }
+
+      if (!orders.pageInfo.hasNextPage) break;
+      cursor = orders.pageInfo.endCursor;
+    }
+  }
+
+  return out;
+}
+
+// ============================================================
 // Aggregate fulfilled line items into the report shape the tab renders.
 // ============================================================
 

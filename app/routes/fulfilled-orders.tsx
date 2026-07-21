@@ -7,8 +7,10 @@ import prisma from "../db.server";
 import {
   getFulfilledInRange,
   aggregateFulfilled,
+  getFulfilledDebug,
   isShopifySyncing,
   type FulfilledReport,
+  type DebugOrder,
 } from "../utils/shopify.server";
 
 // A completed SKU fulfilled in-house (Utah) that we can pre-fill into a transfer.
@@ -52,9 +54,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let to = cleanYmd(url.searchParams.get("to")) || legacy || today;
   if (from > to) [from, to] = [to, from]; // tolerate a reversed range
 
+  // Diagnostic: ?debug=1 dumps raw events for all orders in range; ?debug=NB-GREEN
+  // filters to orders fulfilling that SKU. Lets us see what identifies ShipHero.
+  const debugParam = url.searchParams.get("debug");
+  let debug: DebugOrder[] | null = null;
+
   let report: FulfilledReport | null = null;
   let error: string | null = null;
   try {
+    if (debugParam) {
+      debug = await getFulfilledDebug(from, to, debugParam === "1" ? undefined : debugParam);
+    }
     const items = await getFulfilledInRange(from, to);
     report = aggregateFulfilled(items, from, to);
   } catch (e) {
@@ -129,6 +139,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     syncing: isShopifySyncing(),
     transferCandidates,
     ineligibleCount,
+    debug,
   };
 };
 
@@ -146,7 +157,7 @@ type SortKey = "sku" | "title" | "shiphero" | "utah" | "total";
 type SortDir = "asc" | "desc";
 
 export default function FulfilledOrders() {
-  const { user, report, error, from, to, syncing, transferCandidates, ineligibleCount } =
+  const { user, report, error, from, to, syncing, transferCandidates, ineligibleCount, debug } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
@@ -235,17 +246,23 @@ export default function FulfilledOrders() {
                 className="form-input"
               />
             </div>
-            <button type="submit" className="btn btn-primary" disabled={isLoading}>
-              {isLoading ? "Loading…" : "View"}
-            </button>
-            {report && report.totalUnits > 0 && (
-              <Link to={exportHref} reloadDocument className="btn btn-secondary">
-                Export CSV
-              </Link>
-            )}
-            {syncing && (
-              <span className="badge badge-blue">Syncing with Shopify… refresh in a moment</span>
-            )}
+            {/* Spacer label keeps the buttons on the same line as the date boxes. */}
+            <div className="form-group mb-0">
+              <label className="form-label" aria-hidden="true">&nbsp;</label>
+              <div className="flex items-center gap-3">
+                <button type="submit" className="btn btn-primary" disabled={isLoading}>
+                  {isLoading ? "Loading…" : "View"}
+                </button>
+                {report && report.totalUnits > 0 && (
+                  <Link to={exportHref} reloadDocument className="btn btn-secondary">
+                    Export CSV
+                  </Link>
+                )}
+                {syncing && (
+                  <span className="badge badge-blue">Syncing with Shopify… refresh in a moment</span>
+                )}
+              </div>
+            </div>
           </Form>
         </div>
       </div>
@@ -253,6 +270,45 @@ export default function FulfilledOrders() {
       {error && (
         <div className="alert alert-error mb-4">
           Couldn't load fulfillments from Shopify: {error}
+        </div>
+      )}
+
+      {debug && (
+        <div className="card mb-4">
+          <div className="card-header">
+            <h2 className="card-title">Diagnostic — raw timeline events ({debug.length} orders)</h2>
+          </div>
+          <div className="card-body">
+            <p className="text-xs text-gray-500 mb-3">
+              For each order: its in-range fulfillments (location + SKUs) and every timeline
+              event with its app + message. Look for what marks a ShipHero order.
+            </p>
+            {debug.length === 0 && (
+              <p className="text-sm text-gray-500">No matching orders in this range.</p>
+            )}
+            {debug.map((o, i) => (
+              <div key={i} className="mb-4 pb-4 border-b border-gray-100 last:border-0">
+                <div className="font-mono text-sm font-bold">
+                  {o.orderName} <span className="text-gray-400">({o.store})</span>
+                </div>
+                {o.fulfillments.map((f, j) => (
+                  <div key={j} className="text-xs text-gray-600 mt-1">
+                    fulfillment @ {f.createdAt} · location: <b>{f.location ?? "—"}</b> ·{" "}
+                    {f.skus.join(", ")}
+                  </div>
+                ))}
+                <div className="mt-2 space-y-0.5">
+                  {o.events.map((e, k) => (
+                    <div key={k} className="text-xs font-mono">
+                      <span className="text-blue-700">[{e.appTitle ?? "no-app"}]</span>{" "}
+                      <span className="text-gray-400">{e.createdAt.slice(0, 19)}</span>{" "}
+                      {e.message}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
