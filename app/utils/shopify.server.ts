@@ -549,13 +549,13 @@ export interface FulfilledLineItem {
   locationName: string | null; // where it shipped from — "Utah" for both channels
 }
 
-// Substrings (case-insensitive) in the fulfillment SERVICE / app name that mark a
-// fulfillment as ShipHero. Per the Shopify order timeline, ShipHero fulfillments
-// read "ShipHero Inventory & Shipping marked … as fulfilled from Utah", while
-// in-house ones read "OD Auto-Fulfill marked …" — the LOCATION is "Utah" for both,
-// so location can't be the signal; only the service/app name can. Everything that
-// doesn't match here is treated as Utah (in-house). Override with
-// SHIPHERO_SERVICE_MATCH="shiphero,..." if the service is named differently.
+// Substrings (case-insensitive) that identify ShipHero as the app that fulfilled
+// an order. The signal is the TIMELINE EVENT that created the fulfillment, whose
+// actor is "ShipHero Inventory & Shipping" (vs. "OD Auto-Fulfill" or a staff
+// member for in-house). Shopify's structured `service` is "Manual" and the
+// location is "Utah" for BOTH, so neither can distinguish them — only the event's
+// app (`appTitle`) / message can. Everything that doesn't match here is treated as
+// Utah (in-house). Override with SHIPHERO_SERVICE_MATCH="shiphero,..." if needed.
 function shipheroMatchers(): string[] {
   const raw = process.env.SHIPHERO_SERVICE_MATCH;
   if (raw && raw.trim()) {
@@ -564,15 +564,29 @@ function shipheroMatchers(): string[] {
   return ["shiphero"];
 }
 
-function classifyChannel(
-  serviceName: string | null,
-  serviceHandle: string | null
-): { channel: FulfillmentChannel; serviceLabel: string } {
-  // Match ONLY on the service/app identity — never the location (always "Utah").
-  const haystack = [serviceName, serviceHandle].filter(Boolean).join(" ").toLowerCase();
-  const isShiphero = shipheroMatchers().some((m) => haystack.includes(m));
-  const serviceLabel = serviceName || serviceHandle || "Manual / in-house";
-  return { channel: isShiphero ? "shiphero" : "utah", serviceLabel };
+function isShipheroActor(appTitle: string | null, message: string | null): boolean {
+  const hay = `${appTitle ?? ""} ${message ?? ""}`.toLowerCase();
+  return shipheroMatchers().some((m) => hay.includes(m));
+}
+
+// A short "who fulfilled this" label: prefer the app title Shopify records on the
+// event, else the actor text before "marked"/"fulfilled" in the message.
+function fulfillmentActorLabel(appTitle: string | null, message: string | null): string {
+  if (appTitle && appTitle.trim()) return appTitle.trim();
+  const text = (message ?? "").replace(/<[^>]+>/g, "").trim();
+  const lower = text.toLowerCase();
+  for (const b of [" marked ", " fulfilled ", " created "]) {
+    const i = lower.indexOf(b);
+    if (i > 0) return text.slice(0, i).trim();
+  }
+  return text ? (text.length > 60 ? `${text.slice(0, 57)}…` : text) : "Manual / in-house";
+}
+
+// A timeline event that created a fulfillment (as opposed to shipping-email,
+// archive, note, etc. events). Shopify phrases these as
+// "<actor> marked N item(s) as fulfilled from <location>".
+function isFulfillmentCreationEvent(message: string | null): boolean {
+  return !!message && /fulfilled/i.test(message) && /(marked|fulfill)/i.test(message);
 }
 
 // Format a UTC instant as its calendar day (YYYY-MM-DD) in US Mountain Time,
@@ -605,37 +619,36 @@ function updatedWindowUtc(fromYmd: string, toYmd: string): { startIso: string; e
   return { startIso: start.toISOString(), endIso: end.toISOString() };
 }
 
-// `Fulfillment.service` is not available on every store/API combo. Once a store
-// rejects it we fall back to a location-only query for the rest of the session.
-let fulfillmentServiceUnavailable = false;
-
-function fulfilledQuery(withService: boolean): string {
-  const serviceField = withService ? "service { serviceName handle }" : "";
-  return `
-    query($cursor: String, $q: String) {
-      orders(first: 100, after: $cursor, query: $q, sortKey: UPDATED_AT) {
-        pageInfo { hasNextPage endCursor }
-        edges {
-          node {
+// We read each order's timeline `events` to learn which app created each
+// fulfillment (`appTitle`). The `message` is a formatted string we also scan as a
+// backstop. 25 events comfortably covers the fulfillment activity on a typical
+// order without blowing up the query cost.
+const FULFILLED_QUERY = `
+  query($cursor: String, $q: String) {
+    orders(first: 100, after: $cursor, query: $q, sortKey: UPDATED_AT) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          name
+          cancelledAt
+          fulfillments(first: 10) {
             id
-            name
-            cancelledAt
-            fulfillments(first: 10) {
-              id
-              status
-              createdAt
-              ${serviceField}
-              location { name }
-              fulfillmentLineItems(first: 100) {
-                edges { node { quantity lineItem { sku title } } }
-              }
+            status
+            createdAt
+            location { name }
+            fulfillmentLineItems(first: 100) {
+              edges { node { quantity lineItem { sku title } } }
             }
+          }
+          events(first: 25, sortKey: CREATED_AT, reverse: true) {
+            edges { node { id createdAt appTitle message } }
           }
         }
       }
     }
-  `;
-}
+  }
+`;
 
 async function fetchFulfilledForStore(
   creds: StoreCreds,
@@ -649,25 +662,7 @@ async function fetchFulfilledForStore(
   let cursor: string | null = null;
 
   while (true) {
-    let data: any;
-    try {
-      data = await shopifyGraphQL(
-        fulfilledQuery(!fulfillmentServiceUnavailable),
-        { cursor, q },
-        creds
-      );
-    } catch (err) {
-      // If this store/API doesn't expose Fulfillment.service, retry without it
-      // and remember for the session. (Without a service name everything falls to
-      // Utah, so the transparency table will make that obvious if it ever happens.)
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!fulfillmentServiceUnavailable && /service/i.test(msg)) {
-        fulfillmentServiceUnavailable = true;
-        data = await shopifyGraphQL(fulfilledQuery(false), { cursor, q }, creds);
-      } else {
-        throw err;
-      }
-    }
+    const data: any = await shopifyGraphQL(FULFILLED_QUERY, { cursor, q }, creds);
 
     const orders = data.orders;
     if (!orders) break;
@@ -675,6 +670,20 @@ async function fetchFulfilledForStore(
     for (const orderEdge of orders.edges) {
       const order = orderEdge.node;
       if (order.cancelledAt) continue; // canceled orders didn't really ship
+
+      // The order's fulfillment-creation timeline events, with the app that made
+      // each one. We match a fulfillment to its event by nearest createdAt, so a
+      // split order (some items shipped by ShipHero, some in-house) classifies
+      // each fulfillment correctly.
+      const fulfillEvents = (order.events?.edges ?? [])
+        .map((e: any) => e.node)
+        .filter((n: any) => isFulfillmentCreationEvent(n?.message))
+        .map((n: any) => ({
+          at: Date.parse(n.createdAt),
+          appTitle: (n.appTitle ?? null) as string | null,
+          message: (n.message ?? null) as string | null,
+        }));
+
       for (const f of order.fulfillments ?? []) {
         // Only count fulfillments that actually shipped (success), whose MT day
         // falls within the requested [from, to] range (inclusive).
@@ -682,10 +691,23 @@ async function fetchFulfilledForStore(
         const day = mountainDay(f.createdAt);
         if (day < fromYmd || day > toYmd) continue;
 
-        const { channel, serviceLabel } = classifyChannel(
-          f.service?.serviceName ?? null,
-          f.service?.handle ?? null
-        );
+        // Find the creation event closest in time to this fulfillment.
+        const fAt = Date.parse(f.createdAt);
+        let best: { at: number; appTitle: string | null; message: string | null } | null = null;
+        let bestDiff = Infinity;
+        for (const ev of fulfillEvents) {
+          const diff = Math.abs(ev.at - fAt);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            best = ev;
+          }
+        }
+
+        const channel: FulfillmentChannel =
+          best && isShipheroActor(best.appTitle, best.message) ? "shiphero" : "utah";
+        const serviceLabel = best
+          ? fulfillmentActorLabel(best.appTitle, best.message)
+          : "Manual / in-house";
         const locationName = f.location?.name ?? null;
 
         for (const liEdge of f.fulfillmentLineItems?.edges ?? []) {
