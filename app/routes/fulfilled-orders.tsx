@@ -19,7 +19,7 @@ interface TransferCandidate {
   sku: string;
   name: string;
   utah: number; // units fulfilled in-house in the range (the pre-filled quantity)
-  available: number; // completed on-hand at Gallatin, the transfer ceiling
+  available: number; // completed packs on hand (COMPLETED inventory), transfer ceiling
 }
 
 // A Utah-fulfilled SKU that can't go on a transfer, and why.
@@ -27,7 +27,7 @@ interface ExcludedSku {
   sku: string;
   title: string;
   utah: number;
-  reason: "not-completed" | "no-stock"; // not a completed product, or 0 at Gallatin
+  reason: "not-completed" | "no-stock"; // not a completed product, or 0 packs on hand
 }
 
 // Today's calendar day in US Mountain Time (matches how fulfillments are bucketed).
@@ -97,7 +97,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   // Build the "Create Transfer" candidates: SKUs fulfilled in-house (Utah) that
-  // map to an active COMPLETED product with on-hand stock at Gallatin. Same
+  // map to an active COMPLETED product with completed packs on hand. Same
   // eligibility rule the Transfers tab uses, so the /transfers action accepts them.
   // Anything not transferable is captured in `excludedSkus` with the reason, so the
   // difference between "Utah fulfilled" and "units transferred" is explainable.
@@ -220,7 +220,7 @@ export default function FulfilledOrders() {
 
   const exportHref = `/fulfilled-orders?from=${from}&to=${to}&format=csv`;
 
-  // Pre-filled transfer quantities: the Utah units, capped at Gallatin on-hand.
+  // Pre-filled transfer quantities: the Utah units, capped at completed packs on hand.
   const transferDefaults = transferCandidates.map((c) => ({
     ...c,
     qty: Math.min(c.utah, c.available),
@@ -238,7 +238,7 @@ export default function FulfilledOrders() {
     .reduce((s, e) => s + e.utah, 0);
   const notCompletedCount = excludedSkus.filter((e) => e.reason === "not-completed").length;
   const noStockCount = excludedSkus.filter((e) => e.reason === "no-stock").length;
-  const [showExcluded, setShowExcluded] = useState(false);
+  const [showExcluded, setShowExcluded] = useState(true);
 
   return (
     <Layout user={user}>
@@ -497,8 +497,8 @@ export default function FulfilledOrders() {
                 </>
               ) : (
                 <p className="text-sm text-gray-500 mb-2">
-                  None of this range's in-house (Utah) fulfillments map to a stocked completed
-                  product at Gallatin, so there's nothing to transfer.
+                  None of this range's in-house (Utah) fulfillments map to a completed product
+                  with packs on hand in your inventory, so there's nothing to transfer.
                 </p>
               )}
 
@@ -507,25 +507,25 @@ export default function FulfilledOrders() {
                 <div className="mt-4 text-sm text-gray-600 border-t border-gray-100 pt-3">
                   <div className="mb-1">
                     Of <b>{num(totalUtahUnits)}</b> units fulfilled in-house (Utah),{" "}
-                    <b>{num(totalTransferUnits)}</b> can transfer. The rest can't come off Gallatin
-                    stock:
+                    <b>{num(totalTransferUnits)}</b> can transfer. The rest can't come off your
+                    completed packs:
                   </div>
                   <ul className="list-disc ml-5 space-y-0.5 text-gray-500">
                     {notCompletedUnits > 0 && (
                       <li>
                         {num(notCompletedUnits)} units ({notCompletedCount} SKU
-                        {notCompletedCount === 1 ? "" : "s"}) — not completed products built at
-                        Gallatin
+                        {notCompletedCount === 1 ? "" : "s"}) — not completed products in your
+                        inventory
                       </li>
                     )}
                     {noStockUnits > 0 && (
                       <li>
                         {num(noStockUnits)} units ({noStockCount} SKU{noStockCount === 1 ? "" : "s"})
-                        — no on-hand stock at Gallatin
+                        — no completed packs on hand
                       </li>
                     )}
                     {cappedUnits > 0 && (
-                      <li>{num(cappedUnits)} units — capped to what's on hand at Gallatin</li>
+                      <li>{num(cappedUnits)} units — capped to completed packs on hand</li>
                     )}
                   </ul>
                   {excludedSkus.length > 0 && (
@@ -555,8 +555,8 @@ export default function FulfilledOrders() {
                               <td className="text-right">{num(e.utah)}</td>
                               <td className="text-sm text-gray-500">
                                 {e.reason === "not-completed"
-                                  ? "Not a completed product at Gallatin"
-                                  : "No Gallatin stock on hand"}
+                                  ? "Not a completed product in your inventory"
+                                  : "No completed packs on hand"}
                               </td>
                             </tr>
                           ))}
@@ -586,8 +586,8 @@ export default function FulfilledOrders() {
               <input type="hidden" name="intent" value="create" />
               <h2 className="text-lg font-bold mb-1">Confirm Transfer</h2>
               <p className="text-sm text-gray-500 mb-4">
-                Review the details below. This deducts the quantities from Gallatin completed
-                inventory when submitted.
+                Review the details below. Submitting removes these quantities from your completed
+                packs (COMPLETED inventory), same as a transfer on the Transfers tab.
               </p>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
@@ -630,7 +630,7 @@ export default function FulfilledOrders() {
                       <th>SKU</th>
                       <th>Name</th>
                       <th className="text-right">Utah fulfilled</th>
-                      <th className="text-right">Available</th>
+                      <th className="text-right">Packs on hand</th>
                       <th className="w-28 text-right">Quantity</th>
                     </tr>
                   </thead>
@@ -661,7 +661,7 @@ export default function FulfilledOrders() {
               </div>
               {transferDefaults.some((c) => c.available < c.utah) && (
                 <p className="text-xs text-amber-600 mb-4">
-                  Some SKUs have less on-hand at Gallatin than was fulfilled in-house, so their
+                  Some SKUs have fewer completed packs on hand than were fulfilled in-house, so their
                   quantity was capped at what's available. Adjust as needed.
                 </p>
               )}
