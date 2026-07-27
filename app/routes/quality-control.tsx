@@ -318,17 +318,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const entryId = formData.get("entryId") as string;
     const line = await prisma.timeEntryLine.findUnique({ where: { id: lineId } });
     if (!line) return { error: "Task line not found." };
-    await prisma.timeEntryLine.delete({ where: { id: lineId } });
 
-    // Recompute expected/efficiency from the remaining lines.
-    const entry = await prisma.workerTimeEntry.findUnique({ where: { id: entryId }, include: { lines: true } });
-    if (entry) {
-      const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
-      const efficiency = trackableEfficiency(expectedMinutes, entry.actualMinutes, entry.miscMinutes);
-      await prisma.workerTimeEntry.update({ where: { id: entryId }, data: { expectedMinutes, efficiency } });
-    }
-    await createAuditLog(user.id, "QC_DELETE_LINE", "WorkerTimeEntry", entryId, { lineId, processName: line.processName });
-    return { success: true, message: "Task removed from this entry." };
+    const warnings: string[] = [];
+    await prisma.$transaction(async (tx) => {
+      // If this line already moved inventory, pull it back out before removing it.
+      if (line.inventoryApplied && line.skuId && !line.isMisc) {
+        const base = line.adminAdjustedQuantity ?? line.quantityCompleted;
+        const finalQty = line.isRejected ? 0 : base - (line.rejectionQuantity ?? 0);
+        const rejectedQty = line.isRejected ? base : line.rejectionQuantity ?? 0;
+        const opts = { relatedResource: entryId, relatedResourceType: "TIME_ENTRY", processName: line.processName, performedById: user.id, notes: "Reversed: task removed" };
+        if (finalQty > 0) {
+          const r = await reverseProduction(line.skuId, finalQty, opts, tx);
+          warnings.push(...r.warnings);
+        }
+        if (rejectedQty > 0) await restoreComponents(line.skuId, rejectedQty, opts, tx);
+      }
+
+      await tx.timeEntryLine.delete({ where: { id: lineId } });
+
+      const entry = await tx.workerTimeEntry.findUnique({ where: { id: entryId }, include: { lines: true } });
+      if (entry) {
+        const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
+        const efficiency = trackableEfficiency(expectedMinutes, entry.actualMinutes, entry.miscMinutes);
+        await tx.workerTimeEntry.update({ where: { id: entryId }, data: { expectedMinutes, efficiency } });
+      }
+    });
+    await createAuditLog(user.id, "QC_DELETE_LINE", "WorkerTimeEntry", entryId, { lineId, processName: line.processName, reversed: line.inventoryApplied });
+    return {
+      success: true,
+      message: line.inventoryApplied ? "Task removed — its inventory was reversed." : "Task removed from this entry.",
+      warnings: warnings.length ? warnings : undefined,
+    };
   }
 
   if (intent === "edit-line-sku") {
