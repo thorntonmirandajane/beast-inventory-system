@@ -267,11 +267,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   console.log("[SKU Detail] Getting inventory logs...");
   // Get inventory movement logs for this SKU
-  const inventoryLogs = await prisma.inventoryLog.findMany({
+  const inventoryLogsRaw = await prisma.inventoryLog.findMany({
     where: { skuId: sku.id },
     orderBy: { createdAt: "desc" },
     take: 50,
   });
+  // Resolve who performed each movement (the worker on the source time entry).
+  const performerIds = Array.from(new Set(inventoryLogsRaw.map((l) => l.performedById).filter((x): x is string => !!x)));
+  const performers = performerIds.length
+    ? await prisma.user.findMany({ where: { id: { in: performerIds } }, select: { id: true, firstName: true, lastName: true } })
+    : [];
+  const performerMap = new Map(performers.map((p) => [p.id, `${p.firstName} ${p.lastName}`]));
+  const inventoryLogs = inventoryLogsRaw.map((l) => ({
+    ...l,
+    performedByName: l.performedById ? performerMap.get(l.performedById) ?? null : null,
+  }));
 
   console.log("[SKU Detail] Loader completed successfully");
     return {
@@ -1254,11 +1264,21 @@ export default function SkuDetail() {
                           </td>
                           <td className="text-sm">
                             {log.relatedResourceType && log.relatedResource ? (
-                              <span className="text-blue-600">
-                                {log.relatedResourceType}
-                              </span>
+                              log.relatedResourceType === "TIME_ENTRY" ? (
+                                <Link to={`/quality-control?entryId=${log.relatedResource}`} className="text-blue-600 hover:underline">
+                                  {log.relatedResourceType} ↗
+                                </Link>
+                              ) : (
+                                <span className="text-blue-600">{log.relatedResourceType}</span>
+                              )
                             ) : (
                               <span className="text-gray-400">—</span>
+                            )}
+                            {log.performedByName && (
+                              <div className="text-xs text-gray-500">
+                                {log.action === "CONSUMED" || log.action === "DISPOSED" ? "consumed by " : "by "}
+                                {log.performedByName}
+                              </div>
                             )}
                           </td>
                           <td className="text-sm max-w-xs truncate">
