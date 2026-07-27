@@ -112,7 +112,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       movementPreview = [];
     }
 
-    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs, assignableSkus, justApproved: false, movementPreview };
+    // Full audit trail for this entry (submit → approve → any edits/reopens).
+    const auditLogs = await prisma.auditLog.findMany({
+      where: { resourceType: "WorkerTimeEntry", resourceId: entryId },
+      orderBy: { createdAt: "asc" },
+      include: { user: { select: { firstName: true, lastName: true } } },
+    });
+
+    return { user, timeEntry, tab, entryId, timeEntries: null, processConfigs, assignableSkus, justApproved: false, movementPreview, auditLogs };
   }
 
   // List view
@@ -170,7 +177,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Check if we just approved an entry
   const justApproved = url.searchParams.get("approved") === "true";
 
-  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs, assignableSkus: [], justApproved, movementPreview: [] };
+  return { user, timeEntries, tab, entryId: null, timeEntry: null, processConfigs, assignableSkus: [], justApproved, movementPreview: [], auditLogs: [] as any[] };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -954,7 +961,7 @@ function MiscTimeForm({ entryId, miscMinutes }: { entryId: string; miscMinutes: 
 }
 
 export default function QualityControl() {
-  const { user, timeEntries, timeEntry, tab, entryId, processConfigs, assignableSkus, justApproved, movementPreview } = useLoaderData<typeof loader>();
+  const { user, timeEntries, timeEntry, tab, entryId, processConfigs, assignableSkus, justApproved, movementPreview, auditLogs } = useLoaderData<typeof loader>();
   const overallEff =
     timeEntry && timeEntry.expectedMinutes != null && timeEntry.actualMinutes
       ? (timeEntry.expectedMinutes / timeEntry.actualMinutes) * 100
@@ -1328,6 +1335,49 @@ export default function QualityControl() {
                   <input type="hidden" name="tab" value={tab} />
                   <button type="submit" className="btn btn-error">Delete Entry</button>
                 </Form>
+              </div>
+            </div>
+          </div>
+
+          {/* Audit Log — full history for self-auditing */}
+          <div className="card mb-6">
+            <div className="card-header">
+              <h3 className="card-title">Audit Log</h3>
+              <p className="text-sm text-gray-500">Everything that happened to this entry — submit, approve, and any edits.</p>
+            </div>
+            <div className="card-body">
+              <div className="space-y-2 text-sm">
+                <div className="flex items-start gap-3 border-b pb-2">
+                  <span className="text-gray-400 whitespace-nowrap">{formatDateTime(timeEntry.clockInTime)}</span>
+                  <span className="font-medium">{timeEntry.user.firstName} {timeEntry.user.lastName}</span>
+                  <span className="text-gray-600">
+                    Submitted — clock {formatDateTime(timeEntry.clockInTime)} → {timeEntry.clockOutTime ? formatDateTime(timeEntry.clockOutTime) : "open"}
+                  </span>
+                </div>
+                {auditLogs.map((log: any) => {
+                  const d = log.details || {};
+                  const desc =
+                    log.action === "APPROVE_TIME_ENTRY" ? "Approved" :
+                    log.action === "QC_ADD_LINE" ? `Task added — ${getProcessDisplay(d.processName)} ${d.quantity ?? ""} units` :
+                    log.action === "QC_DELETE_LINE" ? `Task removed — ${getProcessDisplay(d.processName)}` :
+                    log.action === "QC_EDIT_LINE_SKU" ? `SKU corrected — ${d.from ?? "?"} → ${d.toProcess ? getProcessDisplay(d.toProcess) : "?"} (${d.qty ?? ""})` :
+                    log.action === "EDIT_TIME_ENTRY_TIMES" ? `Shift times edited — clock ${d.clockIn ? new Date(d.clockIn).toLocaleTimeString() : "?"} → ${d.clockOut ? new Date(d.clockOut).toLocaleTimeString() : "?"}` :
+                    log.action === "SET_MISC_TIME" ? `Misc time set to ${d.miscMinutes ?? 0} min` :
+                    log.action === "REOPEN_TIME_ENTRY" ? "Re-opened to pending" :
+                    log.action === "REJECT_TASK" ? "Task rejected" :
+                    log.action === "ADJUST_QUANTITY" ? `Quantity adjusted` :
+                    log.action.replace(/_/g, " ");
+                  return (
+                    <div key={log.id} className="flex items-start gap-3 border-b last:border-0 pb-2">
+                      <span className="text-gray-400 whitespace-nowrap">{new Date(log.createdAt).toLocaleString()}</span>
+                      <span className="font-medium whitespace-nowrap">{log.user ? `${log.user.firstName} ${log.user.lastName}` : "System"}</span>
+                      <span className="text-gray-600">{desc}</span>
+                    </div>
+                  );
+                })}
+                {auditLogs.length === 0 && (
+                  <div className="text-gray-400">No approvals or edits recorded yet.</div>
+                )}
               </div>
             </div>
           </div>
