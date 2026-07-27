@@ -5,9 +5,27 @@ import { Layout } from "../components/Layout";
 import { ImageUpload } from "../components/ImageUpload";
 import prisma from "../db.server";
 import { approveTimeEntry, trackableEfficiency } from "../utils/productivity.server";
-import { applyProduction, reverseProduction } from "../utils/inventory.server";
+import { applyProduction, reverseProduction, restoreComponents } from "../utils/inventory.server";
 import { matchesProcess } from "../utils/process";
 import { useState, useEffect } from "react";
+
+// Undo the inventory of every already-applied line on an entry (used when an
+// approved entry is re-opened, so PENDING means "nothing counted yet"). Clears
+// each line's inventoryApplied so re-approval re-applies it fresh.
+async function reverseEntryInventory(tx: any, entryId: string, userId: string) {
+  const entry = await tx.workerTimeEntry.findUnique({ where: { id: entryId }, include: { lines: true } });
+  if (!entry) return;
+  for (const line of entry.lines) {
+    if (!line.inventoryApplied || !line.skuId || line.isMisc) continue;
+    const base = line.adminAdjustedQuantity ?? line.quantityCompleted;
+    const finalQty = line.isRejected ? 0 : base - (line.rejectionQuantity ?? 0);
+    const rejectedQty = line.isRejected ? base : line.rejectionQuantity ?? 0;
+    const opts = { relatedResource: entryId, relatedResourceType: "TIME_ENTRY", processName: line.processName, performedById: userId, notes: "Reversed: entry re-opened" };
+    if (finalQty > 0) await reverseProduction(line.skuId, finalQty, opts, tx);
+    if (rejectedQty > 0) await restoreComponents(line.skuId, rejectedQty, opts, tx);
+    await tx.timeEntryLine.update({ where: { id: line.id }, data: { inventoryApplied: false } });
+  }
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -256,34 +274,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "Pick a process and SKU and enter a quantity greater than 0." };
     }
 
-    await prisma.timeEntryLine.create({
-      data: {
-        timeEntryId: entryId,
-        processName,
-        skuId,
-        quantityCompleted: quantity,
-        secondsPerUnit,
-        expectedSeconds: quantity * secondsPerUnit,
-      },
-    });
+    await prisma.$transaction(async (tx) => {
+      // If the entry was already approved, pull its inventory back out so the
+      // whole thing re-applies cleanly when it's approved again.
+      const cur = await tx.workerTimeEntry.findUnique({ where: { id: entryId }, select: { status: true } });
+      if (cur?.status === "APPROVED") await reverseEntryInventory(tx, entryId, user.id);
 
-    // Recompute expected/efficiency, and re-open the entry to PENDING so the new
-    // task gets QC-approved (which is what moves its inventory).
-    const entry = await prisma.workerTimeEntry.findUnique({
-      where: { id: entryId },
-      include: { lines: true },
-    });
-    if (entry) {
-      const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
-      const efficiency = trackableEfficiency(expectedMinutes, entry.actualMinutes, entry.miscMinutes);
-      await prisma.workerTimeEntry.update({
-        where: { id: entryId },
-        data: { expectedMinutes, efficiency, status: "PENDING", approvedById: null, approvedAt: null },
+      await tx.timeEntryLine.create({
+        data: {
+          timeEntryId: entryId,
+          processName,
+          skuId,
+          quantityCompleted: quantity,
+          secondsPerUnit,
+          expectedSeconds: quantity * secondsPerUnit,
+        },
       });
-    }
+
+      const entry = await tx.workerTimeEntry.findUnique({ where: { id: entryId }, include: { lines: true } });
+      if (entry) {
+        const expectedMinutes = entry.lines.reduce((s, l) => s + l.expectedSeconds, 0) / 60;
+        const efficiency = trackableEfficiency(expectedMinutes, entry.actualMinutes, entry.miscMinutes);
+        await tx.workerTimeEntry.update({
+          where: { id: entryId },
+          data: { expectedMinutes, efficiency, status: "PENDING", approvedById: null, approvedAt: null },
+        });
+      }
+    });
 
     await createAuditLog(user.id, "QC_ADD_LINE", "WorkerTimeEntry", entryId, { processName, skuId, quantity });
-    return { success: true, message: "Task added — entry is pending approval." };
+    return { success: true, message: "Task added — entry re-opened to pending (its inventory was pulled back and will re-apply on approval)." };
   }
 
   if (intent === "delete-line") {
@@ -438,20 +458,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "reopen-pending") {
     const entryId = formData.get("entryId") as string;
-    const entry = await prisma.workerTimeEntry.findUnique({
-      where: { id: entryId },
-      include: { lines: true },
-    });
+    const entry = await prisma.workerTimeEntry.findUnique({ where: { id: entryId }, select: { id: true } });
     if (!entry) return { error: "Entry not found." };
-    if (entry.lines.length > 0) {
-      return { error: "This entry already has tasks — reopening could double-move inventory. Reject it instead if needed." };
-    }
-    await prisma.workerTimeEntry.update({
-      where: { id: entryId },
-      data: { status: "PENDING", approvedById: null, approvedAt: null },
+    // Pull back any inventory this entry already moved, then set it pending so a
+    // fresh approval re-applies everything.
+    await prisma.$transaction(async (tx) => {
+      await reverseEntryInventory(tx, entryId, user.id);
+      await tx.workerTimeEntry.update({
+        where: { id: entryId },
+        data: { status: "PENDING", approvedById: null, approvedAt: null },
+      });
     });
     await createAuditLog(user.id, "REOPEN_TIME_ENTRY", "WorkerTimeEntry", entryId, {});
-    return { success: true, message: "Re-opened to pending — add tasks and misc time, then approve." };
+    return { success: true, message: "Re-opened to pending — its inventory was pulled back and will re-apply on approval." };
   }
 
   if (intent === "delete-entry") {
@@ -1022,13 +1041,14 @@ export default function QualityControl() {
             </div>
           )}
 
-          {timeEntry.status !== "PENDING" && timeEntry.lines.length === 0 && (
+          {timeEntry.status === "APPROVED" && (
             <div className="alert alert-warning mb-6 flex items-center justify-between gap-4">
               <span>
-                Imported time with no tasks yet (status: <strong>{timeEntry.status}</strong>). Re-open it to add
-                the worker's tasks and misc time, then approve.
+                {timeEntry.lines.length === 0
+                  ? "Imported time with no tasks yet. Re-open it to add the worker's tasks and misc time, then approve."
+                  : "This entry is approved. Re-open it to change its tasks or times — the inventory it moved is pulled back and re-applied when you approve again."}
               </span>
-              <Form method="post">
+              <Form method="post" onSubmit={(e) => { if (timeEntry.lines.length > 0 && !confirm("Re-open this approved entry? Its inventory will be pulled back until you approve it again.")) e.preventDefault(); }}>
                 <input type="hidden" name="intent" value="reopen-pending" />
                 <input type="hidden" name="entryId" value={timeEntry.id} />
                 <button type="submit" className="btn btn-sm btn-primary" disabled={isSubmitting}>Reopen to Pending</button>

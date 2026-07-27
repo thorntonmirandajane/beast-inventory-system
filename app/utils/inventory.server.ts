@@ -907,6 +907,47 @@ export async function reverseProduction(
   return { success: true, warnings };
 }
 
+/**
+ * Add back only the immediate BOM components a production of `qty` would have
+ * consumed — without touching the output. Used to undo a rejected/disposed
+ * attempt (which consumed components but produced no good output) when an entry
+ * is re-opened.
+ */
+export async function restoreComponents(
+  outputSkuId: string,
+  qty: number,
+  opts: { relatedResource?: string; relatedResourceType?: string; processName?: string; performedById?: string; notes?: string },
+  client?: PrismaClientOrTx
+): Promise<ApplyProductionResult> {
+  const db = client || prisma;
+  const warnings: string[] = [];
+  if (qty <= 0) return { success: true, warnings };
+
+  const output = await db.sku.findUnique({
+    where: { id: outputSkuId },
+    include: { bomComponents: { include: { componentSku: true } } },
+  });
+  if (!output) return { success: false, error: `SKU not found: ${outputSkuId}`, warnings };
+  if (output.bomComponents.length === 0) return { success: true, warnings };
+
+  const directBom: DirectBomLine[] = output.bomComponents.map((b) => ({
+    componentSkuId: b.componentSkuId,
+    componentType: b.componentSku.type,
+    quantity: b.quantity,
+  }));
+  const moves = planProduction({ skuId: output.id, type: output.type }, qty, directBom);
+  for (const move of moves) {
+    if (move.reason === "PRODUCED") continue; // don't touch the output
+    const amount = -move.delta;
+    await addStock(db, move.skuId, amount, move.state);
+    await logInventoryMovement(
+      move.skuId, "PRODUCED", amount, undefined, move.state,
+      opts.relatedResource, opts.relatedResourceType, opts.processName, opts.notes ?? "Restored (reject reversed)", opts.performedById, db
+    );
+  }
+  return { success: true, warnings };
+}
+
 // ============================================
 // OPENING COUNTS / SPOT-CHECK (set absolute counts)
 // ============================================
