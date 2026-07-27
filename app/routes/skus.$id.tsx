@@ -6,7 +6,7 @@ import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { calculateBuildEligibility } from "../utils/inventory.server";
 import { getUsedInProducts } from "../utils/bom.server";
-import { useState } from "react";
+import { useState, Fragment } from "react";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   try {
@@ -278,10 +278,32 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     ? await prisma.user.findMany({ where: { id: { in: performerIds } }, select: { id: true, firstName: true, lastName: true } })
     : [];
   const performerMap = new Map(performers.map((p) => [p.id, `${p.firstName} ${p.lastName}`]));
-  const inventoryLogs = inventoryLogsRaw.map((l) => ({
-    ...l,
-    performedByName: l.performedById ? performerMap.get(l.performedById) ?? null : null,
-  }));
+
+  // Load the source time entries so each movement can show when the work was done
+  // and its status inline.
+  const entryIds = Array.from(new Set(inventoryLogsRaw.filter((l) => l.relatedResourceType === "TIME_ENTRY" && l.relatedResource).map((l) => l.relatedResource as string)));
+  const srcEntries = entryIds.length
+    ? await prisma.workerTimeEntry.findMany({
+        where: { id: { in: entryIds } },
+        select: { id: true, clockInTime: true, clockOutTime: true, status: true, user: { select: { firstName: true, lastName: true } } },
+      })
+    : [];
+  const entryMap = new Map(srcEntries.map((e) => [e.id, e]));
+
+  const inventoryLogs = inventoryLogsRaw.map((l) => {
+    const entry = l.relatedResourceType === "TIME_ENTRY" && l.relatedResource ? entryMap.get(l.relatedResource) : null;
+    return {
+      ...l,
+      performedByName: l.performedById ? performerMap.get(l.performedById) ?? null : null,
+      source: entry
+        ? {
+            worker: `${entry.user.firstName} ${entry.user.lastName}`,
+            workedAt: entry.clockInTime,
+            status: entry.status,
+          }
+        : null,
+    };
+  });
 
   console.log("[SKU Detail] Loader completed successfully");
     return {
@@ -659,6 +681,7 @@ export default function SkuDetail() {
   // State for component search
   const [componentSearch, setComponentSearch] = useState("");
   const [selectedComponentId, setSelectedComponentId] = useState("");
+  const [expandedLog, setExpandedLog] = useState<string | null>(null);
 
   // Build current BOM map for form defaults
   const currentBom = new Map(sku.bomComponents.map((b) => [b.componentSku.id, b.quantity]));
@@ -1222,69 +1245,62 @@ export default function SkuDetail() {
                         }
                       };
 
+                      const isOpen = expandedLog === log.id;
+                      const who = log.action === "CONSUMED" || log.action === "DISPOSED" ? "Consumed by" : "Produced by";
                       return (
-                        <tr key={log.id}>
-                          <td className="text-sm whitespace-nowrap">
-                            {new Date(log.createdAt).toLocaleString()}
-                          </td>
-                          <td>
-                            <span className={`badge text-xs ${getActionColor(log.action)}`}>
-                              {formatAction(log.action)}
-                            </span>
-                          </td>
-                          <td className="font-semibold">
-                            {log.quantity.toLocaleString()}
-                          </td>
-                          <td className="text-sm">
-                            {log.fromState ? (
-                              <span className="badge bg-gray-100 text-gray-700 text-xs">
-                                {log.fromState}
+                        <Fragment key={log.id}>
+                          <tr className="cursor-pointer hover:bg-gray-50" onClick={() => setExpandedLog(isOpen ? null : log.id)}>
+                            <td className="text-sm whitespace-nowrap">
+                              <span className="text-gray-400 mr-1">{isOpen ? "▾" : "▸"}</span>
+                              {new Date(log.createdAt).toLocaleString()}
+                            </td>
+                            <td>
+                              <span className={`badge text-xs ${getActionColor(log.action)}`}>
+                                {formatAction(log.action)}
                               </span>
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
-                          </td>
-                          <td className="text-sm">
-                            {log.toState ? (
-                              <span className="badge bg-gray-100 text-gray-700 text-xs">
-                                {log.toState}
-                              </span>
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
-                          </td>
-                          <td className="text-sm">
-                            {log.processName ? (
-                              <span className="font-mono text-xs">
-                                {log.processName}
-                              </span>
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
-                          </td>
-                          <td className="text-sm">
-                            {log.relatedResourceType && log.relatedResource ? (
-                              log.relatedResourceType === "TIME_ENTRY" ? (
-                                <Link to={`/quality-control?entryId=${log.relatedResource}`} className="text-blue-600 hover:underline">
-                                  {log.relatedResourceType} ↗
-                                </Link>
-                              ) : (
-                                <span className="text-blue-600">{log.relatedResourceType}</span>
-                              )
-                            ) : (
-                              <span className="text-gray-400">—</span>
-                            )}
-                            {log.performedByName && (
-                              <div className="text-xs text-gray-500">
-                                {log.action === "CONSUMED" || log.action === "DISPOSED" ? "consumed by " : "by "}
-                                {log.performedByName}
-                              </div>
-                            )}
-                          </td>
-                          <td className="text-sm max-w-xs truncate">
-                            {log.notes || <span className="text-gray-400">—</span>}
-                          </td>
-                        </tr>
+                            </td>
+                            <td className="font-semibold">{log.quantity.toLocaleString()}</td>
+                            <td className="text-sm">
+                              {log.fromState ? <span className="badge bg-gray-100 text-gray-700 text-xs">{log.fromState}</span> : <span className="text-gray-400">—</span>}
+                            </td>
+                            <td className="text-sm">
+                              {log.toState ? <span className="badge bg-gray-100 text-gray-700 text-xs">{log.toState}</span> : <span className="text-gray-400">—</span>}
+                            </td>
+                            <td className="text-sm">
+                              {log.processName ? <span className="font-mono text-xs">{log.processName}</span> : <span className="text-gray-400">—</span>}
+                            </td>
+                            <td className="text-sm">
+                              {log.performedByName ? <span>{log.performedByName}</span> : <span className="text-gray-400">—</span>}
+                            </td>
+                            <td className="text-sm max-w-xs truncate">
+                              {log.notes || <span className="text-gray-400">—</span>}
+                            </td>
+                          </tr>
+                          {isOpen && (
+                            <tr>
+                              <td colSpan={8} className="bg-gray-50 p-4">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-1 text-sm max-w-3xl">
+                                  <div className="flex justify-between border-b py-1"><span className="text-gray-500">Movement</span><span className="font-medium">{formatAction(log.action)} {log.quantity.toLocaleString()}</span></div>
+                                  <div className="flex justify-between border-b py-1"><span className="text-gray-500">{who}</span><span className="font-medium">{log.performedByName ?? "—"}</span></div>
+                                  <div className="flex justify-between border-b py-1"><span className="text-gray-500">State</span><span>{log.fromState ?? "—"} → {log.toState ?? "—"}</span></div>
+                                  <div className="flex justify-between border-b py-1"><span className="text-gray-500">Process</span><span className="font-mono text-xs">{log.processName ?? "—"}</span></div>
+                                  <div className="flex justify-between border-b py-1"><span className="text-gray-500">Moved (approved) at</span><span>{new Date(log.createdAt).toLocaleString()}</span></div>
+                                  {log.source ? (
+                                    <div className="flex justify-between border-b py-1"><span className="text-gray-500">Work done</span><span>{new Date(log.source.workedAt).toLocaleDateString()} · {log.source.status}</span></div>
+                                  ) : (
+                                    <div className="flex justify-between border-b py-1"><span className="text-gray-500">Source</span><span>{log.relatedResourceType ?? "—"}</span></div>
+                                  )}
+                                  {log.notes && <div className="flex justify-between border-b py-1 md:col-span-2"><span className="text-gray-500">Notes</span><span className="text-right">{log.notes}</span></div>}
+                                </div>
+                                {log.relatedResourceType === "TIME_ENTRY" && log.relatedResource && (
+                                  <div className="mt-3">
+                                    <Link to={`/quality-control?entryId=${log.relatedResource}`} className="text-blue-600 hover:underline text-sm">Open source entry in Quality Control ↗</Link>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       );
                     })}
                   </tbody>
