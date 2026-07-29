@@ -16,6 +16,7 @@ import {
   submitTimeEntry,
   PROCESS_TRANSITIONS,
 } from "../utils/productivity.server";
+import { matchesProcess } from "../utils/process";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -113,7 +114,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Output SKUs a worker can report producing (assemblies + finished packs)
   const skus = await prisma.sku.findMany({
     where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } },
-    select: { id: true, sku: true, name: true, type: true },
+    select: { id: true, sku: true, name: true, type: true, material: true },
     orderBy: [{ type: "asc" }, { sku: "asc" }],
   });
 
@@ -217,6 +218,12 @@ export default function ClockOutEntry() {
   const [skuId, setSkuId] = useState("");
   const [qty, setQty] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Only show SKUs that match the selected process (its `material` maps to the
+  // process). Falls back to all SKUs if none match, so nothing is unreachable.
+  const selectedCfg = processConfigs.find((c) => c.processName === proc);
+  const matchedSkus = selectedCfg ? skus.filter((s) => matchesProcess(s.material, selectedCfg.displayName)) : [];
+  const filteredSkus = selectedCfg ? (matchedSkus.length ? matchedSkus : skus) : [];
 
   const addLine = () => {
     if (!proc) return setFormError("Pick a process.");
@@ -330,7 +337,7 @@ export default function ClockOutEntry() {
               <select
                 id="proc"
                 value={proc}
-                onChange={(e) => setProc(e.target.value)}
+                onChange={(e) => { setProc(e.target.value); setSkuId(""); }}
                 className="form-input"
               >
                 <option value="">Select…</option>
@@ -348,9 +355,10 @@ export default function ClockOutEntry() {
                 value={skuId}
                 onChange={(e) => setSkuId(e.target.value)}
                 className="form-input"
+                disabled={!proc}
               >
-                <option value="">Select…</option>
-                {skus.map((s) => (
+                <option value="">{proc ? "Select…" : "Pick a process first"}</option>
+                {filteredSkus.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.sku} — {s.name}
                   </option>
