@@ -245,6 +245,8 @@ model Transfer {
   trackingNumber String?
   carrier        String?
   notes          String?
+  fulfilledFrom  DateTime?      // start of the fulfilled-orders range this transfer covers
+  fulfilledTo    DateTime?      // end of that range
   items          TransferItem[]
   createdBy      User           @relation(fields: [createdById], references: [id])
 

@@ -145,12 +145,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
+  // Ranges already pulled into a transfer, so the user can pick a non-overlapping window.
+  const priorTransfers = await prisma.transfer.findMany({
+    where: { fulfilledFrom: { not: null } },
+    select: { id: true, transferNumber: true, destination: true, fulfilledFrom: true, fulfilledTo: true, shippedAt: true },
+    orderBy: { fulfilledTo: "desc" },
+    take: 8,
+  });
+
   return {
     user,
     report,
     error,
     from,
     to,
+    priorTransfers,
     syncing: isShopifySyncing(),
     transferCandidates,
     excludedSkus,
@@ -172,7 +181,7 @@ type SortKey = "sku" | "title" | "shiphero" | "utah" | "total";
 type SortDir = "asc" | "desc";
 
 export default function FulfilledOrders() {
-  const { user, report, error, from, to, syncing, transferCandidates, excludedSkus, debug } =
+  const { user, report, error, from, to, priorTransfers, syncing, transferCandidates, excludedSkus, debug } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
@@ -292,6 +301,23 @@ export default function FulfilledOrders() {
               </div>
             </div>
           </Form>
+          {priorTransfers.length > 0 && (
+            <div className="mt-3 text-sm text-gray-600 border-t pt-3">
+              <Link to="/transfers" className="font-medium text-blue-600 hover:underline">Already transferred ranges</Link>{" "}
+              (avoid overlapping these):
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                {priorTransfers.map((t: any) => {
+                  const f = new Date(t.fulfilledFrom).toLocaleDateString();
+                  const tt = t.fulfilledTo ? new Date(t.fulfilledTo).toLocaleDateString() : f;
+                  return (
+                    <span key={t.id} className="whitespace-nowrap font-mono text-gray-700">
+                      {f === tt ? f : `${f} – ${tt}`}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -584,6 +610,8 @@ export default function FulfilledOrders() {
           >
             <transfer.Form method="post" action="/transfers" className="p-6">
               <input type="hidden" name="intent" value="create" />
+              <input type="hidden" name="fulfilledFrom" value={from} />
+              <input type="hidden" name="fulfilledTo" value={to} />
               <h2 className="text-lg font-bold mb-1">Confirm Transfer</h2>
               <p className="text-sm text-gray-500 mb-4">
                 Review the details below. Submitting removes these quantities from your completed

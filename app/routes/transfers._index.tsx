@@ -90,6 +90,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const destination = formData.get("destination") as string;
     const transferDate = formData.get("transferDate") as string;
     const notes = formData.get("notes") as string;
+    const fulfilledFromStr = formData.get("fulfilledFrom") as string;
+    const fulfilledToStr = formData.get("fulfilledTo") as string;
 
     // Parse items from form data
     const items: { skuId: string; quantity: number }[] = [];
@@ -137,6 +139,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         destination,
         shippedAt: transferDate ? new Date(transferDate) : new Date(),
         notes: notes || null,
+        fulfilledFrom: fulfilledFromStr ? new Date(`${fulfilledFromStr}T12:00:00`) : null,
+        fulfilledTo: fulfilledToStr ? new Date(`${fulfilledToStr}T12:00:00`) : null,
         createdById: user.id,
         items: {
           create: items.map((item) => ({
@@ -414,7 +418,17 @@ export default function Transfers() {
                       </div>
                     </td>
                     <td className="font-semibold">{totalQty}</td>
-                    <td>{new Date(transfer.shippedAt).toLocaleDateString()}</td>
+                    <td>
+                      {new Date(transfer.shippedAt).toLocaleDateString()}
+                      {transfer.fulfilledFrom && (
+                        <div className="text-xs text-gray-500">
+                          Covers {new Date(transfer.fulfilledFrom).toLocaleDateString()}
+                          {transfer.fulfilledTo && new Date(transfer.fulfilledTo).toLocaleDateString() !== new Date(transfer.fulfilledFrom).toLocaleDateString()
+                            ? ` – ${new Date(transfer.fulfilledTo).toLocaleDateString()}`
+                            : ""}
+                        </div>
+                      )}
+                    </td>
                     <td>
                       {transfer.createdBy.firstName} {transfer.createdBy.lastName}
                     </td>
