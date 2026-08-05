@@ -104,28 +104,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let transferCandidates: TransferCandidate[] = [];
   let excludedSkus: ExcludedSku[] = [];
   if (report) {
+    const norm = (s: string) => s.trim().toUpperCase();
     const utahRows = report.bySku.filter((r) => r.utah > 0);
-    const skuStrings = utahRows.map((r) => r.sku);
-    const dbSkus = skuStrings.length
+    // Match Shopify SKUs to system SKUs case-insensitively (e.g. "...2.3in" vs
+    // "...2.3IN"). Fetch all active completed SKUs and key by normalized SKU.
+    const dbSkus = utahRows.length
       ? await prisma.sku.findMany({
-          where: { sku: { in: skuStrings }, isActive: true, type: "COMPLETED" },
+          where: { isActive: true, type: "COMPLETED" },
           include: {
             inventoryItems: { where: { state: "COMPLETED", quantity: { gt: 0 } } },
           },
         })
       : [];
-    // Map SKU string -> best match (prefer the record with the most on-hand, in
-    // case a SKU string is duplicated across products).
+    // Map normalized SKU -> best match (prefer the record with the most on-hand,
+    // in case a SKU string is duplicated across products).
     const bySkuString = new Map<string, { id: string; name: string; available: number }>();
     for (const s of dbSkus) {
       const available = s.inventoryItems.reduce((a, it) => a + it.quantity, 0);
-      const existing = bySkuString.get(s.sku);
+      const key = norm(s.sku);
+      const existing = bySkuString.get(key);
       if (!existing || available > existing.available) {
-        bySkuString.set(s.sku, { id: s.id, name: s.name, available });
+        bySkuString.set(key, { id: s.id, name: s.name, available });
       }
     }
     for (const r of utahRows) {
-      const match = bySkuString.get(r.sku);
+      const match = bySkuString.get(norm(r.sku));
       if (match && match.available > 0) {
         transferCandidates.push({
           skuId: match.id,
