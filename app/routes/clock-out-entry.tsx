@@ -77,23 +77,47 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Get or find the draft time entry
+  // Find the entry to attach this clock-out to. Prefer the one tied to this
+  // clock-in; else reuse an OPEN (not yet clocked-out) entry the worker already
+  // has for the day — e.g. one an admin created/attached tasks to via a synthetic
+  // clock-in. This avoids trying to create a second entry (which collides on the
+  // unique clock-in constraint) — the bug that blocked clock-out for some workers.
   let timeEntry = await prisma.workerTimeEntry.findUnique({
     where: { clockInEventId: clockInEvent.id },
     include: { lines: true },
   });
 
   if (!timeEntry) {
-    // Create one if it doesn't exist
-    timeEntry = await prisma.workerTimeEntry.create({
-      data: {
-        userId: user.id,
-        clockInEventId: clockInEvent.id,
-        clockInTime: clockInEvent.timestamp,
-        status: "DRAFT",
-      },
+    const dayStart = new Date(clockOutEvent.timestamp);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(clockOutEvent.timestamp);
+    dayEnd.setHours(23, 59, 59, 999);
+    timeEntry = await prisma.workerTimeEntry.findFirst({
+      where: { userId: user.id, clockOutEventId: null, clockInTime: { gte: dayStart, lte: dayEnd } },
       include: { lines: true },
+      orderBy: { clockInTime: "desc" },
     });
+  }
+
+  if (!timeEntry) {
+    // Create one, tolerating a race where it was just created.
+    try {
+      timeEntry = await prisma.workerTimeEntry.create({
+        data: {
+          userId: user.id,
+          clockInEventId: clockInEvent.id,
+          clockInTime: clockInEvent.timestamp,
+          status: "DRAFT",
+        },
+        include: { lines: true },
+      });
+    } catch {
+      timeEntry = await prisma.workerTimeEntry.findUnique({
+        where: { clockInEventId: clockInEvent.id },
+        include: { lines: true },
+      });
+      if (!timeEntry) throw new Response("Could not open a time entry — try again.", { status: 500 });
+    }
   }
 
   // Get worker's pending tasks during this shift
