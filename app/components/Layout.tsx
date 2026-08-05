@@ -102,6 +102,14 @@ export function Layout({ user, children }: LayoutProps) {
                   IMPORT COUNTS
                 </Link>
                 )}
+                {(user.role === "ADMIN" || user.role === "MANAGER") && (
+                <Link to="/inventory/spot-check" onClick={closeMobileMenu} className={`nav-link ${isActive("/inventory/spot-check") ? "active" : ""}`}>
+                  <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M11.35 3.836c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C8.32 4.104 7.5 5.076 7.5 6.226v10.274m9.65-12.664c.374.03.748.057 1.123.08 1.226.094 2.227 1.096 2.227 2.348V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.75c0-1.252 1-2.254 2.227-2.348" />
+                  </svg>
+                  SPOT CHECK
+                </Link>
+                )}
                 <Link to="/skus" onClick={closeMobileMenu} className={`nav-link ${isActive("/skus") ? "active" : ""}`}>
                   <svg fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />

@@ -982,8 +982,10 @@ export interface OpeningCountResult {
 export async function applyOpeningCounts(
   rows: { sku: string; qty: number }[],
   performedById: string | undefined,
-  opts: { dryRun: boolean }
+  opts: { dryRun: boolean; source?: "OPENING_COUNT" | "SPOT_CHECK" }
 ): Promise<OpeningCountResult> {
+  const source = opts.source ?? "OPENING_COUNT";
+  const label = source === "SPOT_CHECK" ? "Spot check" : "Opening count";
   // Dedupe by SKU (a SKU maps to one state, so one count). Last value wins.
   const bySku = new Map<string, number>();
   const warnings: string[] = [];
@@ -1037,8 +1039,8 @@ export async function applyOpeningCounts(
 
         await logInventoryMovement(
           skuRow.id, "ADJUSTED", item.newQty, undefined, item.state,
-          undefined, "OPENING_COUNT", undefined,
-          `Opening count: set ${item.state} to ${item.newQty} (was ${item.current})`,
+          undefined, source, undefined,
+          `${label}: set ${item.state} to ${item.newQty} (was ${item.current})`,
           performedById, tx
         );
       }

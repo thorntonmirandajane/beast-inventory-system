@@ -10,6 +10,7 @@ export default [
   route("receiving", "routes/receiving._index.tsx"),
   route("inventory", "routes/inventory.tsx"),
   route("inventory/import-counts", "routes/inventory.import-counts.tsx"),
+  route("inventory/spot-check", "routes/inventory.spot-check.tsx"),
   route("skus", "routes/skus._index.tsx"),
   route("skus/new", "routes/skus.new.tsx"),
   route("skus/import", "routes/skus.import.tsx"),
