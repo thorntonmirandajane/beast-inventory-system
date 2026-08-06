@@ -7,13 +7,21 @@ import prisma from "../db.server";
 import { applyOpeningCounts, getAvailableQuantity } from "../utils/inventory.server";
 import { resolveProcessConfig } from "../utils/process";
 
+type SpotType = "RAW" | "ASSEMBLY" | "COMPLETED";
+
 type SpotSku = {
   id: string;
   sku: string;
   name: string;
-  type: "RAW" | "ASSEMBLY";
-  process: string; // "" for raws / no matching process
+  type: SpotType;
+  process: string; // "" for raws/completed or no matching process
   onHand: number;
+};
+
+const AVAILABLE_STATE: Record<SpotType, "RAW" | "ASSEMBLED" | "COMPLETED"> = {
+  RAW: "RAW",
+  ASSEMBLY: "ASSEMBLED",
+  COMPLETED: "COMPLETED",
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -21,7 +29,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const [skus, processConfigs] = await Promise.all([
     prisma.sku.findMany({
-      where: { isActive: true, type: { in: ["RAW", "ASSEMBLY"] } },
+      where: { isActive: true, type: { in: ["RAW", "ASSEMBLY", "COMPLETED"] } },
       select: { id: true, sku: true, name: true, type: true, material: true },
       orderBy: [{ type: "asc" }, { sku: "asc" }],
     }),
@@ -34,13 +42,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const items: SpotSku[] = await Promise.all(
     skus.map(async (s) => {
-      const state = s.type === "RAW" ? "RAW" : "ASSEMBLED";
-      const onHand = await getAvailableQuantity(s.id, [state]);
+      const type = s.type as SpotType;
+      const onHand = await getAvailableQuantity(s.id, [AVAILABLE_STATE[type]]);
       const process =
-        s.type === "ASSEMBLY"
+        type === "ASSEMBLY"
           ? resolveProcessConfig(s.material, processConfigs)?.displayName ?? ""
           : "";
-      return { id: s.id, sku: s.sku, name: s.name, type: s.type as "RAW" | "ASSEMBLY", process, onHand };
+      return { id: s.id, sku: s.sku, name: s.name, type, process, onHand };
     })
   );
 
@@ -87,7 +95,7 @@ export default function SpotCheck() {
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
 
-  const [type, setType] = useState<"RAW" | "ASSEMBLY">("RAW");
+  const [type, setType] = useState<SpotType>("RAW");
   const [processFilter, setProcessFilter] = useState<string>("ALL");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string>("");
@@ -120,7 +128,7 @@ export default function SpotCheck() {
     setNewQty(s ? String(s.onHand) : "");
   }
 
-  function switchType(t: "RAW" | "ASSEMBLY") {
+  function switchType(t: SpotType) {
     setType(t);
     setProcessFilter("ALL");
     setSelectedId("");
@@ -162,15 +170,15 @@ export default function SpotCheck() {
           {/* Type toggle */}
           <div>
             <label className="form-label">SKU type</label>
-            <div className="flex gap-2">
-              {(["RAW", "ASSEMBLY"] as const).map((t) => (
+            <div className="flex gap-2 flex-wrap">
+              {(["RAW", "ASSEMBLY", "COMPLETED"] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
                   onClick={() => switchType(t)}
                   className={`btn ${type === t ? "btn-primary" : "btn-secondary"}`}
                 >
-                  {t === "RAW" ? "Raw materials" : "Assembly SKUs"}
+                  {t === "RAW" ? "Raw materials" : t === "ASSEMBLY" ? "Assembly SKUs" : "Completed units"}
                 </button>
               ))}
             </div>
