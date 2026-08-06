@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
 import { requireRole, createAuditLog } from "../utils/auth.server";
@@ -15,6 +15,7 @@ type SpotSku = {
   name: string;
   type: SpotType;
   process: string; // "" for raws/completed or no matching process
+  upc: string; // "" if none; used to match completed-unit barcode labels
   onHand: number;
 };
 
@@ -30,7 +31,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const [skus, processConfigs] = await Promise.all([
     prisma.sku.findMany({
       where: { isActive: true, type: { in: ["RAW", "ASSEMBLY", "COMPLETED"] } },
-      select: { id: true, sku: true, name: true, type: true, material: true },
+      select: { id: true, sku: true, name: true, type: true, material: true, upc: true },
       orderBy: [{ type: "asc" }, { sku: "asc" }],
     }),
     prisma.processConfig.findMany({
@@ -48,7 +49,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         type === "ASSEMBLY"
           ? resolveProcessConfig(s.material, processConfigs)?.displayName ?? ""
           : "";
-      return { id: s.id, sku: s.sku, name: s.name, type, process, onHand };
+      return { id: s.id, sku: s.sku, name: s.name, type, process, upc: s.upc ?? "", onHand };
     })
   );
 
@@ -100,6 +101,8 @@ export default function SpotCheck() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string>("");
   const [newQty, setNewQty] = useState<string>("");
+  const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState<string | null>(null);
 
   // Distinct processes among assemblies, for the sort/filter dropdown.
   const processes = useMemo(() => {
@@ -135,6 +138,26 @@ export default function SpotCheck() {
     setNewQty("");
   }
 
+  // Barcode labels encode the SKU (uppercased) or, for completed units, the UPC.
+  function handleScan(code: string) {
+    const c = code.trim();
+    const cu = c.toUpperCase();
+    const match =
+      items.find((i) => i.sku.toUpperCase() === cu) ||
+      items.find((i) => i.upc && i.upc.trim() === c);
+    if (!match) {
+      setScanMsg(`No SKU matches barcode "${c}". Keep scanning or enter it by hand.`);
+      return; // leave the camera running
+    }
+    setScanning(false);
+    setScanMsg(`Scanned ${match.sku}.`);
+    setType(match.type);
+    setProcessFilter("ALL");
+    setSearch("");
+    setSelectedId(match.id);
+    setNewQty(String(match.onHand));
+  }
+
   return (
     <Layout user={user}>
       <div className="page-header">
@@ -165,8 +188,27 @@ export default function SpotCheck() {
         </div>
       )}
 
+      {scanning && (
+        <BarcodeScanner onDetected={handleScan} onClose={() => setScanning(false)} />
+      )}
+
       <div className="card mb-6">
         <div className="card-body space-y-4">
+          {/* Scan (mobile) */}
+          <div>
+            <button
+              type="button"
+              className="btn btn-primary w-full sm:w-auto"
+              onClick={() => {
+                setScanMsg(null);
+                setScanning(true);
+              }}
+            >
+              📷 Scan barcode
+            </button>
+            {scanMsg && <p className="text-sm text-gray-600 mt-2">{scanMsg}</p>}
+          </div>
+
           {/* Type toggle */}
           <div>
             <label className="form-label">SKU type</label>
@@ -304,5 +346,83 @@ export default function SpotCheck() {
         </div>
       )}
     </Layout>
+  );
+}
+
+function BarcodeScanner({
+  onDetected,
+  onClose,
+}: {
+  onDetected: (code: string) => void;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const onDetectedRef = useRef(onDetected);
+  onDetectedRef.current = onDetected;
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let controls: { stop: () => void } | undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { BrowserMultiFormatReader } = await import("@zxing/browser");
+        const reader = new BrowserMultiFormatReader();
+        controls = await reader.decodeFromConstraints(
+          { video: { facingMode: { ideal: "environment" } } },
+          videoRef.current ?? undefined,
+          (result) => {
+            if (result && !cancelled) onDetectedRef.current(result.getText());
+          }
+        );
+      } catch (e) {
+        setError(
+          e instanceof Error
+            ? e.message
+            : "Could not start the camera — check camera permission and that you're on HTTPS."
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try {
+        controls?.stop();
+      } catch {
+        /* already stopped */
+      }
+    };
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg overflow-hidden w-full max-w-md"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-3 flex items-center justify-between border-b">
+          <span className="font-medium">Point at the SKU barcode</span>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        {error ? (
+          <div className="alert alert-error m-4">{error}</div>
+        ) : (
+          <video
+            ref={videoRef}
+            className="w-full bg-black"
+            style={{ aspectRatio: "3 / 4", objectFit: "cover" }}
+            muted
+            playsInline
+          />
+        )}
+        <p className="text-xs text-gray-500 p-3">
+          Hold steady over the barcode. It selects the SKU automatically.
+        </p>
+      </div>
+    </div>
   );
 }
