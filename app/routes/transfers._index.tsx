@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, Link, useNavigation } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
@@ -182,6 +183,15 @@ export default function Transfers() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  const [expandedTransfers, setExpandedTransfers] = useState<Set<string>>(new Set());
+
+  function toggleTransfer(id: string) {
+    setExpandedTransfers((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
 
   return (
     <Layout user={user}>
@@ -405,15 +415,24 @@ export default function Transfers() {
                     <td className="font-medium">{transfer.destination}</td>
                     <td>
                       <div className="text-sm">
-                        {transfer.items.slice(0, 2).map((item) => (
+                        {(expandedTransfers.has(transfer.id)
+                          ? transfer.items
+                          : transfer.items.slice(0, 2)
+                        ).map((item) => (
                           <div key={item.id}>
                             {item.sku.sku} × {item.quantity}
                           </div>
                         ))}
                         {transfer.items.length > 2 && (
-                          <div className="text-gray-500">
-                            +{transfer.items.length - 2} more
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => toggleTransfer(transfer.id)}
+                            className="text-blue-600 hover:underline mt-1"
+                          >
+                            {expandedTransfers.has(transfer.id)
+                              ? "Show less"
+                              : `+${transfer.items.length - 2} more`}
+                          </button>
                         )}
                       </div>
                     </td>
