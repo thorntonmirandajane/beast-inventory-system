@@ -190,8 +190,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Filter out lines with 0 quantity
   const validLines = lines.filter((l) => l.quantityCompleted > 0);
 
-  if (validLines.length === 0) {
-    return { error: "Please enter at least one completed item" };
+  // Allow a clock-out with no tasks as long as the worker logged misc time
+  // (e.g. they were pulled onto other projects all day).
+  if (validLines.length === 0 && miscMinutes === 0) {
+    return { error: "Enter at least one completed item, or log misc time, before clocking out." };
   }
 
   try {
@@ -241,7 +243,11 @@ export default function ClockOutEntry() {
   const [proc, setProc] = useState("");
   const [skuId, setSkuId] = useState("");
   const [qty, setQty] = useState("");
+  const [miscInput, setMiscInput] = useState("0");
   const [formError, setFormError] = useState<string | null>(null);
+
+  const miscMinutes = Math.max(0, parseInt(miscInput, 10) || 0);
+  const canSubmit = staged.length > 0 || miscMinutes > 0;
 
   // Only show SKUs that match the selected process (its `material` maps to the
   // process). Falls back to all SKUs if none match, so nothing is unreachable.
@@ -529,7 +535,8 @@ export default function ClockOutEntry() {
             name="miscMinutes"
             step="1"
             min="0"
-            defaultValue="0"
+            value={miscInput}
+            onChange={(e) => setMiscInput(e.target.value)}
             inputMode="numeric"
             className="form-input"
           />
@@ -542,7 +549,7 @@ export default function ClockOutEntry() {
           <button
             type="submit"
             className="btn btn-primary btn-lg"
-            disabled={isSubmitting || staged.length === 0}
+            disabled={isSubmitting || !canSubmit}
           >
             {isSubmitting ? "Submitting…" : "Submit for QC"}
           </button>
