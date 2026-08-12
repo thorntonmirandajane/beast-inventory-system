@@ -15,6 +15,59 @@ export interface OvertimeCalculation {
   weeks: WeeklyHours[];
 }
 
+export interface Shift {
+  clockInId: string;
+  clockOutId: string | null;
+  clockIn: Date;
+  clockOut: Date | null;
+  hours: number; // 0 while open (no clock-out)
+  open: boolean;
+}
+
+/**
+ * Pair clock-in/out events into discrete shifts, in order. A clock-in with no
+ * following clock-out is an OPEN shift (0 hours) that needs a manual fix — this
+ * avoids the double-count where a forgotten clock-out let the next clock-out be
+ * counted twice. Break events are ignored (matches existing payroll behavior).
+ */
+export function buildShifts(events: ClockEvent[]): Shift[] {
+  const sorted = events
+    .filter((e) => e.type === "CLOCK_IN" || e.type === "CLOCK_OUT")
+    .slice()
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+
+  const shifts: Shift[] = [];
+  let open: ClockEvent | null = null;
+  for (const e of sorted) {
+    if (e.type === "CLOCK_IN") {
+      if (open) shifts.push({ clockInId: open.id, clockOutId: null, clockIn: open.timestamp, clockOut: null, hours: 0, open: true });
+      open = e;
+    } else if (open) {
+      const hours = (e.timestamp.getTime() - open.timestamp.getTime()) / 3_600_000;
+      shifts.push({ clockInId: open.id, clockOutId: e.id, clockIn: open.timestamp, clockOut: e.timestamp, hours, open: false });
+      open = null;
+    }
+  }
+  if (open) shifts.push({ clockInId: open.id, clockOutId: null, clockIn: open.timestamp, clockOut: null, hours: 0, open: true });
+  return shifts;
+}
+
+/** Weekly (Mon–Sun) hours from paired shifts. */
+export function weeklyHoursFromShifts(shifts: Shift[]): WeeklyHours[] {
+  const weeks = new Map<string, { start: Date; end: Date; hours: number }>();
+  for (const s of shifts) {
+    if (s.hours <= 0) continue;
+    const key = getWeekKey(s.clockIn);
+    const { weekStart, weekEnd } = getWeekBoundaries(s.clockIn);
+    const w = weeks.get(key) ?? { start: weekStart, end: weekEnd, hours: 0 };
+    w.hours += s.hours;
+    weeks.set(key, w);
+  }
+  return Array.from(weeks.values())
+    .map((w) => ({ weekStart: w.start, weekEnd: w.end, hours: w.hours }))
+    .sort((a, b) => a.weekStart.getTime() - b.weekStart.getTime());
+}
+
 /**
  * Calculate weekly hours from clock events
  * Week defined as Monday 00:00 - Sunday 23:59
