@@ -205,10 +205,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const form = await request.formData();
   const intent = String(form.get("intent") || "");
 
-  if (intent === "sync-fulfillments") {
-    const startYmd = cleanYmd(String(form.get("startDate") || "")) || undefined;
+  if (intent === "preview-sync") {
     try {
-      return { syncResult: await runFulfillmentSync(user.id, { startYmd }) };
+      return { syncPreview: await runFulfillmentSync(user.id, { dryRun: true }) };
+    } catch (e) {
+      return { syncError: e instanceof Error ? e.message : "Sync failed" };
+    }
+  }
+
+  if (intent === "sync-fulfillments") {
+    try {
+      return { syncResult: await runFulfillmentSync(user.id) };
     } catch (e) {
       return { syncError: e instanceof Error ? e.message : "Sync failed" };
     }
@@ -247,11 +254,13 @@ export default function FulfilledOrders() {
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
 
-  // Utah auto-deduction "Sync now"
-  const sync = useFetcher<{ syncResult?: SyncResult; syncError?: string }>();
+  // Utah auto-deduction: Sync now (preview) → confirm → commit
+  const sync = useFetcher<{ syncPreview?: SyncResult; syncResult?: SyncResult; syncError?: string }>();
   const syncingNow = sync.state !== "idle";
+  const syncPreview = sync.data?.syncPreview;
   const syncResult = sync.data?.syncResult;
   const syncError = sync.data?.syncError;
+  const [previewDismissed, setPreviewDismissed] = useState(false);
 
   // Map an unmatched SKU to a product
   const map = useFetcher<{ mapResult?: { mapped: string; deductedUnits: number }; syncError?: string }>();
@@ -344,25 +353,80 @@ export default function FulfilledOrders() {
               </p>
               <p className="text-xs text-gray-500 mt-1">
                 {fulfillmentSync?.lastRunAt
-                  ? `Last synced ${new Date(fulfillmentSync.lastRunAt).toLocaleString()} · baseline ${new Date(fulfillmentSync.startAt).toLocaleDateString()}`
-                  : "Not yet run. Pick the date to start deducting from (usually the day after your last manual reconcile), then Sync now."}
+                  ? `Last synced ${new Date(fulfillmentSync.lastRunAt).toLocaleString()}`
+                  : "Not yet run. Sync now to preview and deduct everything Utah has shipped."}
               </p>
             </div>
             <sync.Form method="post" className="flex items-end gap-2">
-              <input type="hidden" name="intent" value="sync-fulfillments" />
-              {!fulfillmentSync && (
-                <div className="form-group mb-0">
-                  <label htmlFor="startDate" className="form-label text-xs">Start from</label>
-                  <input id="startDate" type="date" name="startDate" defaultValue={to} className="form-input" />
-                </div>
-              )}
-              <button type="submit" className="btn btn-primary" disabled={syncingNow}>
-                {syncingNow ? "Syncing…" : "Sync now"}
+              <input type="hidden" name="intent" value="preview-sync" />
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={syncingNow}
+                onClick={() => setPreviewDismissed(false)}
+              >
+                {syncingNow ? "Checking…" : "Sync now"}
               </button>
             </sync.Form>
           </div>
 
           {syncError && <div className="alert alert-error mt-3">{syncError}</div>}
+
+          {/* Confirmation: preview what will be deducted before committing. */}
+          {syncPreview && !syncResult && !previewDismissed && (
+            <div className="alert alert-warning mt-3">
+              {!syncPreview.ran ? (
+                syncPreview.reason
+              ) : syncPreview.deductedUnits === 0 && syncPreview.unmatched.length === 0 ? (
+                <>
+                  Nothing new to deduct.
+                  {syncPreview.alreadyProcessed > 0 && ` (${num(syncPreview.alreadyProcessed)} already processed.)`}
+                </>
+              ) : (
+                <>
+                  <div className="font-semibold mb-1">Review before pushing the transfer</div>
+                  This will deduct <strong>{num(syncPreview.deductedUnits)}</strong> unit(s) across{" "}
+                  {syncPreview.deducted.length} SKU(s)
+                  {syncPreview.transfers.length > 0 &&
+                    `, creating: ${syncPreview.transfers.map((t) => `${t.label} (${num(t.units)})`).join(", ")}`}
+                  .
+                  {syncPreview.alreadyProcessed > 0 &&
+                    ` ${num(syncPreview.alreadyProcessed)} already processed will be skipped.`}
+                  {syncPreview.deducted.length > 0 && (
+                    <div className="mt-2 text-sm max-h-48 overflow-y-auto">
+                      {syncPreview.deducted.map((d) => (
+                        <div key={d.sku}>
+                          <span className="font-mono">{d.sku}</span> × {num(d.quantity)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {syncPreview.unmatched.length > 0 && (
+                    <div className="mt-2 text-sm">
+                      <strong>{syncPreview.unmatched.length} unmatched SKU(s)</strong> won't be deducted — after you
+                      push, they'll appear in "map to a product" below:{" "}
+                      {syncPreview.unmatched.map((u) => `${u.sku} ×${num(u.quantity)}`).join(", ")}
+                    </div>
+                  )}
+                  <div className="flex gap-2 mt-3">
+                    <sync.Form method="post">
+                      <input type="hidden" name="intent" value="sync-fulfillments" />
+                      <button type="submit" className="btn btn-primary btn-sm" disabled={syncingNow}>
+                        {syncingNow ? "Pushing…" : "Confirm & push transfer"}
+                      </button>
+                    </sync.Form>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setPreviewDismissed(true)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {syncResult && (
             <div className={`alert mt-3 ${syncResult.ran ? "alert-success" : "alert-warning"}`}>

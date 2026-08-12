@@ -53,25 +53,32 @@ export async function getSyncState() {
  */
 export async function runFulfillmentSync(
   userId: string,
-  opts?: { startYmd?: string }
+  opts?: { startYmd?: string; dryRun?: boolean }
 ): Promise<SyncResult> {
-  let state = await prisma.fulfillmentSync.findUnique({ where: { id: SYNC_ID } });
-  if (!state) {
-    const startYmd = opts?.startYmd || mtToday();
-    state = await prisma.fulfillmentSync.create({
-      data: { id: SYNC_ID, startAt: ymdToDate(startYmd) },
-    });
-  }
+  const dryRun = !!opts?.dryRun;
+  const state = await prisma.fulfillmentSync.findUnique({ where: { id: SYNC_ID } });
 
-  const startYmd = mtDay(state.startAt);
+  // Baseline: existing state, else today (or a caller-supplied start). Not
+  // persisted during a dry-run preview — only a committed run establishes it.
+  const startYmd = state ? mtDay(state.startAt) : opts?.startYmd || mtToday();
+  const lastRunAt = state?.lastRunAt ?? null;
   const toYmd = mtToday();
 
   // Window start: a buffer before the last run, but never before the baseline.
   let fromYmd = startYmd;
-  if (state.lastRunAt) {
-    const buffered = mtDay(new Date(state.lastRunAt.getTime() - BUFFER_DAYS * 86400000));
+  if (lastRunAt) {
+    const buffered = mtDay(new Date(lastRunAt.getTime() - BUFFER_DAYS * 86400000));
     fromYmd = buffered > startYmd ? buffered : startYmd;
   }
+
+  // Advance the checkpoint (creating the baseline row on the first committed run).
+  const touchLastRun = async () => {
+    await prisma.fulfillmentSync.upsert({
+      where: { id: SYNC_ID },
+      update: { lastRunAt: new Date() },
+      create: { id: SYNC_ID, startAt: ymdToDate(startYmd), lastRunAt: new Date() },
+    });
+  };
 
   const empty: SyncResult = {
     ran: true, fromYmd, toYmd, startYmd,
@@ -116,7 +123,7 @@ export async function runFulfillmentSync(
   const alreadyProcessed = byKey.size - fresh.length;
 
   if (fresh.length === 0) {
-    await prisma.fulfillmentSync.update({ where: { id: SYNC_ID }, data: { lastRunAt: new Date() } });
+    if (!dryRun) await touchLastRun();
     return { ...empty, alreadyProcessed };
   }
 
@@ -144,6 +151,28 @@ export async function runFulfillmentSync(
 
   const transfers: SyncResult["transfers"] = [];
   const fulfilledFrom = ymdToDate(fromYmd);
+
+  // Dry-run preview: aggregate what WOULD be deducted, write nothing.
+  if (dryRun) {
+    const deductedMapP = new Map<string, number>();
+    for (const m of matched) deductedMapP.set(m.systemSku, (deductedMapP.get(m.systemSku) ?? 0) + m.quantity);
+    const unmatchedMapP = new Map<string, number>();
+    for (const u of unmatchedRows) unmatchedMapP.set(u.sku, (unmatchedMapP.get(u.sku) ?? 0) + u.quantity);
+    for (const store of [...new Set(matched.map((m) => m.store))]) {
+      const units = matched.filter((m) => m.store === store).reduce((s, r) => s + r.quantity, 0);
+      transfers.push({ store, label: storeLabel(store), id: "", number: "(preview)", units });
+    }
+    const deductedP = [...deductedMapP.entries()].map(([sku, quantity]) => ({ sku, quantity })).sort((a, b) => b.quantity - a.quantity);
+    const unmatchedP = [...unmatchedMapP.entries()].map(([sku, quantity]) => ({ sku, quantity })).sort((a, b) => b.quantity - a.quantity);
+    return {
+      ran: true, fromYmd, toYmd, startYmd,
+      deducted: deductedP,
+      deductedUnits: deductedP.reduce((s, d) => s + d.quantity, 0),
+      unmatched: unmatchedP,
+      alreadyProcessed,
+      transfers,
+    };
+  }
 
   await prisma.$transaction(async (tx) => {
     const now = new Date();
@@ -202,8 +231,9 @@ export async function runFulfillmentSync(
       ],
     });
 
-    await tx.fulfillmentSync.update({ where: { id: SYNC_ID }, data: { lastRunAt: now } });
   }, { timeout: 120000, maxWait: 15000 });
+
+  await touchLastRun();
 
   // 5. Summaries for the UI.
   const deductedMap = new Map<string, number>();
