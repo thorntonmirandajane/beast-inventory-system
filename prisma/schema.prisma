@@ -717,3 +717,15 @@ model FulfillmentSync {
 
   @@map("fulfillment_sync")
 }
+
+// Learned mapping from a Shopify SKU spelling (normalized: trim+UPPERCASE) to a
+// system COMPLETED SKU, so format variants like "PT 3packs" auto-match on future
+// syncs after a one-time confirmation.
+model SkuAlias {
+  id        String   @id @default(cuid())
+  alias     String   @unique
+  skuId     String
+  createdAt DateTime @default(now())
+
+  @@map("sku_aliases")
+}

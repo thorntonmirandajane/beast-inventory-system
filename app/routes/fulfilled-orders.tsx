@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { requireRole } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
-import { runFulfillmentSync, getSyncState, type SyncResult } from "../utils/fulfillment-sync.server";
+import { runFulfillmentSync, getSyncState, mapAliasAndDeduct, suggestSku, type SyncResult } from "../utils/fulfillment-sync.server";
 import {
   getFulfilledInRange,
   aggregateFulfilled,
@@ -163,6 +163,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 15,
   });
 
+  // Outstanding unmatched SKUs (need mapping) + all COMPLETED SKUs for the picker.
+  const completedSkus = await prisma.sku.findMany({
+    where: { isActive: true, type: "COMPLETED" },
+    select: { id: true, sku: true },
+    orderBy: { sku: "asc" },
+  });
+  const unmatchedGroups = await prisma.fulfillmentDeduction.groupBy({
+    by: ["sku"],
+    where: { status: "UNMATCHED" },
+    _sum: { quantity: true },
+  });
+  const unmatchedSkus = unmatchedGroups
+    .map((u) => ({
+      sku: u.sku,
+      quantity: u._sum.quantity ?? 0,
+      suggestionId: suggestSku(u.sku, completedSkus)?.id ?? "",
+    }))
+    .sort((a, b) => b.quantity - a.quantity);
+
   return {
     user,
     report,
@@ -176,6 +195,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     debug,
     fulfillmentSync,
     recentDeductions,
+    completedSkus,
+    unmatchedSkus,
   };
 };
 
@@ -192,6 +213,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { syncError: e instanceof Error ? e.message : "Sync failed" };
     }
   }
+
+  if (intent === "map-alias") {
+    const alias = String(form.get("alias") || "");
+    const skuId = String(form.get("skuId") || "");
+    if (!alias || !skuId) return { syncError: "Pick a product to map to." };
+    try {
+      return { mapResult: await mapAliasAndDeduct(user.id, alias, skuId) };
+    } catch (e) {
+      return { syncError: e instanceof Error ? e.message : "Mapping failed" };
+    }
+  }
+
   return { syncError: "Unknown action" };
 };
 
@@ -209,7 +242,7 @@ type SortKey = "sku" | "title" | "shiphero" | "utah" | "total";
 type SortDir = "asc" | "desc";
 
 export default function FulfilledOrders() {
-  const { user, report, error, from, to, priorTransfers, syncing, transferCandidates, excludedSkus, debug, fulfillmentSync, recentDeductions } =
+  const { user, report, error, from, to, priorTransfers, syncing, transferCandidates, excludedSkus, debug, fulfillmentSync, recentDeductions, completedSkus, unmatchedSkus } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
@@ -219,6 +252,11 @@ export default function FulfilledOrders() {
   const syncingNow = sync.state !== "idle";
   const syncResult = sync.data?.syncResult;
   const syncError = sync.data?.syncError;
+
+  // Map an unmatched SKU to a product
+  const map = useFetcher<{ mapResult?: { mapped: string; deductedUnits: number }; syncError?: string }>();
+  const mapResult = map.data?.mapResult;
+  const mapError = map.data?.syncError;
 
   // "Create Transfer" — confirm-before-submit modal that posts the same
   // intent=create form the Transfers tab uses, straight to the /transfers action.
@@ -390,6 +428,72 @@ export default function FulfilledOrders() {
           )}
         </div>
       </div>
+
+      {/* Unmatched SKUs — map to a product */}
+      {unmatchedSkus.length > 0 && (
+        <div className="card mb-6 border-amber-300">
+          <div className="card-body">
+            <h2 className="card-title">Unmatched fulfilled SKUs — map to a product</h2>
+            <p className="text-sm text-gray-600 max-w-2xl">
+              These shipped from Utah but don't match a COMPLETED product (a format variant
+              like "PT 3packs", a typo, etc.). Pick the right product — we'll deduct the units
+              now and remember the spelling so it matches automatically next time.
+            </p>
+
+            {mapError && <div className="alert alert-error mt-3">{mapError}</div>}
+            {mapResult && (
+              <div className="alert alert-success mt-3">
+                Mapped to <strong>{mapResult.mapped}</strong>
+                {mapResult.deductedUnits > 0
+                  ? ` — deducted ${num(mapResult.deductedUnits)} unit(s).`
+                  : " — saved; nothing outstanding to deduct."}
+              </div>
+            )}
+
+            <div className="overflow-x-auto mt-3">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b">
+                    <th className="py-2 pr-4">Shopify SKU</th>
+                    <th className="py-2 pr-4 text-right">Units</th>
+                    <th className="py-2 pr-4">Map to product</th>
+                    <th className="py-2 pr-4"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unmatchedSkus.map((u) => (
+                    <tr key={u.sku} className="border-b last:border-0">
+                      <td className="py-2 pr-4 font-mono">{u.sku}</td>
+                      <td className="py-2 pr-4 text-right">{num(u.quantity)}</td>
+                      <td className="py-2 pr-4">
+                        <map.Form method="post" className="flex items-center gap-2">
+                          <input type="hidden" name="intent" value="map-alias" />
+                          <input type="hidden" name="alias" value={u.sku} />
+                          <select name="skuId" defaultValue={u.suggestionId} className="form-input" required>
+                            <option value="">Choose a product…</option>
+                            {completedSkus.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.sku}
+                                {c.id === u.suggestionId ? "  (suggested)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                          <button type="submit" className="btn btn-primary btn-sm" disabled={map.state !== "idle"}>
+                            {map.state !== "idle" ? "Mapping…" : "Map & deduct"}
+                          </button>
+                        </map.Form>
+                      </td>
+                      <td className="py-2 pr-4 text-xs text-gray-500">
+                        {u.suggestionId ? "" : "no close match — pick manually"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Date range + controls (single inline row) */}
       <div className="card mb-4">

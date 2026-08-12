@@ -23,6 +23,7 @@ const MT_DAY = new Intl.DateTimeFormat("en-CA", {
 const mtDay = (d: Date) => MT_DAY.format(d);
 const mtToday = () => mtDay(new Date());
 const norm = (s: string) => s.trim().toUpperCase();
+const stripNorm = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 // Noon UTC on a YMD is always the same MT calendar day (MT is UTC-6/-7).
 const ymdToDate = (ymd: string) => new Date(`${ymd}T12:00:00Z`);
 const storeLabel = (store: string) =>
@@ -119,12 +120,19 @@ export async function runFulfillmentSync(
     return { ...empty, alreadyProcessed };
   }
 
-  // 4. Match to active COMPLETED system SKUs (case-insensitive).
+  // 4. Match to active COMPLETED system SKUs (case-insensitive), plus any learned
+  //    aliases (e.g. "PT 3packs" -> a real SKU) confirmed earlier.
   const completed = await prisma.sku.findMany({
     where: { isActive: true, type: "COMPLETED" },
     select: { id: true, sku: true },
   });
-  const bySku = new Map(completed.map((s) => [norm(s.sku), s]));
+  const idToSku = new Map(completed.map((s) => [s.id, s.sku]));
+  const bySku = new Map(completed.map((s) => [norm(s.sku), { id: s.id, sku: s.sku }]));
+  const aliases = await prisma.skuAlias.findMany();
+  for (const a of aliases) {
+    const sysSku = idToSku.get(a.skuId);
+    if (sysSku) bySku.set(a.alias, { id: a.skuId, sku: sysSku });
+  }
 
   const matched: (typeof fresh[number] & { skuId: string; systemSku: string })[] = [];
   const unmatchedRows: typeof fresh = [];
@@ -214,4 +222,92 @@ export async function runFulfillmentSync(
     alreadyProcessed,
     transfers,
   };
+}
+
+// ---- Suggestions + alias mapping for unmatched SKUs ----
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  let cur = new Array(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return prev[n];
+}
+
+/** Closest COMPLETED SKU to an unmatched Shopify SKU, if reasonably close. */
+export function suggestSku(
+  aliasRaw: string,
+  candidates: { id: string; sku: string }[]
+): { id: string; sku: string } | null {
+  const a = stripNorm(aliasRaw);
+  if (!a) return null;
+  let best: { id: string; sku: string } | null = null;
+  let bestScore = Infinity;
+  for (const c of candidates) {
+    const d = levenshtein(a, stripNorm(c.sku));
+    if (d < bestScore) { bestScore = d; best = c; }
+  }
+  if (!best) return null;
+  const maxLen = Math.max(a.length, stripNorm(best.sku).length);
+  return bestScore <= Math.max(3, Math.floor(maxLen * 0.5)) ? best : null;
+}
+
+/**
+ * Save an alias (Shopify SKU spelling -> system SKU) and immediately deduct any
+ * fulfillments that were previously logged UNMATCHED under that spelling. Future
+ * syncs match it automatically via the alias.
+ */
+export async function mapAliasAndDeduct(userId: string, aliasRaw: string, skuId: string) {
+  const alias = norm(aliasRaw);
+  const sku = await prisma.sku.findUnique({ where: { id: skuId }, select: { id: true, sku: true, type: true } });
+  if (!sku) throw new Error("SKU not found.");
+  if (sku.type !== "COMPLETED") throw new Error("Alias must map to a COMPLETED product.");
+
+  await prisma.skuAlias.upsert({
+    where: { alias },
+    update: { skuId },
+    create: { alias, skuId },
+  });
+
+  const rows = (
+    await prisma.fulfillmentDeduction.findMany({ where: { status: "UNMATCHED" } })
+  ).filter((r) => norm(r.sku) === alias);
+
+  const transfers: { store: string; label: string; number: string; units: number }[] = [];
+  if (rows.length > 0) {
+    await prisma.$transaction(async (tx) => {
+      const now = new Date();
+      for (const store of [...new Set(rows.map((r) => r.store))]) {
+        const storeRows = rows.filter((r) => r.store === store);
+        const units = storeRows.reduce((s, r) => s + r.quantity, 0);
+        const transfer = await tx.transfer.create({
+          data: {
+            destination: `Utah Fulfillment — ${storeLabel(store)}`,
+            createdById: userId,
+            shippedAt: now,
+            fulfilledTo: now,
+            notes: `Auto-deducted after mapping ${sku.sku} (${storeRows.length} previously-unmatched fulfillment(s)).`,
+            items: { create: [{ skuId: sku.id, quantity: units }] },
+          },
+        });
+        await deductInventory(sku.id, units, ["COMPLETED"], transfer.id, "TRANSFER", "FULFILLMENT_SYNC", userId, tx);
+        await tx.fulfillmentDeduction.updateMany({
+          where: { id: { in: storeRows.map((r) => r.id) } },
+          data: { status: "DEDUCTED", skuId: sku.id, transferId: transfer.id },
+        });
+        transfers.push({ store, label: storeLabel(store), number: transfer.transferNumber, units });
+      }
+    }, { timeout: 120000, maxWait: 15000 });
+  }
+
+  return { mapped: sku.sku, alias, deductedUnits: transfers.reduce((s, t) => s + t.units, 0), transfers };
 }
