@@ -747,17 +747,24 @@ async function fetchFulfilledForStore(
  */
 export async function getFulfilledInRange(
   fromYmd: string,
-  toYmd: string
+  toYmd: string,
+  opts?: { fresh?: boolean }
 ): Promise<FulfilledLineItem[]> {
-  const archery = cached(`fulfilled:archery:${fromYmd}:${toYmd}`, () =>
-    fetchFulfilledForStore(getArcheryCreds(), "archery", fromYmd, toYmd)
-  );
+  // The auto-deduction sync passes fresh:true to bypass the 5-min stale cache
+  // so a manual "Sync now" reflects fulfillments that just happened.
+  const archery = opts?.fresh
+    ? fetchFulfilledForStore(getArcheryCreds(), "archery", fromYmd, toYmd)
+    : cached(`fulfilled:archery:${fromYmd}:${toYmd}`, () =>
+        fetchFulfilledForStore(getArcheryCreds(), "archery", fromYmd, toYmd)
+      );
 
   const beastCreds = getBeastCreds();
   const beast = beastCreds
-    ? cached(`fulfilled:beast:${fromYmd}:${toYmd}`, () =>
-        fetchFulfilledForStore(beastCreds, "beast", fromYmd, toYmd)
-      )
+    ? opts?.fresh
+      ? fetchFulfilledForStore(beastCreds, "beast", fromYmd, toYmd)
+      : cached(`fulfilled:beast:${fromYmd}:${toYmd}`, () =>
+          fetchFulfilledForStore(beastCreds, "beast", fromYmd, toYmd)
+        )
     : Promise.resolve([] as FulfilledLineItem[]);
 
   const [archeryItems, beastItems] = await Promise.all([archery, beast]);

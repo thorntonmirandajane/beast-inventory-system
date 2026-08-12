@@ -1,9 +1,10 @@
-import type { LoaderFunctionArgs } from "react-router";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, Form, useNavigation, Link, useFetcher } from "react-router";
 import { useEffect, useState } from "react";
 import { requireRole } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { runFulfillmentSync, getSyncState, type SyncResult } from "../utils/fulfillment-sync.server";
 import {
   getFulfilledInRange,
   aggregateFulfilled,
@@ -156,6 +157,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 8,
   });
 
+  const fulfillmentSync = await getSyncState();
+  const recentDeductions = await prisma.fulfillmentDeduction.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 15,
+  });
+
   return {
     user,
     report,
@@ -167,7 +174,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     transferCandidates,
     excludedSkus,
     debug,
+    fulfillmentSync,
+    recentDeductions,
   };
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const user = await requireRole(request, ["ADMIN", "MANAGER"]);
+  const form = await request.formData();
+  const intent = String(form.get("intent") || "");
+
+  if (intent === "sync-fulfillments") {
+    const startYmd = cleanYmd(String(form.get("startDate") || "")) || undefined;
+    try {
+      return { syncResult: await runFulfillmentSync(user.id, { startYmd }) };
+    } catch (e) {
+      return { syncError: e instanceof Error ? e.message : "Sync failed" };
+    }
+  }
+  return { syncError: "Unknown action" };
 };
 
 const num = (n: number) => n.toLocaleString();
@@ -184,10 +209,16 @@ type SortKey = "sku" | "title" | "shiphero" | "utah" | "total";
 type SortDir = "asc" | "desc";
 
 export default function FulfilledOrders() {
-  const { user, report, error, from, to, priorTransfers, syncing, transferCandidates, excludedSkus, debug } =
+  const { user, report, error, from, to, priorTransfers, syncing, transferCandidates, excludedSkus, debug, fulfillmentSync, recentDeductions } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
+
+  // Utah auto-deduction "Sync now"
+  const sync = useFetcher<{ syncResult?: SyncResult; syncError?: string }>();
+  const syncingNow = sync.state !== "idle";
+  const syncResult = sync.data?.syncResult;
+  const syncError = sync.data?.syncError;
 
   // "Create Transfer" — confirm-before-submit modal that posts the same
   // intent=create form the Transfers tab uses, straight to the /transfers action.
@@ -260,6 +291,104 @@ export default function FulfilledOrders() {
           Orders shipped over a date range, by SKU, split by ShipHero vs. Utah (in-house).
           Both the Bowmar Archery and Beast Broadhead stores.
         </p>
+      </div>
+
+      {/* Utah auto-deduction */}
+      <div className="card mb-6">
+        <div className="card-body">
+          <div className="flex items-start justify-between flex-wrap gap-3">
+            <div>
+              <h2 className="card-title">Auto-Deduct Utah Fulfillments</h2>
+              <p className="text-sm text-gray-600 max-w-2xl">
+                Deducts completed packs from inventory as Utah ships them (both stores),
+                creating a Transfer record each run. Idempotent — it picks up where it left
+                off and can never double-count a fulfillment. ShipHero/Gallatin is ignored.
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                {fulfillmentSync?.lastRunAt
+                  ? `Last synced ${new Date(fulfillmentSync.lastRunAt).toLocaleString()} · baseline ${new Date(fulfillmentSync.startAt).toLocaleDateString()}`
+                  : "Not yet run. Pick the date to start deducting from (usually the day after your last manual reconcile), then Sync now."}
+              </p>
+            </div>
+            <sync.Form method="post" className="flex items-end gap-2">
+              <input type="hidden" name="intent" value="sync-fulfillments" />
+              {!fulfillmentSync && (
+                <div className="form-group mb-0">
+                  <label htmlFor="startDate" className="form-label text-xs">Start from</label>
+                  <input id="startDate" type="date" name="startDate" defaultValue={to} className="form-input" />
+                </div>
+              )}
+              <button type="submit" className="btn btn-primary" disabled={syncingNow}>
+                {syncingNow ? "Syncing…" : "Sync now"}
+              </button>
+            </sync.Form>
+          </div>
+
+          {syncError && <div className="alert alert-error mt-3">{syncError}</div>}
+
+          {syncResult && (
+            <div className={`alert mt-3 ${syncResult.ran ? "alert-success" : "alert-warning"}`}>
+              {!syncResult.ran ? (
+                syncResult.reason
+              ) : (
+                <>
+                  Deducted <strong>{num(syncResult.deductedUnits)}</strong> unit(s) across{" "}
+                  {syncResult.deducted.length} SKU(s)
+                  {syncResult.transfers.length > 0 &&
+                    ` — ${syncResult.transfers.map((t) => `${t.label} (${num(t.units)})`).join(", ")}`}
+                  .
+                  {syncResult.alreadyProcessed > 0 &&
+                    ` ${num(syncResult.alreadyProcessed)} already processed, skipped.`}
+                  {syncResult.deductedUnits === 0 && syncResult.unmatched.length === 0 &&
+                    " Nothing new to deduct."}
+                  {syncResult.unmatched.length > 0 && (
+                    <div className="mt-2 text-sm">
+                      <strong>{syncResult.unmatched.length} unmatched SKU(s)</strong> (no active COMPLETED
+                      product — not deducted, fix the SKU then sync again):{" "}
+                      {syncResult.unmatched.map((u) => `${u.sku} ×${num(u.quantity)}`).join(", ")}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {recentDeductions.length > 0 && (
+            <details className="mt-3">
+              <summary className="text-sm text-blue-600 cursor-pointer">
+                Recent auto-deductions ({recentDeductions.length})
+              </summary>
+              <div className="overflow-x-auto mt-2">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left border-b">
+                      <th className="py-1 pr-4">When</th>
+                      <th className="py-1 pr-4">Store</th>
+                      <th className="py-1 pr-4">Order</th>
+                      <th className="py-1 pr-4">SKU</th>
+                      <th className="py-1 pr-4 text-right">Qty</th>
+                      <th className="py-1 pr-4">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentDeductions.map((d) => (
+                      <tr key={d.id} className="border-b last:border-0">
+                        <td className="py-1 pr-4">{new Date(d.createdAt).toLocaleDateString()}</td>
+                        <td className="py-1 pr-4">{d.store === "archery" ? "Bowmar" : "Beast"}</td>
+                        <td className="py-1 pr-4">{d.orderName}</td>
+                        <td className="py-1 pr-4 font-mono">{d.sku}</td>
+                        <td className="py-1 pr-4 text-right">{num(d.quantity)}</td>
+                        <td className={`py-1 pr-4 ${d.status === "DEDUCTED" ? "text-green-700" : "text-amber-600"}`}>
+                          {d.status === "DEDUCTED" ? "Deducted" : "Unmatched"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+        </div>
       </div>
 
       {/* Date range + controls (single inline row) */}

@@ -684,3 +684,36 @@ enum InventoryLogAction {
   ADJUSTED          // Manual adjustment
   DISPOSED          // Damaged/discarded items
 }
+
+// Idempotency ledger: every Utah fulfillment line ever deducted from inventory,
+// keyed by (store, fulfillmentId, sku) so re-running a sync can never
+// double-deduct. UNMATCHED rows record SKUs we saw but couldn't map, so they're
+// reported once and not re-flagged.
+model FulfillmentDeduction {
+  id            String   @id @default(cuid())
+  store         String
+  fulfillmentId String
+  sku           String   // the Shopify SKU as fulfilled
+  skuId         String?  // matched system COMPLETED SKU (null if unmatched)
+  quantity      Int
+  orderName     String
+  fulfilledAt   DateTime
+  status        String   // "DEDUCTED" | "UNMATCHED"
+  transferId    String?  // the auto Transfer this deduction was recorded on
+  createdAt     DateTime @default(now())
+
+  @@unique([store, fulfillmentId, sku])
+  @@index([createdAt])
+  @@map("fulfillment_deductions")
+}
+
+// Singleton checkpoint for the Utah auto-deduction. startAt caps how far back we
+// ever process (so we don't retroactively deduct history already reconciled).
+model FulfillmentSync {
+  id        String    @id
+  startAt   DateTime
+  lastRunAt DateTime?
+  updatedAt DateTime  @updatedAt
+
+  @@map("fulfillment_sync")
+}
