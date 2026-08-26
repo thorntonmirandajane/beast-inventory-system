@@ -5,6 +5,7 @@ import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { buildShifts, weeklyHoursFromShifts, calculateOvertimePay } from "../utils/overtime.server";
+import { trackableEfficiency } from "../utils/productivity.server";
 
 const MT = "America/Denver";
 // Format a Date to a Mountain-time datetime-local string (YYYY-MM-DDTHH:mm).
@@ -53,35 +54,67 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { timestamp: "asc" },
   });
 
-  // Authoritative clock-in/out links from time entries, so a real shift is
-  // recognized even next to a duplicate clock-in.
-  const entryLinks = await prisma.workerTimeEntry.findMany({
-    where: {
-      userId: { in: workers.map((w) => w.id) },
-      clockOutEventId: { not: null },
-      clockInTime: { gte: startDate, lte: endDate },
-    },
+  // Time entries are the authoritative record of a worked shift (adjusted times +
+  // submitted tasks), so payroll shifts come from entries first; clock events not
+  // covered by an entry are shown as loose activity.
+  const entries = await prisma.workerTimeEntry.findMany({
+    where: { userId: { in: workers.map((w) => w.id) }, clockInTime: { gte: startDate, lte: endDate } },
     select: {
-      userId: true, clockInEventId: true, clockOutEventId: true,
+      id: true, userId: true,
+      clockInTime: true, clockOutTime: true,
+      clockInEventId: true, clockOutEventId: true,
       _count: { select: { lines: true } },
     },
+    orderBy: { clockInTime: "asc" },
   });
-  const pairsByUser = new Map<string, { clockInId: string; clockOutId: string }[]>();
-  // Per clock-in event: does its time entry have submitted tasks? Empty entries
-  // (e.g. an imported duplicate) are the ones safe to delete.
-  const entryTasksByClockIn = new Map<string, boolean>();
-  for (const e of entryLinks) {
-    if (!e.clockOutEventId) continue;
-    const list = pairsByUser.get(e.userId) ?? [];
-    list.push({ clockInId: e.clockInEventId, clockOutId: e.clockOutEventId });
-    pairsByUser.set(e.userId, list);
-    entryTasksByClockIn.set(e.clockInEventId, e._count.lines > 0);
-  }
+
+  type PShift = {
+    kind: "entry" | "loose";
+    entryId: string | null;
+    clockInId: string | null;
+    clockOutId: string | null;
+    clockIn: Date;
+    clockOut: Date | null;
+    hours: number;
+    open: boolean;
+    hasTasks: boolean;
+    linked: boolean;
+  };
 
   const payrollData = workers.map((worker) => {
     const workerEvents = clockEvents.filter((e) => e.userId === worker.id);
-    const shifts = buildShifts(workerEvents, pairsByUser.get(worker.id));
-    const weeklyHours = weeklyHoursFromShifts(shifts);
+    const workerEntries = entries.filter((e) => e.userId === worker.id);
+
+    // Entry shifts (authoritative). Consume their clock events so they aren't
+    // double-counted as loose activity.
+    const consumed = new Set<string>();
+    const entryShifts: PShift[] = workerEntries.map((en) => {
+      if (en.clockInEventId) consumed.add(en.clockInEventId);
+      if (en.clockOutEventId) consumed.add(en.clockOutEventId);
+      const clockOut = en.clockOutTime;
+      const hours = clockOut ? Math.max(0, (clockOut.getTime() - en.clockInTime.getTime()) / 3_600_000) : 0;
+      return {
+        kind: "entry", entryId: en.id,
+        clockInId: en.clockInEventId, clockOutId: en.clockOutEventId,
+        clockIn: en.clockInTime, clockOut,
+        hours, open: !clockOut, hasTasks: en._count.lines > 0, linked: true,
+      };
+    });
+
+    // Loose clock-event pairs not covered by any entry (e.g. still-clocked-in, a
+    // stray duplicate clock-in, or an admin who clocks in/out without an entry).
+    const looseShifts: PShift[] = buildShifts(workerEvents.filter((e) => !consumed.has(e.id))).map((s) => ({
+      kind: "loose", entryId: null,
+      clockInId: s.clockInId, clockOutId: s.clockOutId,
+      clockIn: s.clockIn, clockOut: s.clockOut,
+      hours: s.hours, open: s.open, hasTasks: false, linked: false,
+    }));
+
+    const allShifts = [...entryShifts, ...looseShifts].sort((a, b) => a.clockIn.getTime() - b.clockIn.getTime());
+
+    const weeklyHours = weeklyHoursFromShifts(
+      allShifts.map((s) => ({ clockInId: s.clockInId ?? "", clockOutId: s.clockOutId, clockIn: s.clockIn, clockOut: s.clockOut, hours: s.hours, open: s.open }))
+    );
     const overtimeCalc = calculateOvertimePay(weeklyHours, worker.payRate || 0);
 
     return {
@@ -96,26 +129,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       regularPay: parseFloat(overtimeCalc.regularPay.toFixed(2)),
       overtimePay: parseFloat(overtimeCalc.overtimePay.toFixed(2)),
       totalPay: parseFloat(overtimeCalc.totalPay.toFixed(2)),
-      hasOpen: shifts.some((s) => s.open),
-      shifts: shifts.map((s, i, arr) => {
+      hasOpen: allShifts.some((s) => s.open),
+      shifts: allShifts.map((s) => {
         const dayKey = ymdLocal(s.clockIn);
-        const sameDayCount = shifts.filter((x) => ymdLocal(x.clockIn) === dayKey).length;
-        const hasTasks = entryTasksByClockIn.get(s.clockInId) ?? false;
+        const sameDayCount = allShifts.filter((x) => ymdLocal(x.clockIn) === dayKey).length;
         return {
-          clockInId: s.clockInId,
+          entryId: s.entryId,
+          clockInId: s.clockInId ?? "",
           clockOutId: s.clockOutId,
           dayLabel: mtDayLabel(s.clockIn),
           clockInInput: toMtInput(s.clockIn),
           clockOutInput: s.clockOut ? toMtInput(s.clockOut) : "",
           hours: parseFloat(s.hours.toFixed(2)),
           open: s.open,
-          hasTasks,
-          // Open only because another clock-in follows it — i.e. a duplicate
-          // clock-in. Adding a clock-out can't fix it; it must be deleted.
-          orphaned: s.open && i < arr.length - 1,
-          // A second shift the same day with no submitted tasks is the likely
-          // duplicate (e.g. an imported entry doubling a real clock-in).
-          dupNoTasks: sameDayCount > 1 && !s.open && !hasTasks,
+          hasTasks: s.hasTasks,
+          linked: s.linked,
+          // A same-day extra shift with no QC tasks is the likely duplicate
+          // (stray clock-in or an empty imported entry).
+          dup: sameDayCount > 1 && !(s.linked && s.hasTasks),
         };
       }),
     };
@@ -144,13 +175,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(form.get("intent") || "");
 
   if (intent === "edit-shift") {
+    const entryId = String(form.get("entryId") || "");
     const clockInId = String(form.get("clockInId") || "");
     const clockOutId = String(form.get("clockOutId") || "");
     const workerId = String(form.get("workerId") || "");
     const clockInStr = String(form.get("clockIn") || "");
     const clockOutStr = String(form.get("clockOut") || "");
 
-    if (!clockInId || !clockInStr) return { error: "Missing clock-in time." };
+    if (!clockInStr) return { error: "Missing clock-in time." };
     const clockIn = new Date(clockInStr);
     if (isNaN(clockIn.getTime())) return { error: "Invalid clock-in time." };
 
@@ -161,46 +193,81 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (clockOut <= clockIn) return { error: "Clock-out must be after clock-in." };
     }
 
+    // Entry-backed shift: update the QC time entry (the source of truth) and keep
+    // its linked clock events in sync; recompute hours + efficiency.
+    if (entryId) {
+      const entry = await prisma.workerTimeEntry.findUnique({
+        where: { id: entryId },
+        select: { breakMinutes: true, expectedMinutes: true, miscMinutes: true, clockInEventId: true, clockOutEventId: true },
+      });
+      if (!entry) return { error: "Time entry not found." };
+      const data: Record<string, unknown> = { clockInTime: clockIn, clockOutTime: clockOut };
+      if (clockOut) {
+        const actualMinutes = Math.max(0, Math.round((clockOut.getTime() - clockIn.getTime()) / 60000) - (entry.breakMinutes ?? 0));
+        data.actualMinutes = actualMinutes;
+        data.efficiency = trackableEfficiency(entry.expectedMinutes ?? 0, actualMinutes, entry.miscMinutes ?? 0);
+      }
+      await prisma.$transaction(async (tx) => {
+        await tx.workerTimeEntry.update({ where: { id: entryId }, data });
+        if (entry.clockInEventId) await tx.clockEvent.update({ where: { id: entry.clockInEventId }, data: { timestamp: clockIn } });
+        if (clockOut && entry.clockOutEventId) await tx.clockEvent.update({ where: { id: entry.clockOutEventId }, data: { timestamp: clockOut } });
+      });
+      await createAuditLog(user.id, "EDIT_TIME_ENTRY_SHIFT", "WorkerTimeEntry", entryId, { clockIn: clockInStr, clockOut: clockOutStr || null });
+      return { success: "Time entry updated." };
+    }
+
+    // Loose clock-event shift.
+    if (!clockInId) return { error: "Missing clock-in." };
     await prisma.$transaction(async (tx) => {
       await tx.clockEvent.update({ where: { id: clockInId }, data: { timestamp: clockIn } });
       if (clockOutId) {
         if (clockOut) await tx.clockEvent.update({ where: { id: clockOutId }, data: { timestamp: clockOut } });
       } else if (clockOut && workerId) {
-        await tx.clockEvent.create({
-          data: { userId: workerId, type: "CLOCK_OUT", timestamp: clockOut, notes: "Added via payroll edit" },
-        });
+        await tx.clockEvent.create({ data: { userId: workerId, type: "CLOCK_OUT", timestamp: clockOut, notes: "Added via payroll edit" } });
       }
     });
-
-    await createAuditLog(user.id, "EDIT_CLOCK_SHIFT", "ClockEvent", clockInId, {
-      clockIn: clockInStr, clockOut: clockOutStr || null, addedClockOut: !clockOutId && !!clockOut,
-    });
+    await createAuditLog(user.id, "EDIT_CLOCK_SHIFT", "ClockEvent", clockInId, { clockIn: clockInStr, clockOut: clockOutStr || null });
     return { success: clockOutId ? "Shift updated." : clockOut ? "Clock-out added." : "Clock-in updated." };
   }
 
   if (intent === "delete-shift") {
+    const entryId = String(form.get("entryId") || "");
     const clockInId = String(form.get("clockInId") || "");
     const clockOutId = String(form.get("clockOutId") || "");
+
+    // Entry-backed: protect entries that have submitted tasks (real production).
+    if (entryId) {
+      const entry = await prisma.workerTimeEntry.findUnique({
+        where: { id: entryId },
+        select: { clockInEventId: true, clockOutEventId: true, _count: { select: { lines: true } } },
+      });
+      if (!entry) return { error: "Time entry not found." };
+      if (entry._count.lines > 0) {
+        return { error: "This time entry has submitted tasks — reopen/handle it in Quality Control first." };
+      }
+      const evIds = [entry.clockInEventId, entry.clockOutEventId].filter(Boolean) as string[];
+      await prisma.$transaction(async (tx) => {
+        await tx.workerTimeEntry.delete({ where: { id: entryId } });
+        if (evIds.length) await tx.clockEvent.deleteMany({ where: { id: { in: evIds } } });
+      });
+      await createAuditLog(user.id, "DELETE_TIME_ENTRY_SHIFT", "WorkerTimeEntry", entryId, { deleted: evIds });
+      return { success: "Shift removed." };
+    }
+
+    // Loose clock-event shift.
     const ids = [clockInId, clockOutId].filter(Boolean);
     if (ids.length === 0) return { error: "Missing shift." };
-
-    // Don't delete clock events tied to a submitted/approved time entry.
-    const entries = await prisma.workerTimeEntry.findMany({
+    const linked = await prisma.workerTimeEntry.findMany({
       where: { OR: [{ clockInEventId: { in: ids } }, { clockOutEventId: { in: ids } }] },
       include: { _count: { select: { lines: true } } },
     });
-    // An entry with submitted tasks moved (or will move) inventory — protect it.
-    // An empty entry (e.g. an imported duplicate) moved nothing, so it's safe to
-    // delete even if it was auto-approved.
-    if (entries.some((e) => e._count.lines > 0)) {
-      return { error: "This shift's time entry has submitted tasks — reopen/handle it in Quality Control first." };
+    if (linked.some((e) => e._count.lines > 0)) {
+      return { error: "This shift's time entry has submitted tasks — handle it in Quality Control first." };
     }
-
     await prisma.$transaction(async (tx) => {
-      if (entries.length) await tx.workerTimeEntry.deleteMany({ where: { id: { in: entries.map((e) => e.id) } } });
+      if (linked.length) await tx.workerTimeEntry.deleteMany({ where: { id: { in: linked.map((e) => e.id) } } });
       await tx.clockEvent.deleteMany({ where: { id: { in: ids } } });
     });
-
     await createAuditLog(user.id, "DELETE_CLOCK_SHIFT", "ClockEvent", clockInId, { deleted: ids });
     return { success: "Shift removed." };
   }
@@ -383,12 +450,13 @@ function FragmentRow({
                   </thead>
                   <tbody>
                     {worker.shifts.map((s) => (
-                      <tr key={s.clockInId} className={`border-b last:border-0 ${s.open || s.dupNoTasks ? "bg-red-50" : ""}`}>
+                      <tr key={`${s.entryId ?? s.clockInId}`} className={`border-b last:border-0 ${s.dup ? "bg-red-50" : ""}`}>
                         <td className="py-2 pr-4 whitespace-nowrap">{s.dayLabel}</td>
                         <td colSpan={4} className="py-2">
                           <div className="flex flex-wrap items-center gap-2">
                             <edit.Form method="post" className="flex flex-wrap items-center gap-2">
                               <input type="hidden" name="intent" value="edit-shift" />
+                              <input type="hidden" name="entryId" value={s.entryId ?? ""} />
                               <input type="hidden" name="clockInId" value={s.clockInId} />
                               <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
                               <input type="hidden" name="workerId" value={worker.id} />
@@ -404,21 +472,19 @@ function FragmentRow({
                               <span className="w-16 text-right font-medium">
                                 {s.open ? <span className="text-red-600">open</span> : `${s.hours.toFixed(1)}h`}
                               </span>
-                              {!s.orphaned && (
+                              {!s.dup && (
                                 <button type="submit" className="btn btn-secondary btn-sm" disabled={edit.state !== "idle"}>
                                   {s.open ? "Add clock-out" : "Save"}
                                 </button>
                               )}
                             </edit.Form>
-                            {s.orphaned && (
-                              <span className="text-xs text-red-600 font-medium">duplicate clock-in — delete it →</span>
-                            )}
-                            {s.dupNoTasks && (
-                              <span className="text-xs text-red-600 font-medium">duplicate entry — no QC tasks, delete it →</span>
-                            )}
-                            {!s.open && !s.dupNoTasks && s.hasTasks && (
+                            {s.dup ? (
+                              <span className="text-xs text-red-600 font-medium">duplicate — delete it →</span>
+                            ) : s.linked && s.hasTasks ? (
                               <span className="text-xs text-green-700">✓ QC entry</span>
-                            )}
+                            ) : !s.linked && !s.open ? (
+                              <span className="text-xs text-gray-500">not in QC</span>
+                            ) : null}
                             <edit.Form
                               method="post"
                               onSubmit={(e) => {
@@ -426,6 +492,7 @@ function FragmentRow({
                               }}
                             >
                               <input type="hidden" name="intent" value="delete-shift" />
+                              <input type="hidden" name="entryId" value={s.entryId ?? ""} />
                               <input type="hidden" name="clockInId" value={s.clockInId} />
                               <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
                               <button
