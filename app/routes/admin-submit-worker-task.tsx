@@ -108,14 +108,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     let timeEntry = existingEntry;
     if (!timeEntry) {
-      const clockInEvent = await prisma.clockEvent.create({
-        data: {
-          userId: workerId,
-          type: "CLOCK_IN",
-          timestamp: selectedDate,
-          notes: `Auto-created by admin task submission for ${date}`,
-        },
+      // Reuse the worker's real clock-in for the day if they have one (e.g. they
+      // clocked in but haven't clocked out) so we don't create a duplicate; only
+      // synthesize a clock-in when there's no clock activity at all.
+      const existingClockIn = await prisma.clockEvent.findFirst({
+        where: { userId: workerId, type: "CLOCK_IN", timestamp: { gte: startOfDay, lte: endOfDay } },
+        orderBy: { timestamp: "asc" },
       });
+      const clockInEvent =
+        existingClockIn ??
+        (await prisma.clockEvent.create({
+          data: {
+            userId: workerId,
+            type: "CLOCK_IN",
+            timestamp: selectedDate,
+            notes: `Auto-created by admin task submission for ${date}`,
+          },
+        }));
       timeEntry = await prisma.workerTimeEntry.create({
         data: {
           userId: workerId,

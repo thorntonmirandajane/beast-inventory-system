@@ -3,6 +3,7 @@ import { useLoaderData, useActionData, Form, useNavigation, Link } from "react-r
 import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { hasClockActivityOnDay } from "../utils/clock.server";
 import type { TimeEntryStatus } from "@prisma/client";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -146,6 +147,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
     if (existing) {
       skipped.push(`${fullName} — ${dateLabel} already has a time entry.`);
+      continue;
+    }
+    // Also skip if they already have real clock activity that day (e.g. clocked
+    // in but not yet clocked out) — importing would create a duplicate clock-in.
+    if (await hasClockActivityOnDay(match.id, clockIn)) {
+      skipped.push(`${fullName} — ${dateLabel} already has clock activity; not imported to avoid a duplicate.`);
       continue;
     }
 

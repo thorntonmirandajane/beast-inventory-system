@@ -3,6 +3,7 @@ import { useLoaderData, useActionData, Form, useNavigation, redirect } from "rea
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { isClockedInAt } from "../utils/clock.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
@@ -49,6 +50,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
 
     const clockInTimestamp = new Date(`${clockInDate}T${clockInTime}`);
+
+    // Don't stack a clock-in on top of one that's still open (would be a duplicate).
+    if (await isClockedInAt(workerId, clockInTimestamp)) {
+      return { error: "That worker is already clocked in at that time. Clock them out first, or edit the open shift on the Payroll page." };
+    }
 
     // No clock-out provided → open shift: just log the clock-in so the worker is
     // on the clock and can clock out normally (which creates their entry).
