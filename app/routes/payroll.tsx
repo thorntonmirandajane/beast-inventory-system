@@ -50,9 +50,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { timestamp: "asc" },
   });
 
+  // Authoritative clock-in/out links from time entries, so a real shift is
+  // recognized even next to a duplicate clock-in.
+  const entryLinks = await prisma.workerTimeEntry.findMany({
+    where: {
+      userId: { in: workers.map((w) => w.id) },
+      clockOutEventId: { not: null },
+      clockInTime: { gte: startDate, lte: endDate },
+    },
+    select: { userId: true, clockInEventId: true, clockOutEventId: true },
+  });
+  const pairsByUser = new Map<string, { clockInId: string; clockOutId: string }[]>();
+  for (const e of entryLinks) {
+    if (!e.clockOutEventId) continue;
+    const list = pairsByUser.get(e.userId) ?? [];
+    list.push({ clockInId: e.clockInEventId, clockOutId: e.clockOutEventId });
+    pairsByUser.set(e.userId, list);
+  }
+
   const payrollData = workers.map((worker) => {
     const workerEvents = clockEvents.filter((e) => e.userId === worker.id);
-    const shifts = buildShifts(workerEvents);
+    const shifts = buildShifts(workerEvents, pairsByUser.get(worker.id));
     const weeklyHours = weeklyHoursFromShifts(shifts);
     const overtimeCalc = calculateOvertimePay(weeklyHours, worker.payRate || 0);
 

@@ -25,20 +25,40 @@ export interface Shift {
 }
 
 /**
- * Pair clock-in/out events into discrete shifts, in order. A clock-in with no
- * following clock-out is an OPEN shift (0 hours) that needs a manual fix — this
- * avoids the double-count where a forgotten clock-out let the next clock-out be
- * counted twice. Break events are ignored (matches existing payroll behavior).
+ * Pair clock-in/out events into discrete shifts.
+ *
+ * `knownPairs` are authoritative (clockIn, clockOut) event links from time
+ * entries — these are paired FIRST so a real shift is recognized even when a
+ * duplicate clock-in sits next to it (positional pairing alone would grab the
+ * wrong clock-in and leave the entry's clock-in looking "open"). Whatever's left
+ * is paired positionally; a leftover clock-in with no clock-out is an OPEN shift
+ * (0 hours) needing a fix. Break events are ignored.
  */
-export function buildShifts(events: ClockEvent[]): Shift[] {
-  const sorted = events
-    .filter((e) => e.type === "CLOCK_IN" || e.type === "CLOCK_OUT")
-    .slice()
-    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-
+export function buildShifts(
+  events: ClockEvent[],
+  knownPairs?: { clockInId: string; clockOutId: string }[]
+): Shift[] {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  const consumed = new Set<string>();
   const shifts: Shift[] = [];
+
+  // 1. Authoritative pairs from time entries.
+  for (const p of knownPairs ?? []) {
+    const ci = byId.get(p.clockInId);
+    const co = byId.get(p.clockOutId);
+    if (!ci || !co || consumed.has(ci.id) || consumed.has(co.id)) continue;
+    const hours = (co.timestamp.getTime() - ci.timestamp.getTime()) / 3_600_000;
+    shifts.push({ clockInId: ci.id, clockOutId: co.id, clockIn: ci.timestamp, clockOut: co.timestamp, hours: hours > 0 ? hours : 0, open: false });
+    consumed.add(ci.id);
+    consumed.add(co.id);
+  }
+
+  // 2. Positional pairing for everything left over.
+  const rest = events
+    .filter((e) => (e.type === "CLOCK_IN" || e.type === "CLOCK_OUT") && !consumed.has(e.id))
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
   let open: ClockEvent | null = null;
-  for (const e of sorted) {
+  for (const e of rest) {
     if (e.type === "CLOCK_IN") {
       if (open) shifts.push({ clockInId: open.id, clockOutId: null, clockIn: open.timestamp, clockOut: null, hours: 0, open: true });
       open = e;
@@ -49,6 +69,8 @@ export function buildShifts(events: ClockEvent[]): Shift[] {
     }
   }
   if (open) shifts.push({ clockInId: open.id, clockOutId: null, clockIn: open.timestamp, clockOut: null, hours: 0, open: true });
+
+  shifts.sort((a, b) => a.clockIn.getTime() - b.clockIn.getTime());
   return shifts;
 }
 
