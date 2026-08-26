@@ -55,7 +55,12 @@ function computeStats(entries: EntryLite[]) {
 }
 
 function ymd(d: Date) {
-  return d.toISOString().split("T")[0];
+  // Local (server = Mountain) calendar day, so day bucketing matches the Mon–Sun
+  // columns. Using UTC here dropped/mis-bucketed late-evening entries.
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${da}`;
 }
 function mondayOf(d: Date) {
   const day = d.getDay(); // 0 Sun .. 6 Sat
@@ -202,9 +207,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // accumulate expected/actual minutes per worker per day, and team per day
     // Cells show TRACKABLE efficiency (Expected ÷ non-misc hours) so workers
     // pulled onto misc tasks aren't penalized. Weekly Hours stays total clocked.
+    // Efficiency accumulators only take entries that have trackable time; a
+    // zero-duration / all-misc entry contributes expected-with-no-time and would
+    // otherwise spike the ratio (e.g. a blank day still inflating the weekly %).
+    // Hours accumulators take every entry so total clocked hours stay accurate.
     const teamExp = Array(7).fill(0);
     const teamAct = Array(7).fill(0);
     const teamMis = Array(7).fill(0);
+    const teamHrs = Array(7).fill(0);
     const eff = (exp: number, act: number, mis: number) => {
       const tr = act - mis;
       return tr > 0 ? (exp / tr) * 100 : null;
@@ -213,25 +223,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const exp = Array(7).fill(0);
       const act = Array(7).fill(0);
       const mis = Array(7).fill(0);
+      const hrs = Array(7).fill(0);
       for (const e of byUser.get(r.workerId) ?? []) {
         const i = dayIndex(e);
         if (i < 0) continue;
-        exp[i] += e.expectedMinutes ?? 0;
-        act[i] += e.actualMinutes ?? 0;
-        mis[i] += e.miscMinutes ?? 0;
-        teamExp[i] += e.expectedMinutes ?? 0;
-        teamAct[i] += e.actualMinutes ?? 0;
-        teamMis[i] += e.miscMinutes ?? 0;
+        const a = e.actualMinutes ?? 0;
+        const m = e.miscMinutes ?? 0;
+        hrs[i] += a;
+        teamHrs[i] += a;
+        if (a - m > 0) {
+          exp[i] += e.expectedMinutes ?? 0;
+          act[i] += a;
+          mis[i] += m;
+          teamExp[i] += e.expectedMinutes ?? 0;
+          teamAct[i] += a;
+          teamMis[i] += m;
+        }
       }
       const cells = days.map((_, i) => eff(exp[i], act[i], mis[i]));
       const totAct = act.reduce((a, b) => a + b, 0);
       const totExp = exp.reduce((a, b) => a + b, 0);
       const totMis = mis.reduce((a, b) => a + b, 0);
+      const totHrs = hrs.reduce((a, b) => a + b, 0);
       return {
         name: r.name,
         cells,
         weeklyEff: eff(totExp, totAct, totMis),
-        weeklyHours: totAct / 60,
+        weeklyHours: totHrs / 60,
       };
     });
     // Highest weekly efficiency first; workers with no hours this week sink to the bottom.
@@ -240,12 +258,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const tAct = teamAct.reduce((a, b) => a + b, 0);
     const tExp = teamExp.reduce((a, b) => a + b, 0);
     const tMis = teamMis.reduce((a, b) => a + b, 0);
+    const tHrs = teamHrs.reduce((a, b) => a + b, 0);
     weekly = {
       days,
       rows: weeklyRows,
       teamCells,
       teamWeeklyEff: eff(tExp, tAct, tMis),
-      teamWeeklyHours: tAct / 60,
+      teamWeeklyHours: tHrs / 60,
     };
   }
 
