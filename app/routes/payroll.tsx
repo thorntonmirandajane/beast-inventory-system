@@ -20,6 +20,9 @@ function toMtInput(d: Date): string {
 function mtDayLabel(d: Date): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: MT, weekday: "short", month: "short", day: "numeric" }).format(d);
 }
+function ymdLocal(d: Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: MT, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireRole(request, ["ADMIN"]);
@@ -58,14 +61,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       clockOutEventId: { not: null },
       clockInTime: { gte: startDate, lte: endDate },
     },
-    select: { userId: true, clockInEventId: true, clockOutEventId: true },
+    select: {
+      userId: true, clockInEventId: true, clockOutEventId: true,
+      _count: { select: { lines: true } },
+    },
   });
   const pairsByUser = new Map<string, { clockInId: string; clockOutId: string }[]>();
+  // Per clock-in event: does its time entry have submitted tasks? Empty entries
+  // (e.g. an imported duplicate) are the ones safe to delete.
+  const entryTasksByClockIn = new Map<string, boolean>();
   for (const e of entryLinks) {
     if (!e.clockOutEventId) continue;
     const list = pairsByUser.get(e.userId) ?? [];
     list.push({ clockInId: e.clockInEventId, clockOutId: e.clockOutEventId });
     pairsByUser.set(e.userId, list);
+    entryTasksByClockIn.set(e.clockInEventId, e._count.lines > 0);
   }
 
   const payrollData = workers.map((worker) => {
@@ -87,18 +97,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       overtimePay: parseFloat(overtimeCalc.overtimePay.toFixed(2)),
       totalPay: parseFloat(overtimeCalc.totalPay.toFixed(2)),
       hasOpen: shifts.some((s) => s.open),
-      shifts: shifts.map((s, i, arr) => ({
-        clockInId: s.clockInId,
-        clockOutId: s.clockOutId,
-        dayLabel: mtDayLabel(s.clockIn),
-        clockInInput: toMtInput(s.clockIn),
-        clockOutInput: s.clockOut ? toMtInput(s.clockOut) : "",
-        hours: parseFloat(s.hours.toFixed(2)),
-        open: s.open,
-        // Open only because another clock-in follows it — i.e. a duplicate
-        // clock-in. Adding a clock-out can't fix it; it must be deleted.
-        orphaned: s.open && i < arr.length - 1,
-      })),
+      shifts: shifts.map((s, i, arr) => {
+        const dayKey = ymdLocal(s.clockIn);
+        const sameDayCount = shifts.filter((x) => ymdLocal(x.clockIn) === dayKey).length;
+        const hasTasks = entryTasksByClockIn.get(s.clockInId) ?? false;
+        return {
+          clockInId: s.clockInId,
+          clockOutId: s.clockOutId,
+          dayLabel: mtDayLabel(s.clockIn),
+          clockInInput: toMtInput(s.clockIn),
+          clockOutInput: s.clockOut ? toMtInput(s.clockOut) : "",
+          hours: parseFloat(s.hours.toFixed(2)),
+          open: s.open,
+          hasTasks,
+          // Open only because another clock-in follows it — i.e. a duplicate
+          // clock-in. Adding a clock-out can't fix it; it must be deleted.
+          orphaned: s.open && i < arr.length - 1,
+          // A second shift the same day with no submitted tasks is the likely
+          // duplicate (e.g. an imported entry doubling a real clock-in).
+          dupNoTasks: sameDayCount > 1 && !s.open && !hasTasks,
+        };
+      }),
     };
   });
 
@@ -170,8 +189,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       where: { OR: [{ clockInEventId: { in: ids } }, { clockOutEventId: { in: ids } }] },
       include: { _count: { select: { lines: true } } },
     });
-    if (entries.some((e) => e.status === "APPROVED" || e._count.lines > 0)) {
-      return { error: "This shift is linked to a submitted/approved time entry — handle it in Quality Control first." };
+    // An entry with submitted tasks moved (or will move) inventory — protect it.
+    // An empty entry (e.g. an imported duplicate) moved nothing, so it's safe to
+    // delete even if it was auto-approved.
+    if (entries.some((e) => e._count.lines > 0)) {
+      return { error: "This shift's time entry has submitted tasks — reopen/handle it in Quality Control first." };
     }
 
     await prisma.$transaction(async (tx) => {
@@ -361,7 +383,7 @@ function FragmentRow({
                   </thead>
                   <tbody>
                     {worker.shifts.map((s) => (
-                      <tr key={s.clockInId} className={`border-b last:border-0 ${s.open ? "bg-red-50" : ""}`}>
+                      <tr key={s.clockInId} className={`border-b last:border-0 ${s.open || s.dupNoTasks ? "bg-red-50" : ""}`}>
                         <td className="py-2 pr-4 whitespace-nowrap">{s.dayLabel}</td>
                         <td colSpan={4} className="py-2">
                           <div className="flex flex-wrap items-center gap-2">
@@ -390,6 +412,12 @@ function FragmentRow({
                             </edit.Form>
                             {s.orphaned && (
                               <span className="text-xs text-red-600 font-medium">duplicate clock-in — delete it →</span>
+                            )}
+                            {s.dupNoTasks && (
+                              <span className="text-xs text-red-600 font-medium">duplicate entry — no QC tasks, delete it →</span>
+                            )}
+                            {!s.open && !s.dupNoTasks && s.hasTasks && (
+                              <span className="text-xs text-green-700">✓ QC entry</span>
                             )}
                             <edit.Form
                               method="post"
