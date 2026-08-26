@@ -69,7 +69,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       overtimePay: parseFloat(overtimeCalc.overtimePay.toFixed(2)),
       totalPay: parseFloat(overtimeCalc.totalPay.toFixed(2)),
       hasOpen: shifts.some((s) => s.open),
-      shifts: shifts.map((s) => ({
+      shifts: shifts.map((s, i, arr) => ({
         clockInId: s.clockInId,
         clockOutId: s.clockOutId,
         dayLabel: mtDayLabel(s.clockIn),
@@ -77,6 +77,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         clockOutInput: s.clockOut ? toMtInput(s.clockOut) : "",
         hours: parseFloat(s.hours.toFixed(2)),
         open: s.open,
+        // Open only because another clock-in follows it — i.e. a duplicate
+        // clock-in. Adding a clock-out can't fix it; it must be deleted.
+        orphaned: s.open && i < arr.length - 1,
       })),
     };
   });
@@ -136,6 +139,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       clockIn: clockInStr, clockOut: clockOutStr || null, addedClockOut: !clockOutId && !!clockOut,
     });
     return { success: clockOutId ? "Shift updated." : clockOut ? "Clock-out added." : "Clock-in updated." };
+  }
+
+  if (intent === "delete-shift") {
+    const clockInId = String(form.get("clockInId") || "");
+    const clockOutId = String(form.get("clockOutId") || "");
+    const ids = [clockInId, clockOutId].filter(Boolean);
+    if (ids.length === 0) return { error: "Missing shift." };
+
+    // Don't delete clock events tied to a submitted/approved time entry.
+    const entries = await prisma.workerTimeEntry.findMany({
+      where: { OR: [{ clockInEventId: { in: ids } }, { clockOutEventId: { in: ids } }] },
+      include: { _count: { select: { lines: true } } },
+    });
+    if (entries.some((e) => e.status === "APPROVED" || e._count.lines > 0)) {
+      return { error: "This shift is linked to a submitted/approved time entry — handle it in Quality Control first." };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      if (entries.length) await tx.workerTimeEntry.deleteMany({ where: { id: { in: entries.map((e) => e.id) } } });
+      await tx.clockEvent.deleteMany({ where: { id: { in: ids } } });
+    });
+
+    await createAuditLog(user.id, "DELETE_CLOCK_SHIFT", "ClockEvent", clockInId, { deleted: ids });
+    return { success: "Shift removed." };
   }
 
   return { error: "Unknown action" };
@@ -319,27 +346,51 @@ function FragmentRow({
                       <tr key={s.clockInId} className={`border-b last:border-0 ${s.open ? "bg-red-50" : ""}`}>
                         <td className="py-2 pr-4 whitespace-nowrap">{s.dayLabel}</td>
                         <td colSpan={4} className="py-2">
-                          <edit.Form method="post" className="flex flex-wrap items-center gap-2">
-                            <input type="hidden" name="intent" value="edit-shift" />
-                            <input type="hidden" name="clockInId" value={s.clockInId} />
-                            <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
-                            <input type="hidden" name="workerId" value={worker.id} />
-                            <input type="datetime-local" name="clockIn" defaultValue={s.clockInInput} className="form-input" required />
-                            <span className="text-gray-400">→</span>
-                            <input
-                              type="datetime-local"
-                              name="clockOut"
-                              defaultValue={s.clockOutInput}
-                              className="form-input"
-                              placeholder="not clocked out"
-                            />
-                            <span className="w-16 text-right font-medium">
-                              {s.open ? <span className="text-red-600">open</span> : `${s.hours.toFixed(1)}h`}
-                            </span>
-                            <button type="submit" className="btn btn-secondary btn-sm" disabled={edit.state !== "idle"}>
-                              {s.open ? "Add clock-out" : "Save"}
-                            </button>
-                          </edit.Form>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <edit.Form method="post" className="flex flex-wrap items-center gap-2">
+                              <input type="hidden" name="intent" value="edit-shift" />
+                              <input type="hidden" name="clockInId" value={s.clockInId} />
+                              <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
+                              <input type="hidden" name="workerId" value={worker.id} />
+                              <input type="datetime-local" name="clockIn" defaultValue={s.clockInInput} className="form-input" required />
+                              <span className="text-gray-400">→</span>
+                              <input
+                                type="datetime-local"
+                                name="clockOut"
+                                defaultValue={s.clockOutInput}
+                                className="form-input"
+                                placeholder="not clocked out"
+                              />
+                              <span className="w-16 text-right font-medium">
+                                {s.open ? <span className="text-red-600">open</span> : `${s.hours.toFixed(1)}h`}
+                              </span>
+                              {!s.orphaned && (
+                                <button type="submit" className="btn btn-secondary btn-sm" disabled={edit.state !== "idle"}>
+                                  {s.open ? "Add clock-out" : "Save"}
+                                </button>
+                              )}
+                            </edit.Form>
+                            {s.orphaned && (
+                              <span className="text-xs text-red-600 font-medium">duplicate clock-in — delete it →</span>
+                            )}
+                            <edit.Form
+                              method="post"
+                              onSubmit={(e) => {
+                                if (!confirm("Remove this shift? This deletes its clock in/out.")) e.preventDefault();
+                              }}
+                            >
+                              <input type="hidden" name="intent" value="delete-shift" />
+                              <input type="hidden" name="clockInId" value={s.clockInId} />
+                              <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
+                              <button
+                                type="submit"
+                                className="btn btn-secondary btn-sm text-red-600"
+                                disabled={edit.state !== "idle"}
+                              >
+                                Delete
+                              </button>
+                            </edit.Form>
+                          </div>
                         </td>
                       </tr>
                     ))}
