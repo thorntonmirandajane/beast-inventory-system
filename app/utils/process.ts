@@ -7,8 +7,13 @@
 
 export function matchesProcess(material: string | null, processDisplayName: string): boolean {
   if (!material) return false;
-  const m = material.toLowerCase().replace(/\s+/g, " ").trim();
-  const p = processDisplayName.toLowerCase().replace(/\s+/g, " ").trim();
+  // SKUs store the process either as its display name ("Complete Packs") or as
+  // its internal name ("COMPLETE_PACKS"), so treat underscores and hyphens as
+  // spaces before comparing. Without this, every multi-word process silently
+  // failed to match and its labor hours vanished from the forecast.
+  const canon = (s: string) => s.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  const m = canon(material);
+  const p = canon(processDisplayName);
   if (m === p) return true;
   if (m.replace(/ed$/, "ing") === p) return true; // "tipped" -> "tipping", "bladed" -> "blading"
   if (m.replace("completed", "complete") === p) return true; // "completed packs" -> "complete packs"
