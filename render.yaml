@@ -38,6 +38,9 @@ services:
         sync: false
       - key: SHIPHERO_WAREHOUSE
         value: Apex
+      # Anthropic API key — powers the AI Chat tab. Set in the Render dashboard.
+      - key: ANTHROPIC_API_KEY
+        sync: false
       # Beast Broadhead Shopify store (read-only) — powers the Beast column on
       # the forecasting Unfulfilled tab. Set values in the Render dashboard.
       - key: BEAST_SHOPIFY_STORE

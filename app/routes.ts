@@ -3,6 +3,7 @@ import { type RouteConfig, index, route } from "@react-router/dev/routes";
 export default [
   index("routes/_index.tsx"),
   route("login", "routes/login.tsx"),
+  route("ai-chat", "routes/ai-chat.tsx"),
   route("logout", "routes/logout.tsx"),
   route("po", "routes/po._index.tsx"),
   route("po/:id", "routes/po.$id.tsx"),
@@ -55,6 +56,7 @@ export default [
   route("tutorials", "routes/tutorials.tsx"),
   route("audit-log", "routes/audit-log.tsx"),
   route("notifications", "routes/notifications.tsx"),
+  route("api/ai-chat", "routes/api.ai-chat.tsx"),
   route("api/upload-image", "routes/api.upload-image.tsx"),
   route("api/test-cloudinary", "routes/api.test-cloudinary.tsx"),
 ] satisfies RouteConfig;
