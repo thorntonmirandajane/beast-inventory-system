@@ -21,6 +21,7 @@ export type ChatTurn = { role: "user" | "assistant"; content: string };
 
 /** Events streamed to the browser as newline-delimited JSON. */
 export type ChatEvent =
+  | { type: "conversation"; id: string; title: string }
   | { type: "status"; status: "thinking" | "working" }
   | { type: "tool"; name: string; summary: string }
   | { type: "tool_done"; name: string; ms: number; ok: boolean }
