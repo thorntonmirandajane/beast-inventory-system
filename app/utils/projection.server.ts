@@ -2,6 +2,7 @@ import prisma from "../db.server";
 import { getSalesBySku, getSalesBreakdownBySku } from "./shopify.server";
 import { fetchProgrammedOrders } from "./queued-orders-client.server";
 import { availableState } from "./production";
+import { suggestSku } from "./fulfillment-sync.server";
 
 const norm = (s: string) => s.trim().toUpperCase();
 const ymd = (d: Date) => d.toISOString().split("T")[0];
@@ -245,6 +246,40 @@ export async function computeProjections() {
   };
 }
 
+// Shopify sales SKUs (in the sales window) that match no active COMPLETED SKU
+// and no alias — i.e. demand being dropped from the projection (e.g. Trump items
+// whose Shopify spelling differs). The user maps these to a product to pull them
+// in, the same way the Fulfilled Orders unmatched box works.
+export async function getUnmatchedSalesSkus(): Promise<
+  { sku: string; quantity: number; suggestionId: string | null }[]
+> {
+  const scenario = await getOrCreateScenario();
+  const sw = salesWindow(scenario);
+  const ytd = await getSalesBreakdownBySku(ymd(sw.start), ymd(sw.end));
+
+  const byNorm = new Map<string, { display: string; qty: number }>();
+  for (const [k, v] of ytd) {
+    const n = norm(k);
+    const e = byNorm.get(n) ?? { display: k, qty: 0 };
+    e.qty += v.fulfilled + v.unfulfilled;
+    byNorm.set(n, e);
+  }
+
+  const skus = await prisma.sku.findMany({
+    where: { isActive: true, type: "COMPLETED" },
+    select: { id: true, sku: true },
+  });
+  const covered = new Set<string>(skus.map((s) => norm(s.sku)));
+  for (const a of await prisma.skuAlias.findMany({ select: { alias: true } })) covered.add(norm(a.alias));
+
+  const out: { sku: string; quantity: number; suggestionId: string | null }[] = [];
+  for (const [n, e] of byNorm) {
+    if (covered.has(n) || e.qty <= 0) continue;
+    out.push({ sku: e.display, quantity: Math.round(e.qty), suggestionId: suggestSku(e.display, skus)?.id ?? null });
+  }
+  return out.sort((a, b) => b.quantity - a.quantity);
+}
+
 // Pull DtC sales (split fulfilled/unfulfilled) for the sales window, prior-year
 // comparable totals, and programmed orders; cache per SKU.
 export async function refreshSales(): Promise<number> {
@@ -280,14 +315,34 @@ export async function refreshSales(): Promise<number> {
     where: { isActive: true, type: "COMPLETED" },
     select: { id: true, sku: true },
   });
+
+  // Learned aliases (e.g. a Shopify "TRUMP..." spelling that differs from the
+  // system SKU) so demand under an aliased spelling still lands on the right SKU
+  // — the same mapping used by the Fulfilled Orders auto-deduction.
+  const aliasKeysBySku = new Map<string, string[]>();
+  for (const a of await prisma.skuAlias.findMany({ select: { alias: true, skuId: true } })) {
+    const list = aliasKeysBySku.get(a.skuId) ?? [];
+    list.push(norm(a.alias));
+    aliasKeysBySku.set(a.skuId, list);
+  }
+
   for (const s of skus) {
-    const k = norm(s.sku);
-    const ytdv = ytdN.get(k) ?? { fulfilled: 0, unfulfilled: 0 };
+    const keys = new Set<string>([norm(s.sku), ...(aliasKeysBySku.get(s.id) ?? [])]);
+    let fulfilled = 0, unfulfilled = 0, priorQty = 0, programmedQty = 0;
+    for (const k of keys) {
+      const ytdv = ytdN.get(k);
+      if (ytdv) {
+        fulfilled += ytdv.fulfilled;
+        unfulfilled += ytdv.unfulfilled;
+      }
+      priorQty += priorN.get(k) ?? 0;
+      programmedQty += progN.get(k) ?? 0;
+    }
     const data = {
-      ytdFulfilled: Math.round(ytdv.fulfilled),
-      ytdUnfulfilled: Math.round(ytdv.unfulfilled),
-      priorQty: Math.round(priorN.get(k) ?? 0),
-      programmedQty: Math.round(progN.get(k) ?? 0),
+      ytdFulfilled: Math.round(fulfilled),
+      ytdUnfulfilled: Math.round(unfulfilled),
+      priorQty: Math.round(priorQty),
+      programmedQty: Math.round(programmedQty),
     };
     await prisma.projectionSale.upsert({
       where: { skuId: s.id },

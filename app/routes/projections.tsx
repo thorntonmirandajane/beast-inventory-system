@@ -4,12 +4,17 @@ import { useState } from "react";
 import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
-import { computeProjections, refreshSales, getOrCreateScenario } from "../utils/projection.server";
+import { computeProjections, refreshSales, getOrCreateScenario, getUnmatchedSalesSkus } from "../utils/projection.server";
+import { mapAliasAndDeduct } from "../utils/fulfillment-sync.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireRole(request, ["ADMIN", "MANAGER"]);
-  const projection = await computeProjections();
-  return { user, projection };
+  const [projection, unmatchedSales, completedSkus] = await Promise.all([
+    computeProjections(),
+    getUnmatchedSalesSkus(),
+    prisma.sku.findMany({ where: { isActive: true, type: "COMPLETED" }, select: { id: true, sku: true }, orderBy: { sku: "asc" } }),
+  ]);
+  return { user, projection, unmatchedSales, completedSkus };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -32,6 +37,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
     });
     return { success: true, message: "Settings saved. Refresh sales & orders if you changed a date window." };
+  }
+
+  if (intent === "map-alias") {
+    const alias = String(formData.get("alias") || "");
+    const skuId = String(formData.get("skuId") || "");
+    if (!alias || !skuId) return { error: "Pick a product to map to." };
+    try {
+      const r = await mapAliasAndDeduct(user.id, alias, skuId);
+      await refreshSales(); // pull the now-mapped demand into the projection
+      return { success: true, message: `Mapped to ${r.mapped}. Demand for "${alias}" now counts.` };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : "Mapping failed" };
+    }
   }
 
   if (intent === "refresh-projection-sales") {
@@ -88,7 +106,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 const num = (n: number) => n.toLocaleString();
 
 export default function Projections() {
-  const { user, projection } = useLoaderData<typeof loader>();
+  const { user, projection, unmatchedSales, completedSkus } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -131,6 +149,60 @@ export default function Projections() {
 
       {actionData && "error" in actionData && actionData.error && <div className="alert alert-error mb-4">{actionData.error}</div>}
       {actionData && "success" in actionData && actionData.success && <div className="alert alert-success mb-4">{actionData.message}</div>}
+
+      {unmatchedSales.length > 0 && (
+        <div className="card mb-6 border-amber-300">
+          <div className="card-body">
+            <h2 className="card-title">Unmatched sales SKUs — map to a product</h2>
+            <p className="text-sm text-gray-600 max-w-2xl">
+              These Shopify SKUs have sales in your window but don't match a product (a spelling
+              variant like the TRUMP items). Their demand is being dropped from the projection —
+              map each to the right product and it'll be pulled in (and remembered for next time).
+            </p>
+            <div className="overflow-x-auto mt-3">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b">
+                    <th className="py-2 pr-4">Shopify SKU</th>
+                    <th className="py-2 pr-4 text-right">Units</th>
+                    <th className="py-2 pr-4">Map to product</th>
+                    <th className="py-2 pr-4"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unmatchedSales.map((u) => (
+                    <tr key={u.sku} className="border-b last:border-0">
+                      <td className="py-2 pr-4 font-mono">{u.sku}</td>
+                      <td className="py-2 pr-4 text-right">{u.quantity.toLocaleString()}</td>
+                      <td className="py-2 pr-4">
+                        <Form method="post" className="flex items-center gap-2">
+                          <input type="hidden" name="intent" value="map-alias" />
+                          <input type="hidden" name="alias" value={u.sku} />
+                          <select name="skuId" defaultValue={u.suggestionId ?? ""} className="form-input" required>
+                            <option value="">Choose a product…</option>
+                            {completedSkus.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.sku}
+                                {c.id === u.suggestionId ? "  (suggested)" : ""}
+                              </option>
+                            ))}
+                          </select>
+                          <button type="submit" className="btn btn-primary btn-sm" disabled={isSubmitting}>
+                            {isSubmitting ? "Mapping…" : "Map"}
+                          </button>
+                        </Form>
+                      </td>
+                      <td className="py-2 pr-4 text-xs text-gray-500">
+                        {u.suggestionId ? "" : "no close match — pick manually"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Controls */}
       <div className="card mb-4">
