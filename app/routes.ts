@@ -9,6 +9,7 @@ export default [
   route("po/:id", "routes/po.$id.tsx"),
   route("po/:id/pdf", "routes/po.$id.pdf.tsx"),
   route("receiving", "routes/receiving._index.tsx"),
+  route("operations", "routes/operations.tsx"),
   route("inventory", "routes/inventory.tsx"),
   route("inventory/import-counts", "routes/inventory.import-counts.tsx"),
   route("inventory/spot-check", "routes/inventory.spot-check.tsx"),
