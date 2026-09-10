@@ -5,10 +5,18 @@ import { requireRole } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import { computeBuildPlan, type BuildPlanRow } from "../utils/operations.server";
 
+const YMD = (d: Date) => d.toISOString().split("T")[0];
+const cleanYmd = (v: string | null) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireRole(request, ["ADMIN", "MANAGER"]);
-  const plan = await computeBuildPlan([]);
-  return { user, plan };
+  const url = new URL(request.url);
+  const includeProgrammed = url.searchParams.get("includeProgrammed") !== "0";
+  const programmedFrom = cleanYmd(url.searchParams.get("progFrom")) || YMD(new Date());
+  const programmedTo = cleanYmd(url.searchParams.get("progTo")) || YMD(new Date(Date.now() + 365 * 86400000));
+  const settings = { includeProgrammed, programmedFrom, programmedTo };
+  const plan = await computeBuildPlan(settings);
+  return { user, plan, settings };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -20,7 +28,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     .map((skuId, i) => ({ skuId, qty: qtys[i] }))
     .filter((e) => e.skuId && Number.isFinite(e.qty) && e.qty > 0);
 
-  const [base, withExtra] = await Promise.all([computeBuildPlan([]), computeBuildPlan(extra)]);
+  const settings = {
+    includeProgrammed: String(form.get("includeProgrammed") || "1") !== "0",
+    programmedFrom: cleanYmd(String(form.get("progFrom") || "")) || undefined,
+    programmedTo: cleanYmd(String(form.get("progTo") || "")) || undefined,
+  };
+  const [base, withExtra] = await Promise.all([
+    computeBuildPlan(settings),
+    computeBuildPlan({ ...settings, extra }),
+  ]);
   const baseShort = new Map(base.rows.map((r) => [r.skuId, r.short]));
   const rows = withExtra.rows.map((r) => ({
     ...r,
@@ -33,7 +49,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 type Row = BuildPlanRow & { extraCovered?: number };
 
 export default function Operations() {
-  const { user, plan: basePlan } = useLoaderData<typeof loader>();
+  const { user, plan: basePlan, settings } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const nav = useNavigation();
   const busy = nav.state !== "idle";
@@ -60,6 +76,33 @@ export default function Operations() {
         </p>
       </div>
 
+      {/* Demand controls */}
+      <div className="card mb-6">
+        <div className="card-body">
+          <Form method="get" className="flex flex-wrap items-end gap-4">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input type="checkbox" name="includeProgrammed" value="1" defaultChecked={settings.includeProgrammed} />
+              Include programmed orders
+            </label>
+            <div>
+              <label htmlFor="progFrom" className="form-label text-xs">Programmed from</label>
+              <input id="progFrom" type="date" name="progFrom" defaultValue={settings.programmedFrom} className="form-input" />
+            </div>
+            <div>
+              <label htmlFor="progTo" className="form-label text-xs">Programmed to</label>
+              <input id="progTo" type="date" name="progTo" defaultValue={settings.programmedTo} className="form-input" />
+            </div>
+            <button type="submit" className="btn btn-primary" disabled={busy}>Apply</button>
+            <Link to="/operations?includeProgrammed=0" className="btn btn-secondary">Without programmed</Link>
+          </Form>
+          <p className="text-xs text-gray-500 mt-2">
+            {settings.includeProgrammed
+              ? `Demand = unfulfilled + programmed orders in the window.`
+              : `Programmed orders excluded — showing where you sit on unfulfilled orders only.`}
+          </p>
+        </div>
+      </div>
+
       {/* Summary */}
       <div className="stats-grid mb-6">
         <div className="stat-card"><div className="stat-value">{num(plan.totals.unfulfilled)}</div><div className="stat-label">Unfulfilled (waiting)</div></div>
@@ -77,6 +120,9 @@ export default function Operations() {
             much more it lets you build and cover.
           </p>
           <Form method="post">
+            <input type="hidden" name="includeProgrammed" value={settings.includeProgrammed ? "1" : "0"} />
+            <input type="hidden" name="progFrom" value={settings.programmedFrom} />
+            <input type="hidden" name="progTo" value={settings.programmedTo} />
             <div className="space-y-2">
               {extraRows.map((r, i) => (
                 <div key={i} className="flex flex-wrap items-center gap-2">

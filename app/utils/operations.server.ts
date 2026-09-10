@@ -87,11 +87,19 @@ export interface BuildPlan {
   componentOptions: { id: string; sku: string; name: string; type: string }[];
 }
 
-/**
- * @param extra expected incoming components to add to the pool (what-if), as
- *   {skuId, qty}. Empty = current inventory only.
- */
-export async function computeBuildPlan(extra: { skuId: string; qty: number }[] = []): Promise<BuildPlan> {
+export interface BuildPlanOpts {
+  /** Expected incoming components to add to the pool (what-if), as {skuId, qty}. */
+  extra?: { skuId: string; qty: number }[];
+  /** Include programmed (future) orders in demand. Default true. */
+  includeProgrammed?: boolean;
+  /** Programmed-orders window (YYYY-MM-DD). Defaults today → +365d. */
+  programmedFrom?: string;
+  programmedTo?: string;
+}
+
+export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildPlan> {
+  const extra = opts.extra ?? [];
+  const includeProgrammed = opts.includeProgrammed ?? true;
   const skus = await prisma.sku.findMany({
     where: { isActive: true },
     select: {
@@ -124,11 +132,13 @@ export async function computeBuildPlan(extra: { skuId: string; qty: number }[] =
 
   // Finished stock available to cover demand: local completed + Gallatin.
   const ymd = (d: Date) => d.toISOString().split("T")[0];
-  const progFrom = ymd(new Date());
-  const progTo = ymd(new Date(Date.now() + 365 * 86400000));
+  const progFrom = opts.programmedFrom || ymd(new Date());
+  const progTo = opts.programmedTo || ymd(new Date(Date.now() + 365 * 86400000));
   const [unfulfilledR, programmedR, gallatinR] = await Promise.allSettled([
     getUnfulfilledLineItems(),
-    fetchProgrammedOrders({ from: progFrom, to: progTo }).then((r) => r.bySku).catch(() => [] as { sku: string; quantity: number }[]),
+    includeProgrammed
+      ? fetchProgrammedOrders({ from: progFrom, to: progTo }).then((r) => r.bySku).catch(() => [] as { sku: string; quantity: number }[])
+      : Promise.resolve([] as { sku: string; quantity: number }[]),
     getGallatinInventory().catch(() => new Map<string, number>()),
   ]);
   const unfulfilled = unfulfilledR.status === "fulfilled" ? unfulfilledR.value : [];
