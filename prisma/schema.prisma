@@ -570,6 +570,25 @@ enum NotificationType {
   MISSED_CLOCK_OUT
 }
 
+// A worker-submitted recurring schedule awaiting admin approval. `days` is JSON:
+// [{ day:0..6, active, start, end }]. On approval the active days are merged into
+// the worker's WorkerSchedule RECURRING rows (the same data the card/grid views
+// and task auto-assignment use).
+model ScheduleRequest {
+  id           String    @id @default(cuid())
+  userId       String
+  status       String    @default("PENDING") // PENDING | APPROVED | DENIED
+  days         String
+  note         String?
+  submittedAt  DateTime  @default(now())
+  reviewedAt   DateTime?
+  reviewedById String?
+
+  @@index([userId])
+  @@index([status])
+  @@map("schedule_requests")
+}
+
 enum SkuType {
   RAW
   ASSEMBLY

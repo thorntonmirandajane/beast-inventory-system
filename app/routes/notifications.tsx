@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, Link } from "react-router";
 import { requireUser } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -21,7 +21,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { isRead: false },
   });
 
-  return { user, notifications, unreadCount };
+  const pendingScheduleRequests = await prisma.scheduleRequest.count({
+    where: { status: "PENDING" },
+  });
+
+  return { user, notifications, unreadCount, pendingScheduleRequests };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -58,7 +62,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Notifications() {
-  const { user, notifications, unreadCount } = useLoaderData<typeof loader>();
+  const { user, notifications, unreadCount, pendingScheduleRequests } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
@@ -116,6 +120,15 @@ export default function Notifications() {
           Time clock alerts and system notifications
         </p>
       </div>
+
+      {pendingScheduleRequests > 0 && (
+        <div className="alert alert-warning flex items-center justify-between">
+          <span>
+            <strong>{pendingScheduleRequests}</strong> schedule request{pendingScheduleRequests === 1 ? "" : "s"} awaiting review.
+          </span>
+          <Link to="/schedules?view=requests" className="btn btn-primary btn-sm">Review requests</Link>
+        </div>
+      )}
 
       {actionData?.error && (
         <div className="alert alert-error">{actionData.error}</div>

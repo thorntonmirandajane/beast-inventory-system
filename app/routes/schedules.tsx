@@ -15,6 +15,21 @@ const DAYS = [
   { id: 6, name: "SATURDAY", short: "SAT" },
 ];
 
+// "08:00" -> "8am", "17:30" -> "5:30pm"
+function to12(t: string): string {
+  const [h, m] = (t || "").split(":").map(Number);
+  if (isNaN(h)) return t;
+  const ap = h < 12 ? "am" : "pm";
+  const hh = h % 12 === 0 ? 12 : h % 12;
+  return m ? `${hh}:${String(m).padStart(2, "0")}${ap}` : `${hh}${ap}`;
+}
+function hoursBetween(start: string, end: string): number {
+  const [sh, sm] = (start || "").split(":").map(Number);
+  const [eh, em] = (end || "").split(":").map(Number);
+  if ([sh, sm, eh, em].some(isNaN)) return 0;
+  return Math.max(0, eh + em / 60 - (sh + sm / 60));
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
   const url = new URL(request.url);
@@ -74,12 +89,43 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { scheduleDate: "asc" },
   });
 
+  // Schedule requests (worker self-submitted, admin-approved).
+  let scheduleRequests: any[] = [];
+  let myRequest: any = null;
+  let pendingRequestCount = 0;
+
+  if (user.role === "WORKER") {
+    myRequest = await prisma.scheduleRequest.findFirst({
+      where: { userId: user.id },
+      orderBy: { submittedAt: "desc" },
+      select: { id: true, status: true, days: true, note: true, submittedAt: true, reviewedAt: true },
+    });
+  } else {
+    const reqs = await prisma.scheduleRequest.findMany({
+      where: { status: "PENDING" },
+      orderBy: { submittedAt: "asc" },
+    });
+    pendingRequestCount = reqs.length;
+    const ids = [...new Set(reqs.map((r) => r.userId))];
+    const us = ids.length
+      ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, firstName: true, lastName: true } })
+      : [];
+    const nameById = new Map(us.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+    scheduleRequests = reqs.map((r) => ({
+      id: r.id, userId: r.userId, workerName: nameById.get(r.userId) ?? "Unknown",
+      status: r.status, days: r.days, note: r.note, submittedAt: r.submittedAt, reviewedAt: r.reviewedAt,
+    }));
+  }
+
   return {
     user,
     workers: workersWithHours,
     upcomingDateSchedules,
     view,
     isWorkerView: user.role === "WORKER",
+    scheduleRequests,
+    myRequest,
+    pendingRequestCount,
   };
 };
 
@@ -90,13 +136,34 @@ function parseTime(timeStr: string): number {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const user = await requireUser(request);
+  const formData = await request.formData();
+  const intent = formData.get("intent") as string;
 
+  // Workers may submit their OWN schedule request (does not go live until approved).
+  if (intent === "submit-schedule-request") {
+    const days: { day: number; active: boolean; start: string; end: string }[] = [];
+    for (let day = 0; day <= 6; day++) {
+      days.push({
+        day,
+        active: formData.get(`day-${day}-active`) === "on",
+        start: (formData.get(`day-${day}-start`) as string) || "08:00",
+        end: (formData.get(`day-${day}-end`) as string) || "17:00",
+      });
+    }
+    const existing = await prisma.scheduleRequest.findFirst({ where: { userId: user.id, status: "PENDING" } });
+    if (existing) {
+      await prisma.scheduleRequest.update({ where: { id: existing.id }, data: { days: JSON.stringify(days), submittedAt: new Date() } });
+    } else {
+      await prisma.scheduleRequest.create({ data: { userId: user.id, days: JSON.stringify(days), status: "PENDING" } });
+    }
+    await createAuditLog(user.id, "SUBMIT_SCHEDULE_REQUEST", "ScheduleRequest", user.id, {});
+    return { success: true, message: "Schedule request submitted for approval." };
+  }
+
+  // Everything below is admin-only.
   if (user.role !== "ADMIN") {
     throw new Response("UNAUTHORIZED", { status: 403 });
   }
-
-  const formData = await request.formData();
-  const intent = formData.get("intent") as string;
 
   if (intent === "update-schedule") {
     const workerId = formData.get("workerId") as string;
@@ -136,6 +203,69 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await createAuditLog(user.id, "UPDATE_SCHEDULE", "WorkerSchedule", workerId, {});
 
     return { success: true, message: "SCHEDULE UPDATED SUCCESSFULLY" };
+  }
+
+  // Grid bulk save — writes the SAME RECURRING rows as the card view.
+  if (intent === "bulk-update-schedule") {
+    let grid: Record<string, { day: number; active: boolean; start: string; end: string }[]> = {};
+    try {
+      grid = JSON.parse(String(formData.get("grid") || "{}"));
+    } catch {
+      return { error: "Could not read grid data." };
+    }
+    const workerIds = Object.keys(grid);
+    if (workerIds.length === 0) return { error: "Nothing to save." };
+    await prisma.$transaction(async (tx) => {
+      for (const wid of workerIds) {
+        for (const d of grid[wid]) {
+          await tx.workerSchedule.upsert({
+            where: { userId_dayOfWeek_scheduleDate: { userId: wid, dayOfWeek: d.day, scheduleDate: null } },
+            update: { startTime: d.start || "08:00", endTime: d.end || "17:00", isActive: !!d.active },
+            create: { userId: wid, dayOfWeek: d.day, scheduleDate: null, scheduleType: "RECURRING", startTime: d.start || "08:00", endTime: d.end || "17:00", isActive: !!d.active },
+          });
+        }
+      }
+    }, { timeout: 120000, maxWait: 15000 });
+    await createAuditLog(user.id, "BULK_UPDATE_SCHEDULE", "WorkerSchedule", "grid", { workers: workerIds.length });
+    return { success: true, message: `Saved ${workerIds.length} worker schedule(s).` };
+  }
+
+  // Admin approves — merge only the days the worker wants ON into their recurring
+  // schedule. Supports edit-then-approve via posted `days`.
+  if (intent === "approve-schedule-request") {
+    const requestId = formData.get("requestId") as string;
+    const req = await prisma.scheduleRequest.findUnique({ where: { id: requestId } });
+    if (!req || req.status !== "PENDING") return { error: "Request not found or already handled." };
+    let days: { day: number; active: boolean; start: string; end: string }[];
+    const editedRaw = formData.get("days") as string | null;
+    try {
+      days = editedRaw ? JSON.parse(editedRaw) : JSON.parse(req.days);
+    } catch {
+      days = JSON.parse(req.days);
+    }
+    await prisma.$transaction(async (tx) => {
+      for (const d of days) {
+        if (!d.active) continue; // merge: only days marked ON
+        await tx.workerSchedule.upsert({
+          where: { userId_dayOfWeek_scheduleDate: { userId: req.userId, dayOfWeek: d.day, scheduleDate: null } },
+          update: { startTime: d.start || "08:00", endTime: d.end || "17:00", isActive: true },
+          create: { userId: req.userId, dayOfWeek: d.day, scheduleDate: null, scheduleType: "RECURRING", startTime: d.start || "08:00", endTime: d.end || "17:00", isActive: true },
+        });
+      }
+      await tx.scheduleRequest.update({ where: { id: requestId }, data: { status: "APPROVED", reviewedAt: new Date(), reviewedById: user.id, days: JSON.stringify(days) } });
+    });
+    await createAuditLog(user.id, "APPROVE_SCHEDULE_REQUEST", "ScheduleRequest", requestId, {});
+    return { success: true, message: "Request approved — schedule updated." };
+  }
+
+  if (intent === "deny-schedule-request") {
+    const requestId = formData.get("requestId") as string;
+    const note = ((formData.get("note") as string) || "").trim() || null;
+    const req = await prisma.scheduleRequest.findUnique({ where: { id: requestId } });
+    if (!req || req.status !== "PENDING") return { error: "Request not found or already handled." };
+    await prisma.scheduleRequest.update({ where: { id: requestId }, data: { status: "DENIED", note, reviewedAt: new Date(), reviewedById: user.id } });
+    await createAuditLog(user.id, "DENY_SCHEDULE_REQUEST", "ScheduleRequest", requestId, {});
+    return { success: true, message: "Request denied." };
   }
 
   if (intent === "create-date-schedule") {
@@ -737,10 +867,11 @@ function CalendarView({ workers, upcomingDateSchedules, user }: { workers: any[]
 }
 
 export default function Schedules() {
-  const { user, workers, upcomingDateSchedules, view, isWorkerView } = useLoaderData<typeof loader>();
+  const { user, workers, upcomingDateSchedules, view, isWorkerView, scheduleRequests, myRequest, pendingRequestCount } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  const [layout, setLayout] = useState<"card" | "grid">("card");
 
   // Build schedule map for each worker
   const getScheduleForDay = (
@@ -808,6 +939,23 @@ export default function Schedules() {
             Date-Specific Schedules
           </Link>
         )}
+        {!isWorkerView && (
+          <Link
+            to="/schedules?view=requests"
+            className={`px-4 py-2 font-medium border-b-2 transition-colors ${
+              view === "requests"
+                ? "border-blue-500 text-blue-600"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Requests
+            {pendingRequestCount > 0 && (
+              <span className="ml-2 inline-block bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">
+                {pendingRequestCount}
+              </span>
+            )}
+          </Link>
+        )}
       </div>
 
       {/* Recurring Schedules View */}
@@ -833,7 +981,26 @@ export default function Schedules() {
             </div>
           </div>
 
+          {/* Worker: request a schedule change */}
+          {isWorkerView && (
+            <WorkerRequestSection myRequest={myRequest} worker={workers[0]} isSubmitting={isSubmitting} />
+          )}
+
+          {/* Admin: card / grid toggle */}
+          {!isWorkerView && (
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-sm text-gray-500">View:</span>
+              <button type="button" onClick={() => setLayout("card")} className={`btn btn-sm ${layout === "card" ? "btn-primary" : "btn-secondary"}`}>Card view</button>
+              <button type="button" onClick={() => setLayout("grid")} className={`btn btn-sm ${layout === "grid" ? "btn-primary" : "btn-secondary"}`}>Grid view</button>
+            </div>
+          )}
+
+          {!isWorkerView && layout === "grid" && (
+            <RecurringGrid workers={workers} isSubmitting={isSubmitting} />
+          )}
+
           {/* Worker Schedules */}
+          {(isWorkerView || layout === "card") && (
           <div className="space-y-4">
             {workers.map((worker) => (
               <div key={worker.id} className="card">
@@ -954,6 +1121,7 @@ export default function Schedules() {
               </div>
             ))}
           </div>
+          )}
         </>
       )}
 
@@ -1098,6 +1266,259 @@ export default function Schedules() {
           </div>
         </>
       )}
+
+      {/* Pending schedule requests (Admin) */}
+      {view === "requests" && !isWorkerView && (
+        <RequestsView requests={scheduleRequests} isSubmitting={isSubmitting} />
+      )}
     </Layout>
+  );
+}
+
+// ---- Grid view: rows = workers, columns = days; bulk edit + one save ----
+function RecurringGrid({ workers, isSubmitting }: { workers: any[]; isSubmitting: boolean }) {
+  type Cell = { active: boolean; start: string; end: string };
+  const build = () => {
+    const g: Record<string, Cell[]> = {};
+    for (const w of workers) {
+      g[w.id] = DAYS.map((d) => {
+        const s = w.recurringSchedules?.find((x: any) => x.dayOfWeek === d.id && x.isActive);
+        return s ? { active: true, start: s.startTime, end: s.endTime } : { active: false, start: "08:00", end: "17:00" };
+      });
+    }
+    return g;
+  };
+  const [grid, setGrid] = useState<Record<string, Cell[]>>(build);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [bulkDay, setBulkDay] = useState<string>("all");
+  const [bulkStart, setBulkStart] = useState("08:00");
+  const [bulkEnd, setBulkEnd] = useState("17:00");
+
+  const toggleCell = (wid: string, day: number) =>
+    setGrid((g) => {
+      const row = g[wid].map((c, i) =>
+        i === day ? { ...c, active: !c.active, start: c.start || bulkStart, end: c.end || bulkEnd } : c
+      );
+      return { ...g, [wid]: row };
+    });
+
+  const toggleCheck = (wid: string) =>
+    setChecked((s) => {
+      const n = new Set(s);
+      n.has(wid) ? n.delete(wid) : n.add(wid);
+      return n;
+    });
+  const allChecked = workers.length > 0 && checked.size === workers.length;
+  const toggleAll = () => setChecked(allChecked ? new Set() : new Set(workers.map((w) => w.id)));
+
+  const applyBulk = (turnOn: boolean) => {
+    const days = bulkDay === "all" ? DAYS.map((d) => d.id) : [parseInt(bulkDay, 10)];
+    setGrid((g) => {
+      const next = { ...g };
+      for (const wid of checked) {
+        next[wid] = next[wid].map((c, i) =>
+          days.includes(i) ? { active: turnOn, start: turnOn ? bulkStart : c.start, end: turnOn ? bulkEnd : c.end } : c
+        );
+      }
+      return next;
+    });
+  };
+
+  const rowHours = (cells: Cell[]) => cells.reduce((t, c) => t + (c.active ? hoursBetween(c.start, c.end) : 0), 0);
+
+  return (
+    <div className="card mb-6">
+      <div className="card-body">
+        {/* Bulk toolbar */}
+        <div className="flex flex-wrap items-end gap-2 mb-4 p-3 bg-gray-50 rounded">
+          <div>
+            <label className="form-label text-xs">Day</label>
+            <select value={bulkDay} onChange={(e) => setBulkDay(e.target.value)} className="form-input">
+              <option value="all">All days</option>
+              {DAYS.map((d) => <option key={d.id} value={d.id}>{d.short}</option>)}
+            </select>
+          </div>
+          <div><label className="form-label text-xs">Start</label><input type="time" value={bulkStart} onChange={(e) => setBulkStart(e.target.value)} className="form-input" /></div>
+          <div><label className="form-label text-xs">End</label><input type="time" value={bulkEnd} onChange={(e) => setBulkEnd(e.target.value)} className="form-input" /></div>
+          <button type="button" className="btn btn-primary btn-sm" disabled={checked.size === 0} onClick={() => applyBulk(true)}>Apply to checked ({checked.size})</button>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={checked.size === 0} onClick={() => applyBulk(false)}>Clear day(s)</button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b">
+                <th className="py-2 pr-2 text-left"><input type="checkbox" checked={allChecked} onChange={toggleAll} /></th>
+                <th className="py-2 pr-4 text-left">Worker</th>
+                {DAYS.map((d) => <th key={d.id} className="py-2 px-1 text-center">{d.short}</th>)}
+                <th className="py-2 pl-2 text-right">Hrs</th>
+              </tr>
+            </thead>
+            <tbody>
+              {workers.map((w) => {
+                const cells = grid[w.id] ?? [];
+                return (
+                  <tr key={w.id} className="border-b last:border-0">
+                    <td className="py-1 pr-2"><input type="checkbox" checked={checked.has(w.id)} onChange={() => toggleCheck(w.id)} /></td>
+                    <td className="py-1 pr-4 whitespace-nowrap font-medium">{w.firstName} {w.lastName}</td>
+                    {cells.map((c, i) => (
+                      <td key={i} className="py-1 px-1 text-center">
+                        <button
+                          type="button"
+                          onClick={() => toggleCell(w.id, i)}
+                          className={`w-full rounded px-1 py-1 text-[11px] leading-tight ${c.active ? "bg-blue-100 text-blue-800 border border-blue-300" : "bg-gray-100 text-gray-400 border border-gray-200"}`}
+                          title={c.active ? `${c.start}–${c.end}` : "Off — click to turn on"}
+                        >
+                          {c.active ? `${to12(c.start)}–${to12(c.end)}` : "—"}
+                        </button>
+                      </td>
+                    ))}
+                    <td className="py-1 pl-2 text-right font-medium">{rowHours(cells).toFixed(1)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <Form method="post" className="mt-4">
+          <input type="hidden" name="intent" value="bulk-update-schedule" />
+          <input type="hidden" name="grid" value={JSON.stringify(Object.fromEntries(Object.entries(grid).map(([wid, cells]) => [wid, cells.map((c, i) => ({ day: i, active: c.active, start: c.start, end: c.end }))])))} />
+          <button type="submit" className="btn btn-primary" disabled={isSubmitting}>{isSubmitting ? "Saving…" : "Save all changes"}</button>
+          <span className="text-xs text-gray-500 ml-3">Click a day cell to toggle on/off. Bulk-apply sets checked workers.</span>
+        </Form>
+      </div>
+    </div>
+  );
+}
+
+// ---- Worker: submit a recurring schedule for approval + see status ----
+function WorkerRequestSection({ myRequest, worker, isSubmitting }: { myRequest: any; worker: any; isSubmitting: boolean }) {
+  const [open, setOpen] = useState(false);
+  const current = (day: number) => {
+    const s = worker?.recurringSchedules?.find((x: any) => x.dayOfWeek === day && x.isActive);
+    return s ? { active: true, start: s.startTime, end: s.endTime } : { active: false, start: "08:00", end: "17:00" };
+  };
+  const pending = myRequest?.status === "PENDING";
+  let submittedDays: any[] = [];
+  try { submittedDays = myRequest ? JSON.parse(myRequest.days) : []; } catch { submittedDays = []; }
+
+  return (
+    <div className="card mb-6 border-blue-200">
+      <div className="card-body">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h2 className="card-title">Request a schedule change</h2>
+          {!pending && (
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setOpen((o) => !o)}>
+              {open ? "Cancel" : "New request"}
+            </button>
+          )}
+        </div>
+
+        {myRequest && (
+          <div className={`alert mt-3 ${myRequest.status === "APPROVED" ? "alert-success" : myRequest.status === "DENIED" ? "alert-error" : "alert-warning"}`}>
+            {myRequest.status === "PENDING" && "Your request is pending review."}
+            {myRequest.status === "APPROVED" && "Your last request was approved and is now your schedule."}
+            {myRequest.status === "DENIED" && `Your last request was denied${myRequest.note ? `: ${myRequest.note}` : "."}`}
+            {submittedDays.length > 0 && (
+              <div className="text-xs mt-1">
+                {submittedDays.filter((d) => d.active).map((d) => `${DAYS[d.day].short} ${to12(d.start)}–${to12(d.end)}`).join(" · ") || "No days on"}
+              </div>
+            )}
+          </div>
+        )}
+
+        {open && !pending && (
+          <Form method="post" className="mt-4">
+            <input type="hidden" name="intent" value="submit-schedule-request" />
+            <div className="overflow-x-auto">
+              <div className="grid grid-cols-7 gap-2 min-w-[600px]">
+                {DAYS.map((day) => {
+                  const c = current(day.id);
+                  return (
+                    <div key={day.id} className="p-2 rounded border border-gray-200">
+                      <label className="flex items-center gap-1 mb-2 text-xs font-semibold">
+                        <input type="checkbox" name={`day-${day.id}-active`} defaultChecked={c.active} /> {day.short}
+                      </label>
+                      <input type="time" name={`day-${day.id}-start`} defaultValue={c.start} className="form-input text-xs p-1 w-full mb-1" />
+                      <input type="time" name={`day-${day.id}-end`} defaultValue={c.end} className="form-input text-xs p-1 w-full" />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <button type="submit" className="btn btn-primary btn-sm mt-3" disabled={isSubmitting}>Submit for approval</button>
+          </Form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---- Admin: review pending requests (edit times, approve, deny) ----
+function RequestsView({ requests, isSubmitting }: { requests: any[]; isSubmitting: boolean }) {
+  if (requests.length === 0) {
+    return <div className="card"><div className="card-body text-center text-gray-500 py-8">No pending schedule requests.</div></div>;
+  }
+  return (
+    <div className="space-y-4">
+      {requests.map((r) => <RequestCard key={r.id} req={r} isSubmitting={isSubmitting} />)}
+    </div>
+  );
+}
+
+function RequestCard({ req, isSubmitting }: { req: any; isSubmitting: boolean }) {
+  let initial: any[] = [];
+  try { initial = JSON.parse(req.days); } catch { initial = []; }
+  const byDay = (d: number) => initial.find((x) => x.day === d) ?? { day: d, active: false, start: "08:00", end: "17:00" };
+  const [days, setDays] = useState(() => DAYS.map((d) => byDay(d.id)));
+  const [denying, setDenying] = useState(false);
+  const set = (i: number, k: string, v: any) => setDays((ds) => ds.map((c, j) => (j === i ? { ...c, [k]: v } : c)));
+
+  return (
+    <div className="card">
+      <div className="card-header flex justify-between items-center">
+        <h2 className="card-title">{req.workerName}</h2>
+        <span className="text-xs text-gray-500">Submitted {new Date(req.submittedAt).toLocaleDateString()}</span>
+      </div>
+      <div className="card-body">
+        <p className="text-sm text-gray-600 mb-2">Adjust times if needed, then approve. Only days marked on are merged into their schedule.</p>
+        <div className="overflow-x-auto">
+          <div className="grid grid-cols-7 gap-2 min-w-[600px]">
+            {days.map((c, i) => (
+              <div key={i} className={`p-2 rounded border ${c.active ? "bg-blue-50 border-blue-200" : "bg-gray-50 border-gray-200"}`}>
+                <label className="flex items-center gap-1 mb-2 text-xs font-semibold">
+                  <input type="checkbox" checked={c.active} onChange={(e) => set(i, "active", e.target.checked)} /> {DAYS[i].short}
+                </label>
+                <input type="time" value={c.start} onChange={(e) => set(i, "start", e.target.value)} className="form-input text-xs p-1 w-full mb-1" />
+                <input type="time" value={c.end} onChange={(e) => set(i, "end", e.target.value)} className="form-input text-xs p-1 w-full" />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2 mt-4">
+          <Form method="post">
+            <input type="hidden" name="intent" value="approve-schedule-request" />
+            <input type="hidden" name="requestId" value={req.id} />
+            <input type="hidden" name="days" value={JSON.stringify(days)} />
+            <button type="submit" className="btn btn-primary btn-sm" disabled={isSubmitting}>Approve</button>
+          </Form>
+          <button type="button" className="btn btn-secondary btn-sm text-red-600" onClick={() => setDenying((d) => !d)}>Deny</button>
+        </div>
+
+        {denying && (
+          <Form method="post" className="mt-3 flex flex-wrap items-end gap-2">
+            <input type="hidden" name="intent" value="deny-schedule-request" />
+            <input type="hidden" name="requestId" value={req.id} />
+            <div className="flex-1 min-w-[240px]">
+              <label className="form-label text-xs">Reason (optional, sent to worker)</label>
+              <input type="text" name="note" className="form-input" placeholder="e.g. we need you Saturdays" />
+            </div>
+            <button type="submit" className="btn btn-primary btn-sm" disabled={isSubmitting}>Confirm deny</button>
+          </Form>
+        )}
+      </div>
+    </div>
   );
 }

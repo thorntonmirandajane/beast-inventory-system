@@ -185,6 +185,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     take: 10,
   });
 
+  // Most recent schedule-request decision (last 14 days) for an in-app heads-up.
+  const fourteenDaysAgo = new Date();
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+  const scheduleDecision = await prisma.scheduleRequest.findFirst({
+    where: { userId: user.id, status: { in: ["APPROVED", "DENIED"] }, reviewedAt: { gte: fourteenDaysAgo } },
+    orderBy: { reviewedAt: "desc" },
+    select: { status: true, note: true, reviewedAt: true },
+  });
+
   return {
     user,
     clockStatus,
@@ -195,6 +204,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     currentTimeEntry,
     rejectedLines,
     submitted,
+    scheduleDecision,
   };
 };
 
@@ -282,6 +292,7 @@ export default function WorkerDashboard() {
     currentTimeEntry,
     rejectedLines,
     submitted,
+    scheduleDecision,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -326,6 +337,17 @@ export default function WorkerDashboard() {
       {submitted && (
         <div className="alert alert-success">
           Tasks submitted successfully! Your work has been recorded.
+        </div>
+      )}
+
+      {scheduleDecision && (
+        <div className={`alert ${scheduleDecision.status === "APPROVED" ? "alert-success" : "alert-error"} flex items-center justify-between`}>
+          <span>
+            {scheduleDecision.status === "APPROVED"
+              ? "Your schedule request was approved."
+              : `Your schedule request was denied${scheduleDecision.note ? `: ${scheduleDecision.note}` : "."}`}
+          </span>
+          <Link to="/schedules" className="btn btn-secondary btn-sm">View schedule</Link>
         </div>
       )}
 
