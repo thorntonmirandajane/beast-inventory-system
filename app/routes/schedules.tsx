@@ -5,6 +5,8 @@ import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { useState } from "react";
 import { parseShorthand, toShorthand } from "../utils/schedule-hours";
+import { buildShifts } from "../utils/overtime.server";
+import { TimeRangePicker } from "../components/TimePicker";
 
 const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const ymd = (d: Date) => {
@@ -95,11 +97,43 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cells: weekDates.map((d) => {
       const dateY = ymd(d);
       const saved = savedByKey.get(`${w.id}|${dateY}`);
-      if (saved) return { date: dateY, value: toShorthand(saved.start, saved.end), saved: true };
+      if (saved) return { date: dateY, start: saved.start, end: saved.end, value: toShorthand(saved.start, saved.end), saved: true };
       const pat = patternByKey.get(`${w.id}|${d.getDay()}`);
-      return { date: dateY, value: pat ? toShorthand(pat.start, pat.end) : "", saved: false };
+      if (pat) return { date: dateY, start: pat.start, end: pat.end, value: toShorthand(pat.start, pat.end), saved: false };
+      return { date: dateY, start: "", end: "", value: "", saved: false };
     }),
   }));
+
+  // Approved time off overlapping the visible week -> per-cell conflict label.
+  const timeOff = await prisma.timeOffRequest.findMany({
+    where: { userId: { in: workerIds }, status: "APPROVED", startDate: { lte: rangeEnd }, endDate: { gte: rangeStart } },
+    select: { userId: true, startDate: true, endDate: true },
+  });
+  // Time-off dates are stored at UTC midnight — read the calendar day in UTC so
+  // it isn't shifted back a day by the (Mountain) server timezone.
+  const dOnly = (dt: Date) => dt.toISOString().slice(0, 10);
+  const fmtShort = (dt: Date) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  const timeOffByCell: Record<string, string> = {};
+  for (const t of timeOff) {
+    const s = dOnly(t.startDate);
+    const e = dOnly(t.endDate);
+    const label = s === e ? fmtShort(t.startDate) : `${fmtShort(t.startDate)}–${fmtShort(t.endDate)}`;
+    for (const d of weekDates) {
+      const dY = ymd(d);
+      if (dY >= s && dY <= e) timeOffByCell[`${t.userId}|${dY}`] = label;
+    }
+  }
+
+  // Actual hours worked this week (from clock events) per worker, for compare.
+  const weekEvents = await prisma.clockEvent.findMany({
+    where: { userId: { in: workerIds }, type: { in: ["CLOCK_IN", "CLOCK_OUT"] }, timestamp: { gte: rangeStart, lte: rangeEnd } },
+    orderBy: { timestamp: "asc" },
+  });
+  const actualByWorker: Record<string, number> = {};
+  for (const w of workersRaw) {
+    const shifts = buildShifts(weekEvents.filter((e) => e.userId === w.id));
+    actualByWorker[w.id] = Math.round(shifts.reduce((t, s) => t + s.hours, 0) * 100) / 100;
+  }
 
   const days = weekDates.map((d) => ({ ymd: ymd(d), label: DAY_ABBR[d.getDay()], dom: d.getDate() }));
   const weekTabs = [-1, 0, 1, 2, 3].map((off) => {
@@ -146,6 +180,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     workers, upcomingDateSchedules,
     gridWorkers, days, weekStartYmd: ymd(monday), weekTitle: weekLabel(monday),
     weekTabs, prevWeek: ymd(addDays(monday, -7)), nextWeek: ymd(addDays(monday, 7)),
+    timeOffByCell, actualByWorker,
     scheduleRequests, myRequest, pendingRequestCount,
   };
 };
@@ -176,21 +211,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "set-schedule-cell") {
     const workerId = String(formData.get("workerId") || "");
     const date = String(formData.get("date") || "");
-    const value = String(formData.get("value") || "");
     if (!workerId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Bad cell." };
-    const res = await writeCell(workerId, date, value);
+    const input = formData.has("value")
+      ? { value: String(formData.get("value") || "") }
+      : { start: String(formData.get("start") || ""), end: String(formData.get("end") || "") };
+    const res = await writeCell(workerId, date, input);
     if (res.error) return { cellError: true, workerId, date, message: res.error };
     return { cellSaved: true, workerId, date };
   }
 
   // Commit the whole visible week (one-click save of a pre-filled week).
   if (intent === "commit-week") {
-    let cells: { workerId: string; date: string; value: string }[] = [];
+    let cells: { workerId: string; date: string; start?: string; end?: string }[] = [];
     try { cells = JSON.parse(String(formData.get("cells") || "[]")); } catch { cells = []; }
     let saved = 0, errors = 0;
     await prisma.$transaction(async (tx) => {
       for (const c of cells) {
-        const res = await writeCell(c.workerId, c.date, c.value, tx);
+        const res = await writeCell(c.workerId, c.date, { start: c.start ?? "", end: c.end ?? "" }, tx);
         if (res.error) errors++; else saved++;
       }
     }, { timeout: 120000, maxWait: 15000 });
@@ -207,7 +244,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try { cells = editedRaw ? JSON.parse(editedRaw) : (JSON.parse(req.days).cells ?? []); }
     catch { try { cells = JSON.parse(req.days).cells ?? []; } catch { cells = []; } }
     await prisma.$transaction(async (tx) => {
-      for (const c of cells) await writeCell(req.userId, c.date, c.value, tx);
+      for (const c of cells) await writeCell(req.userId, c.date, { value: c.value }, tx);
       let meta: any = {}; try { meta = JSON.parse(req.days || "{}"); } catch { meta = {}; }
       await tx.scheduleRequest.update({ where: { id: requestId }, data: { status: "APPROVED", reviewedAt: new Date(), reviewedById: user.id, days: JSON.stringify({ ...meta, cells }) } });
     }, { timeout: 120000, maxWait: 15000 });
@@ -228,11 +265,28 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return { error: "INVALID ACTION" };
 };
 
-// Write one (worker, date) cell: valid -> upsert SPECIFIC_DATE; off/blank ->
-// clear; invalid -> report. Shared by cell save, week commit, and approval.
-async function writeCell(workerId: string, date: string, value: string, tx: any = prisma): Promise<{ error?: string }> {
-  const parsed = parseShorthand(value);
-  if (parsed.error) return { error: parsed.error };
+// Write one (worker, date) cell. Accepts explicit start/end (from the time
+// picker) or a shorthand `value` (worker request / older paths). Both empty =>
+// day off (clears the row). Invalid -> reported.
+async function writeCell(
+  workerId: string,
+  date: string,
+  input: { start?: string; end?: string; value?: string },
+  tx: any = prisma
+): Promise<{ error?: string }> {
+  let start = input.start;
+  let end = input.end;
+  let off = false;
+  if (start == null && end == null && input.value != null) {
+    const parsed = parseShorthand(input.value);
+    if (parsed.error) return { error: parsed.error };
+    if (parsed.off) off = true;
+    else { start = parsed.start; end = parsed.end; }
+  } else {
+    if (!start && !end) off = true;
+    else if (!start || !end) return { error: "incomplete" };
+    else if (end <= start) return { error: "order" };
+  }
   const scheduleDate = dateAtNoon(date);
   const dayStart = new Date(scheduleDate); dayStart.setHours(0, 0, 0, 0);
   const dayEnd = new Date(scheduleDate); dayEnd.setHours(23, 59, 59, 999);
@@ -240,9 +294,9 @@ async function writeCell(workerId: string, date: string, value: string, tx: any 
   // NULL for SPECIFIC_DATE, and Postgres treats NULLs as distinct in the unique
   // index, so upsert can't reliably match — delete-then-create keeps exactly one.)
   await tx.workerSchedule.deleteMany({ where: { userId: workerId, scheduleType: "SPECIFIC_DATE", scheduleDate: { gte: dayStart, lte: dayEnd } } });
-  if (parsed.off) return {};
+  if (off) return {};
   await tx.workerSchedule.create({
-    data: { userId: workerId, dayOfWeek: null, scheduleDate, scheduleType: "SPECIFIC_DATE", startTime: parsed.start as string, endTime: parsed.end as string, isActive: true },
+    data: { userId: workerId, dayOfWeek: null, scheduleDate, scheduleType: "SPECIFIC_DATE", startTime: start as string, endTime: end as string, isActive: true },
   });
   return {};
 }
@@ -783,11 +837,18 @@ const cellHours = (v: string) => {
   const p = parseShorthand(v);
   return p.error ? 0 : p.hours;
 };
+const hhmmHours = (start: string, end: string) => {
+  if (!start || !end) return 0;
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  return Math.max(0, eh + em / 60 - (sh + sm / 60));
+};
 
 export default function Schedules() {
   const {
     user, isWorkerView, view, gridWorkers, days, weekStartYmd, weekTitle, weekTabs,
-    prevWeek, nextWeek, workers, upcomingDateSchedules, scheduleRequests, myRequest, pendingRequestCount,
+    prevWeek, nextWeek, workers, upcomingDateSchedules, timeOffByCell, actualByWorker,
+    scheduleRequests, myRequest, pendingRequestCount,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -825,7 +886,7 @@ export default function Schedules() {
           {isWorkerView ? (
             <WeeklyRequestForm gridWorker={gridWorkers[0]} days={days} weekStartYmd={weekStartYmd} myRequest={myRequest} isSubmitting={isSubmitting} />
           ) : (
-            <WeeklyGrid gridWorkers={gridWorkers} days={days} />
+            <WeeklyGrid gridWorkers={gridWorkers} days={days} timeOffByCell={timeOffByCell} actualByWorker={actualByWorker} weekStartYmd={weekStartYmd} />
           )}
         </>
       )}
@@ -856,11 +917,11 @@ function WeekNav({ weekTitle, prevWeek, nextWeek, weekTabs }: any) {
   );
 }
 
-function WeeklyGrid({ gridWorkers, days }: any) {
+function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStartYmd }: any) {
   const key = (w: string, d: string) => `${w}|${d}`;
-  const [vals, setVals] = useState<Record<string, string>>(() => {
-    const o: Record<string, string> = {};
-    for (const w of gridWorkers) for (const c of w.cells) o[key(w.id, c.date)] = c.value;
+  const [cells, setCells] = useState<Record<string, { start: string; end: string }>>(() => {
+    const o: Record<string, { start: string; end: string }> = {};
+    for (const w of gridWorkers) for (const c of w.cells) o[key(w.id, c.date)] = { start: c.start || "", end: c.end || "" };
     return o;
   });
   const [savedKeys, setSavedKeys] = useState<Set<string>>(() => {
@@ -868,80 +929,125 @@ function WeeklyGrid({ gridWorkers, days }: any) {
     for (const w of gridWorkers) for (const c of w.cells) if (c.saved) s.add(key(w.id, c.date));
     return s;
   });
+  const [open, setOpen] = useState<{ k: string; wid: string; date: string; anchor: { left: number; bottom: number; width: number } } | null>(null);
+  const [showActual, setShowActual] = useState(false);
 
-  const save = (wid: string, date: string, value: string) => {
+  const save = (wid: string, date: string, start: string, end: string) => {
     const fd = new FormData();
     fd.append("intent", "set-schedule-cell");
     fd.append("workerId", wid);
     fd.append("date", date);
-    fd.append("value", value);
+    fd.append("start", start);
+    fd.append("end", end);
     fetch(window.location.pathname + window.location.search, { method: "POST", body: fd }).catch(() => {});
   };
-  const onBlur = (wid: string, date: string) => {
+  const setCell = (wid: string, date: string, start: string, end: string) => {
     const k = key(wid, date);
-    const v = vals[k] ?? "";
-    if (parseShorthand(v).error) return; // don't save invalid
-    save(wid, date, v);
+    setCells((s) => ({ ...s, [k]: { start, end } }));
     setSavedKeys((s) => new Set(s).add(k));
+    save(wid, date, start, end);
   };
 
-  const dayTotal = (di: number) => gridWorkers.reduce((t: number, w: any) => t + cellHours(vals[key(w.id, days[di].ymd)] ?? ""), 0);
-  const rowTotal = (w: any) => days.reduce((t: number, d: any) => t + cellHours(vals[key(w.id, d.ymd)] ?? ""), 0);
+  const cellHrs = (k: string) => { const c = cells[k]; return c ? hhmmHours(c.start, c.end) : 0; };
+  const dayTotal = (di: number) => gridWorkers.reduce((t: number, w: any) => t + cellHrs(key(w.id, days[di].ymd)), 0);
+  const rowTotal = (w: any) => days.reduce((t: number, d: any) => t + cellHrs(key(w.id, d.ymd)), 0);
   const grand = days.reduce((t: number, _d: any, di: number) => t + dayTotal(di), 0);
-  const commitCells = gridWorkers.flatMap((w: any) => w.cells.map((c: any) => ({ workerId: w.id, date: c.date, value: vals[key(w.id, c.date)] ?? "" })));
+  const commitCells = gridWorkers.flatMap((w: any) => w.cells.map((c: any) => { const cur = cells[key(w.id, c.date)] || { start: "", end: "" }; return { workerId: w.id, date: c.date, start: cur.start, end: cur.end }; }));
+  const th = "px-3 py-3 whitespace-nowrap";
 
   return (
-    <div className="card">
-      <div className="card-body overflow-x-auto">
-        <Form method="post" className="mb-3">
-          <input type="hidden" name="intent" value="commit-week" />
-          <input type="hidden" name="cells" value={JSON.stringify(commitCells)} />
-          <button className="btn btn-secondary btn-sm" type="submit">Save week (commit pre-filled)</button>
-          <span className="text-xs text-gray-500 ml-2">Cells save when you click away. Amber = pre-filled from the pattern, not yet saved.</span>
-        </Form>
-        <table className="text-sm border-collapse">
-          <thead>
-            <tr>
-              <th className="p-2 text-left sticky left-0 bg-white z-10">Worker</th>
-              {days.map((d: any) => <th key={d.ymd} className="p-2 text-center whitespace-nowrap">{d.label} {d.dom}</th>)}
-              <th className="p-2 text-right">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {gridWorkers.map((w: any) => (
-              <tr key={w.id} className="border-t">
-                <td className="p-2 whitespace-nowrap font-medium sticky left-0 bg-white z-10">{w.name}</td>
-                {days.map((d: any) => {
-                  const k = key(w.id, d.ymd);
-                  const v = vals[k] ?? "";
-                  const err = !!parseShorthand(v).error;
-                  const prefilled = !savedKeys.has(k) && v !== "" && !err;
-                  return (
-                    <td key={d.ymd} className="p-1 text-center">
-                      <input
-                        value={v}
-                        onChange={(e) => setVals((s) => ({ ...s, [k]: e.target.value }))}
-                        onBlur={() => onBlur(w.id, d.ymd)}
-                        placeholder="—"
-                        title={err ? "Unparseable — won't count" : prefilled ? "Pre-filled from pattern — not saved yet" : ""}
-                        className={`w-16 text-center rounded border px-1 py-1 ${err ? "border-red-400 bg-red-50" : prefilled ? "border-amber-300 bg-amber-50 text-gray-500" : "border-gray-200"}`}
-                      />
-                    </td>
-                  );
-                })}
-                <td className="p-2 text-right font-medium">{fmtHrs(rowTotal(w))}</td>
+    <div className="card mx-1 md:mx-4">
+      <div className="card-body p-4 md:p-6">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+          <Form method="post">
+            <input type="hidden" name="intent" value="commit-week" />
+            <input type="hidden" name="cells" value={JSON.stringify(commitCells)} />
+            <button className="btn btn-secondary btn-sm" type="submit">Save week (commit pre-filled)</button>
+          </Form>
+          <div className="flex items-center gap-4">
+            <label className="text-sm flex items-center gap-1.5"><input type="checkbox" checked={showActual} onChange={(e) => setShowActual(e.target.checked)} /> Show actual</label>
+            <a href={`/schedules/print?weekStart=${weekStartYmd}`} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">Print / Export</a>
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">Click a day to set start/end times. Amber = pre-filled, not yet saved. Red ⚠ = conflicts with approved time off.</p>
+
+        <div className="overflow-x-auto pb-2">
+          <table className="text-sm" style={{ borderSpacing: "8px 4px", borderCollapse: "separate" }}>
+            <thead>
+              <tr className="text-gray-500">
+                <th className={`${th} text-left sticky left-0 bg-white z-10`}>Worker</th>
+                {days.map((d: any) => <th key={d.ymd} className={`${th} text-center`}>{d.label} {d.dom}</th>)}
+                <th className={`${th} text-right`}>Total</th>
+                {showActual && <><th className={`${th} text-right`}>Actual</th><th className={`${th} text-right`}>Diff</th></>}
               </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="border-t-2 font-semibold bg-gray-50">
-              <td className="p-2 sticky left-0 bg-gray-50 z-10">Daily total</td>
-              {days.map((d: any, di: number) => <td key={d.ymd} className="p-2 text-center">{fmtHrs(dayTotal(di))}</td>)}
-              <td className="p-2 text-right">{fmtHrs(grand)}</td>
-            </tr>
-          </tfoot>
-        </table>
+            </thead>
+            <tbody>
+              {gridWorkers.map((w: any) => {
+                const sched = rowTotal(w);
+                const actual = actualByWorker[w.id] ?? 0;
+                const diff = Math.round((actual - sched) * 100) / 100;
+                return (
+                  <tr key={w.id}>
+                    <td className="px-3 py-2 whitespace-nowrap font-medium sticky left-0 bg-white z-10">{w.name}</td>
+                    {days.map((d: any) => {
+                      const k = key(w.id, d.ymd);
+                      const c = cells[k] || { start: "", end: "" };
+                      const has = !!(c.start && c.end);
+                      const label = has ? toShorthand(c.start, c.end) : "—";
+                      const prefilled = !savedKeys.has(k) && has;
+                      const conflict = has && !!timeOffByCell[k];
+                      return (
+                        <td key={d.ymd} className="px-1 py-1 text-center">
+                          <button
+                            type="button"
+                            onClick={(ev) => {
+                              const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+                              setOpen(open?.k === k ? null : { k, wid: w.id, date: d.ymd, anchor: { left: r.left, bottom: r.bottom, width: r.width } });
+                            }}
+                            title={conflict ? `Conflicts with approved time off (${timeOffByCell[k]})` : prefilled ? "Pre-filled — not saved yet" : ""}
+                            className={`w-20 h-11 rounded border text-sm transition-colors ${conflict ? "border-red-500 bg-red-50 text-red-700" : prefilled ? "border-amber-300 bg-amber-50 text-gray-500" : has ? "border-gray-300 hover:border-blue-400" : "border-dashed border-gray-300 text-gray-400 hover:border-blue-400"}`}
+                          >
+                            {conflict && <span className="mr-0.5">⚠</span>}{label}
+                          </button>
+                        </td>
+                      );
+                    })}
+                    <td className="px-3 py-2 text-right font-medium">{fmtHrs(sched)}</td>
+                    {showActual && (
+                      <>
+                        <td className="px-3 py-2 text-right">{fmtHrs(actual)}</td>
+                        <td className={`px-3 py-2 text-right font-medium ${Math.abs(diff) >= 2 ? (diff > 0 ? "text-green-700" : "text-red-600") : "text-gray-500"}`}>{diff > 0 ? "+" : ""}{fmtHrs(diff)}</td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="font-semibold bg-gray-50">
+                <td className="px-3 py-3 sticky left-0 bg-gray-50 z-10">Daily total</td>
+                {days.map((d: any, di: number) => <td key={d.ymd} className="px-3 py-3 text-center">{fmtHrs(dayTotal(di))}</td>)}
+                <td className="px-3 py-3 text-right">{fmtHrs(grand)}</td>
+                {showActual && <><td className="px-3 py-3 text-right">{fmtHrs(gridWorkers.reduce((t: number, w: any) => t + (actualByWorker[w.id] ?? 0), 0))}</td><td /></>}
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       </div>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-50" onClick={() => setOpen(null)} />
+          <TimeRangePicker
+            start={cells[open.k]?.start || ""}
+            end={cells[open.k]?.end || ""}
+            anchor={open.anchor}
+            onDone={(s, e) => setCell(open.wid, open.date, s, e)}
+            onClear={() => setCell(open.wid, open.date, "", "")}
+            onClose={() => setOpen(null)}
+          />
+        </>
+      )}
     </div>
   );
 }

@@ -720,3 +720,7 @@ body {
     @apply ml-0;
   }
 }
+
+/* Hide scrollbars on the time-picker wheels */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

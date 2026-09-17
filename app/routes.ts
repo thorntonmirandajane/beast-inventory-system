@@ -39,6 +39,7 @@ export default [
   route("users/import", "routes/users.import.tsx"),
   route("schedules", "routes/schedules.tsx"),
   route("schedules/import", "routes/schedules.import.tsx"),
+  route("schedules/print", "routes/schedules.print.tsx"),
   route("payroll", "routes/payroll.tsx"),
   route("capacity", "routes/capacity.tsx"),
   route("capacity/import", "routes/capacity.import.tsx"),
