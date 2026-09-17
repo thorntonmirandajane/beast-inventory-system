@@ -6,7 +6,8 @@ import prisma from "../db.server";
 import { useState } from "react";
 import { parseShorthand, toShorthand } from "../utils/schedule-hours";
 import { buildShifts } from "../utils/overtime.server";
-import { TimeRangePicker } from "../components/TimePicker";
+import { useFetcher } from "react-router";
+import { TimeRangePicker, BottomSheetTimePicker } from "../components/TimePicker";
 
 const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const ymd = (d: Date) => {
@@ -51,8 +52,8 @@ const DAYS = [
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
   const url = new URL(request.url);
-  const view = url.searchParams.get("view") || "week";
   const isWorkerView = user.role === "WORKER";
+  const view = url.searchParams.get("view") || (isWorkerView ? "month" : "week");
 
   // Selected week (Monday-start).
   const wsParam = url.searchParams.get("weekStart");
@@ -175,6 +176,59 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scheduleRequests = reqs.map((r) => ({ id: r.id, userId: r.userId, workerName: nameById.get(r.userId) ?? "Unknown", status: r.status, days: r.days, note: r.note, submittedAt: r.submittedAt }));
   }
 
+  // Worker mobile Month/Week day-card data.
+  let myMonth: any = null;
+  let myWeek: any = null;
+  if (isWorkerView) {
+    const now = new Date();
+    const monthParam = url.searchParams.get("month");
+    const [my, mm] = monthParam && /^\d{4}-\d{2}$/.test(monthParam) ? monthParam.split("-").map(Number) : [now.getFullYear(), now.getMonth() + 1];
+    const monthIdx = mm - 1;
+    const first = new Date(my, monthIdx, 1); first.setHours(12, 0, 0, 0);
+    const gridStart = new Date(first); gridStart.setDate(1 - first.getDay()); gridStart.setHours(12, 0, 0, 0);
+    const monthCells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+    const wkSun = new Date(now); wkSun.setDate(now.getDate() - now.getDay()); wkSun.setHours(12, 0, 0, 0);
+    const weekCells = Array.from({ length: 7 }, (_, i) => addDays(wkSun, i));
+
+    const all = [...monthCells, ...weekCells];
+    const lo = new Date(Math.min(...all.map((d) => d.getTime()))); lo.setHours(0, 0, 0, 0);
+    const hi = new Date(Math.max(...all.map((d) => d.getTime()))); hi.setHours(23, 59, 59, 999);
+    const appr = await prisma.workerSchedule.findMany({
+      where: { userId: user.id, scheduleType: "SPECIFIC_DATE", isActive: true, scheduleDate: { gte: lo, lte: hi } },
+      select: { scheduleDate: true, startTime: true, endTime: true },
+    });
+    const apprBy = new Map<string, { start: string; end: string }>();
+    for (const r of appr) if (r.scheduleDate) apprBy.set(ymd(r.scheduleDate), { start: r.startTime, end: r.endTime });
+    const pendBy = new Map<string, { start: string; end: string }>();
+    if (myRequest) { try { for (const c of (JSON.parse(myRequest.days).cells ?? [])) if (c.start && c.end) pendBy.set(c.date, { start: c.start, end: c.end }); } catch { /* older format */ } }
+
+    const card = (d: Date, dowLabel = false) => {
+      const dY = ymd(d);
+      const pend = pendBy.get(dY);
+      const app = apprBy.get(dY);
+      const src = pend ?? app ?? null;
+      return {
+        date: dY, dom: d.getDate(), inMonth: d.getMonth() === monthIdx,
+        start: src?.start ?? "", end: src?.end ?? "",
+        hours: src ? toShorthand(src.start, src.end) : "",
+        status: pend ? "pending" : app ? "approved" : "none",
+        ...(dowLabel ? { dow: DAY_ABBR[d.getDay()] } : {}),
+      };
+    };
+    const ym = (dt: Date) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+    myMonth = {
+      label: first.toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+      prevMonth: ym(new Date(my, monthIdx - 1, 1)),
+      nextMonth: ym(new Date(my, monthIdx + 1, 1)),
+      weeks: Array.from({ length: 6 }, (_, r) => monthCells.slice(r * 7, r * 7 + 7).map((d) => card(d))),
+    };
+    const ws = weekCells[0], we = weekCells[6];
+    myWeek = {
+      label: `${ws.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${we.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
+      days: weekCells.map((d) => card(d, true)),
+    };
+  }
+
   return {
     user, isWorkerView, view,
     workers, upcomingDateSchedules,
@@ -182,6 +236,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     weekTabs, prevWeek: ymd(addDays(monday, -7)), nextWeek: ymd(addDays(monday, 7)),
     timeOffByCell, actualByWorker,
     scheduleRequests, myRequest, pendingRequestCount,
+    myMonth, myWeek,
   };
 };
 
@@ -202,6 +257,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     else await prisma.scheduleRequest.create({ data: { userId: user.id, days, status: "PENDING" } });
     await createAuditLog(user.id, "SUBMIT_SCHEDULE_REQUEST", "ScheduleRequest", user.id, {});
     return { success: true, message: "Schedule request submitted for approval." };
+  }
+
+  // Worker taps a day in the Month/Week view -> upsert that date into their
+  // pending request (does NOT go live until approved). Off/blank removes it.
+  if (intent === "set-my-day") {
+    const date = String(formData.get("date") || "");
+    const start = String(formData.get("start") || "");
+    const end = String(formData.get("end") || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Bad date." };
+    const req = await prisma.scheduleRequest.findFirst({ where: { userId: user.id, status: "PENDING" } });
+    let cells: any[] = [];
+    if (req) { try { cells = JSON.parse(req.days).cells ?? []; } catch { cells = []; } }
+    cells = cells.filter((c: any) => c.date !== date);
+    const on = !!(start && end && end > start);
+    if (on) cells.push({ date, start, end, value: toShorthand(start, end) });
+    cells.sort((a: any, b: any) => a.date.localeCompare(b.date));
+    if (cells.length === 0) {
+      if (req) await prisma.scheduleRequest.delete({ where: { id: req.id } });
+      return { success: true, message: "Updated." };
+    }
+    const days = JSON.stringify({ cells });
+    if (req) await prisma.scheduleRequest.update({ where: { id: req.id }, data: { days, status: "PENDING", submittedAt: new Date() } });
+    else await prisma.scheduleRequest.create({ data: { userId: user.id, days, status: "PENDING" } });
+    return { success: true, message: on ? "Requested — pending approval." : "Cleared." };
   }
 
   // Everything below is admin-only.
@@ -244,7 +323,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try { cells = editedRaw ? JSON.parse(editedRaw) : (JSON.parse(req.days).cells ?? []); }
     catch { try { cells = JSON.parse(req.days).cells ?? []; } catch { cells = []; } }
     await prisma.$transaction(async (tx) => {
-      for (const c of cells) await writeCell(req.userId, c.date, { value: c.value }, tx);
+      for (const c of cells) await writeCell(req.userId, c.date, { start: (c as any).start, end: (c as any).end, value: c.value }, tx);
       let meta: any = {}; try { meta = JSON.parse(req.days || "{}"); } catch { meta = {}; }
       await tx.scheduleRequest.update({ where: { id: requestId }, data: { status: "APPROVED", reviewedAt: new Date(), reviewedById: user.id, days: JSON.stringify({ ...meta, cells }) } });
     }, { timeout: 120000, maxWait: 15000 });
@@ -848,7 +927,7 @@ export default function Schedules() {
   const {
     user, isWorkerView, view, gridWorkers, days, weekStartYmd, weekTitle, weekTabs,
     prevWeek, nextWeek, workers, upcomingDateSchedules, timeOffByCell, actualByWorker,
-    scheduleRequests, myRequest, pendingRequestCount,
+    scheduleRequests, myRequest, pendingRequestCount, myMonth, myWeek,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -857,37 +936,44 @@ export default function Schedules() {
   const tabCls = (v: string) =>
     `px-4 py-2 font-medium border-b-2 transition-colors ${view === v ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`;
 
+  if (isWorkerView) {
+    return (
+      <Layout user={user}>
+        <div className="page-header">
+          <h1 className="page-title">My Schedule</h1>
+          <p className="page-subtitle">Tap a day to request your hours. Amber = pending, green = approved.</p>
+        </div>
+        {myRequest?.status === "DENIED" && (
+          <div className="alert alert-error mb-4">Your last request was denied{myRequest.note ? `: ${myRequest.note}` : "."}</div>
+        )}
+        <WorkerSchedule view={view === "week" ? "week" : "month"} myMonth={myMonth} myWeek={myWeek} />
+      </Layout>
+    );
+  }
+
   return (
     <Layout user={user}>
       <div className="page-header">
-        <h1 className="page-title">{isWorkerView ? "My Schedule" : "Worker Schedules"}</h1>
-        <p className="page-subtitle">
-          {isWorkerView ? "Submit your weekly hours for approval" : "Weekly hours grid — type shorthand like 7-3. Blank = day off."}
-        </p>
+        <h1 className="page-title">Worker Schedules</h1>
+        <p className="page-subtitle">Weekly hours grid — click a day to set start/end. Blank = day off.</p>
       </div>
 
       {actionData && "error" in actionData && actionData.error && <div className="alert alert-error mb-6">{actionData.error}</div>}
       {actionData && "success" in actionData && actionData.success && <div className="alert alert-success mb-6">{actionData.message}</div>}
 
       <div className="flex gap-2 mb-6 border-b border-gray-200">
-        <Link to={`/schedules?view=week&weekStart=${weekStartYmd}`} className={tabCls("week")}>{isWorkerView ? "My Week" : "Weekly Grid"}</Link>
+        <Link to={`/schedules?view=week&weekStart=${weekStartYmd}`} className={tabCls("week")}>Weekly Grid</Link>
         <Link to="/schedules?view=calendar" className={tabCls("calendar")}>Calendar View</Link>
-        {!isWorkerView && (
-          <Link to="/schedules?view=requests" className={tabCls("requests")}>
-            Requests
-            {pendingRequestCount > 0 && <span className="ml-2 inline-block bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">{pendingRequestCount}</span>}
-          </Link>
-        )}
+        <Link to="/schedules?view=requests" className={tabCls("requests")}>
+          Requests
+          {pendingRequestCount > 0 && <span className="ml-2 inline-block bg-red-100 text-red-700 text-xs font-semibold px-2 py-0.5 rounded-full">{pendingRequestCount}</span>}
+        </Link>
       </div>
 
       {view === "week" && (
         <>
           <WeekNav weekTitle={weekTitle} prevWeek={prevWeek} nextWeek={nextWeek} weekTabs={weekTabs} />
-          {isWorkerView ? (
-            <WeeklyRequestForm gridWorker={gridWorkers[0]} days={days} weekStartYmd={weekStartYmd} myRequest={myRequest} isSubmitting={isSubmitting} />
-          ) : (
-            <WeeklyGrid gridWorkers={gridWorkers} days={days} timeOffByCell={timeOffByCell} actualByWorker={actualByWorker} weekStartYmd={weekStartYmd} />
-          )}
+          <WeeklyGrid gridWorkers={gridWorkers} days={days} timeOffByCell={timeOffByCell} actualByWorker={actualByWorker} weekStartYmd={weekStartYmd} />
         </>
       )}
 
@@ -895,10 +981,106 @@ export default function Schedules() {
         <CalendarView workers={workers} upcomingDateSchedules={upcomingDateSchedules} user={user} />
       )}
 
-      {view === "requests" && !isWorkerView && (
+      {view === "requests" && (
         <RequestsList requests={scheduleRequests} isSubmitting={isSubmitting} />
       )}
     </Layout>
+  );
+}
+
+// ---- Worker mobile Month/Week view ----
+function WorkerSchedule({ view, myMonth, myWeek }: any) {
+  const fetcher = useFetcher();
+  const [open, setOpen] = useState<{ date: string; start: string; end: string; label: string } | null>(null);
+
+  const submit = (date: string, start: string, end: string) => {
+    fetcher.submit({ intent: "set-my-day", date, start, end }, { method: "post" });
+  };
+  const onTap = (c: any) => {
+    const d = dateAtNoon(c.date);
+    const label = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    setOpen({ date: c.date, start: c.start || "", end: c.end || "", label });
+  };
+
+  const Dot = ({ status }: { status: string }) => (
+    <span
+      className="absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full"
+      style={{ background: status === "approved" ? "#10b981" : status === "pending" ? "#f59e0b" : "transparent", border: status === "none" ? "1.5px solid #d1d5db" : "none" }}
+    />
+  );
+  const Card = ({ c, muted }: { c: any; muted?: boolean }) => (
+    <button
+      type="button"
+      onClick={() => onTap(c)}
+      className={`relative rounded-xl border flex flex-col items-center justify-center aspect-square p-1 transition-colors ${muted ? "opacity-40" : ""} ${c.status === "approved" ? "border-green-300 bg-green-50" : c.status === "pending" ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"} hover:border-blue-400`}
+    >
+      <Dot status={c.status} />
+      <span className="text-sm font-semibold text-gray-800 leading-none">{c.dom}</span>
+      {c.hours && <span className="text-[9px] sm:text-[10px] text-gray-600 mt-1 leading-none">{c.hours}</span>}
+    </button>
+  );
+
+  return (
+    <>
+      <div className="flex gap-2 mb-4 border-b border-gray-200">
+        <Link to="/schedules?view=month" className={`px-4 py-2 font-medium border-b-2 ${view === "month" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}>Month</Link>
+        <Link to="/schedules?view=week" className={`px-4 py-2 font-medium border-b-2 ${view === "week" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}>Week</Link>
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 text-xs text-gray-600 mb-3">
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ background: "#10b981" }} /> Approved</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ background: "#f59e0b" }} /> Pending</span>
+        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ border: "1.5px solid #d1d5db" }} /> Not set</span>
+      </div>
+
+      <div className="card">
+        <div className="card-body p-3 sm:p-4">
+          {view === "month" ? (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <Link to={`/schedules?view=month&month=${myMonth.prevMonth}`} className="btn btn-secondary btn-sm">←</Link>
+                <span className="font-semibold">{myMonth.label}</span>
+                <Link to={`/schedules?view=month&month=${myMonth.nextMonth}`} className="btn btn-secondary btn-sm">→</Link>
+              </div>
+              <div className="grid grid-cols-7 gap-1 mb-1 text-center text-[11px] font-semibold text-gray-500">
+                {DAY_ABBR.map((d) => <div key={d}>{d}</div>)}
+              </div>
+              <div className="space-y-1">
+                {myMonth.weeks.map((wk: any[], wi: number) => (
+                  <div key={wi} className="grid grid-cols-7 gap-1">
+                    {wk.map((c) => <Card key={c.date} c={c} muted={!c.inMonth} />)}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-center font-semibold mb-3">{myWeek.label}</div>
+              <div className="grid grid-cols-7 gap-1.5">
+                {myWeek.days.map((c: any) => (
+                  <div key={c.date} className="flex flex-col items-center">
+                    <div className="text-[11px] font-semibold text-gray-500 mb-1">{c.dow}</div>
+                    <Card c={c} />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {open && (
+        <BottomSheetTimePicker
+          start={open.start}
+          end={open.end}
+          title={open.label}
+          onDone={(s, e) => submit(open.date, s, e)}
+          onClear={() => submit(open.date, "", "")}
+          onClose={() => setOpen(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -1052,52 +1234,6 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
   );
 }
 
-function WeeklyRequestForm({ gridWorker, days, weekStartYmd, myRequest, isSubmitting }: any) {
-  const [vals, setVals] = useState<string[]>(() => days.map((_d: any, i: number) => gridWorker?.cells?.[i]?.value ?? ""));
-  const total = days.reduce((t: number, _d: any, i: number) => t + cellHours(vals[i] ?? ""), 0);
-  const cellsPayload = days.map((d: any, i: number) => ({ date: d.ymd, value: vals[i] ?? "" }));
-  const reqStatus = myRequest?.status;
-
-  return (
-    <div className="card">
-      <div className="card-body">
-        {myRequest && (
-          <div className={`alert mb-4 ${reqStatus === "APPROVED" ? "alert-success" : reqStatus === "DENIED" ? "alert-error" : "alert-warning"}`}>
-            {reqStatus === "PENDING" && "Your request is pending review."}
-            {reqStatus === "APPROVED" && "Your last request was approved and applied to your schedule."}
-            {reqStatus === "DENIED" && `Your last request was denied${myRequest.note ? `: ${myRequest.note}` : "."}`}
-          </div>
-        )}
-        <p className="text-sm text-gray-600 mb-3">
-          Enter hours per day (e.g. 7-3, 8:30-4). Blank or "off" = day off. Submitting sends it for approval — it won't change your live schedule until approved.
-        </p>
-        <div className="overflow-x-auto">
-          <table className="text-sm">
-            <thead><tr>{days.map((d: any) => <th key={d.ymd} className="p-2 text-center whitespace-nowrap">{d.label} {d.dom}</th>)}<th className="p-2">Total</th></tr></thead>
-            <tbody><tr>
-              {days.map((d: any, i: number) => {
-                const err = !!parseShorthand(vals[i] ?? "").error;
-                return (
-                  <td key={d.ymd} className="p-1 text-center">
-                    <input value={vals[i] ?? ""} onChange={(e) => setVals((s) => s.map((x, j) => (j === i ? e.target.value : x)))} placeholder="—" className={`w-16 text-center rounded border px-1 py-1 ${err ? "border-red-400 bg-red-50" : "border-gray-200"}`} />
-                  </td>
-                );
-              })}
-              <td className="p-2 text-right font-medium">{fmtHrs(total)}</td>
-            </tr></tbody>
-          </table>
-        </div>
-        <Form method="post" className="mt-3">
-          <input type="hidden" name="intent" value="submit-schedule-request" />
-          <input type="hidden" name="weekStart" value={weekStartYmd} />
-          <input type="hidden" name="cells" value={JSON.stringify(cellsPayload)} />
-          <button className="btn btn-primary" disabled={isSubmitting}>Submit for approval</button>
-        </Form>
-      </div>
-    </div>
-  );
-}
-
 function RequestsList({ requests, isSubmitting }: any) {
   if (!requests.length) {
     return <div className="card"><div className="card-body text-center text-gray-500 py-8">No pending schedule requests.</div></div>;
@@ -1109,10 +1245,18 @@ function RequestReviewCard({ req, isSubmitting }: any) {
   let meta: any = {};
   try { meta = JSON.parse(req.days); } catch { meta = {}; }
   const initCells: any[] = Array.isArray(meta.cells) ? meta.cells : [];
-  const [cells, setCells] = useState(() => initCells.map((c) => ({ date: c.date, value: c.value })));
+  const [cells, setCells] = useState(() => initCells.map((c) => ({ date: c.date, start: c.start ?? "", end: c.end ?? "", value: c.value ?? toShorthand(c.start, c.end), edited: false })));
   const [denying, setDenying] = useState(false);
   const total = cells.reduce((t, c) => t + cellHours(c.value), 0);
   const dow = (y: string) => { const d = dateAtNoon(y); return `${DAY_ABBR[d.getDay()]} ${d.getDate()}`; };
+  // Edited cells re-parse the shorthand; untouched keep the worker's exact times.
+  const postCells = cells.map((c) => {
+    if (!c.edited) return { date: c.date, start: c.start, end: c.end, value: c.value };
+    const p = parseShorthand(c.value);
+    if (p.off) return { date: c.date, value: "" };
+    if (p.error) return { date: c.date, value: c.value };
+    return { date: c.date, start: p.start, end: p.end, value: c.value };
+  });
 
   return (
     <div className="card">
@@ -1132,7 +1276,7 @@ function RequestReviewCard({ req, isSubmitting }: any) {
                 <tbody><tr>
                   {cells.map((c, i) => {
                     const err = !!parseShorthand(c.value).error;
-                    return <td key={i} className="p-1 text-center"><input value={c.value} onChange={(e) => setCells((cs) => cs.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} placeholder="—" className={`w-16 text-center rounded border px-1 py-1 ${err ? "border-red-400 bg-red-50" : "border-gray-200"}`} /></td>;
+                    return <td key={i} className="p-1 text-center"><input value={c.value} onChange={(e) => setCells((cs) => cs.map((x, j) => (j === i ? { ...x, value: e.target.value, edited: true } : x)))} placeholder="—" className={`w-16 text-center rounded border px-1 py-1 ${err ? "border-red-400 bg-red-50" : "border-gray-200"}`} /></td>;
                   })}
                   <td className="p-2 text-right font-medium">{fmtHrs(total)}</td>
                 </tr></tbody>
@@ -1144,7 +1288,7 @@ function RequestReviewCard({ req, isSubmitting }: any) {
           <Form method="post">
             <input type="hidden" name="intent" value="approve-schedule-request" />
             <input type="hidden" name="requestId" value={req.id} />
-            <input type="hidden" name="cells" value={JSON.stringify(cells)} />
+            <input type="hidden" name="cells" value={JSON.stringify(postCells)} />
             <button className="btn btn-primary btn-sm" disabled={isSubmitting || cells.length === 0}>Approve</button>
           </Form>
           <button type="button" className="btn btn-secondary btn-sm text-red-600" onClick={() => setDenying((d) => !d)}>Deny</button>

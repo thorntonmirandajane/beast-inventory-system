@@ -124,6 +124,52 @@ function TimeWheels({ value, onChange }: { value: string; onChange: (v: string) 
   );
 }
 
+// Mobile bottom sheet: slides up from the bottom, full-width wheels.
+export function BottomSheetTimePicker({
+  start,
+  end,
+  title,
+  onDone,
+  onClear,
+  onClose,
+}: {
+  start: string;
+  end: string;
+  title: string;
+  onDone: (start: string, end: string) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  const [s, setS] = useState(start || "08:00");
+  const [e, setE] = useState(end || "17:00");
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.4)", display: "flex", alignItems: "flex-end" }} onClick={onClose}>
+      <div
+        style={{ background: "#fff", width: "100%", borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, paddingBottom: 24, animation: "sheetUp .2s ease-out" }}
+        onClick={(ev) => ev.stopPropagation()}
+      >
+        <style>{`@keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>
+        <div style={{ textAlign: "center", fontWeight: 600, marginBottom: 12 }}>{title}</div>
+        <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 4, textAlign: "center" }}>Start</div>
+            <TimeWheels value={s} onChange={setS} />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#6b7280", marginBottom: 4, textAlign: "center" }}>End</div>
+            <TimeWheels value={e} onChange={setE} />
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+          <button type="button" className="btn btn-secondary text-red-600" style={{ flex: 1 }} onClick={() => { onClear(); onClose(); }}>Off</button>
+          <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+          <button type="button" className="btn btn-primary" style={{ flex: 2 }} onClick={() => { onDone(s, e); onClose(); }}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TimeRangePicker({
   start,
   end,
