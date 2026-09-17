@@ -1002,17 +1002,24 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
     setOpen({ date: c.date, start: c.start || "", end: c.end || "", label });
   };
 
+  // Inline grid so the global "@media(max-width:768px){.grid{grid-cols-1}}" hack
+  // (used to stack QC cards) can't collapse the 7-column calendar on phones.
+  const g7 = (gap: number): React.CSSProperties => ({ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap });
   const Dot = ({ status }: { status: string }) => (
     <span
-      className="absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full"
-      style={{ background: status === "approved" ? "#10b981" : status === "pending" ? "#f59e0b" : "transparent", border: status === "none" ? "1.5px solid #d1d5db" : "none" }}
+      style={{
+        position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9999,
+        background: status === "approved" ? "#10b981" : status === "pending" ? "#f59e0b" : "transparent",
+        border: status === "none" ? "1.5px solid #d1d5db" : "none",
+      }}
     />
   );
   const Card = ({ c, muted }: { c: any; muted?: boolean }) => (
     <button
       type="button"
       onClick={() => onTap(c)}
-      className={`relative rounded-xl border flex flex-col items-center justify-center aspect-square p-1 transition-colors ${muted ? "opacity-40" : ""} ${c.status === "approved" ? "border-green-300 bg-green-50" : c.status === "pending" ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"} hover:border-blue-400`}
+      style={{ position: "relative", aspectRatio: "1 / 1", minWidth: 0 }}
+      className={`rounded-xl border flex flex-col items-center justify-center p-1 transition-colors ${muted ? "opacity-40" : ""} ${c.status === "approved" ? "border-green-300 bg-green-50" : c.status === "pending" ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"} hover:border-blue-400`}
     >
       <Dot status={c.status} />
       <span className="text-sm font-semibold text-gray-800 leading-none">{c.dom}</span>
@@ -1043,12 +1050,12 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
                 <span className="font-semibold">{myMonth.label}</span>
                 <Link to={`/schedules?view=month&month=${myMonth.nextMonth}`} className="btn btn-secondary btn-sm">→</Link>
               </div>
-              <div className="grid grid-cols-7 gap-1 mb-1 text-center text-[11px] font-semibold text-gray-500">
+              <div className="mb-1 text-center text-[11px] font-semibold text-gray-500" style={g7(4)}>
                 {DAY_ABBR.map((d) => <div key={d}>{d}</div>)}
               </div>
               <div className="space-y-1">
                 {myMonth.weeks.map((wk: any[], wi: number) => (
-                  <div key={wi} className="grid grid-cols-7 gap-1">
+                  <div key={wi} style={g7(4)}>
                     {wk.map((c) => <Card key={c.date} c={c} muted={!c.inMonth} />)}
                   </div>
                 ))}
@@ -1057,11 +1064,11 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
           ) : (
             <>
               <div className="text-center font-semibold mb-3">{myWeek.label}</div>
-              <div className="grid grid-cols-7 gap-1.5">
+              <div style={g7(6)}>
                 {myWeek.days.map((c: any) => (
-                  <div key={c.date} className="flex flex-col items-center">
+                  <div key={c.date} className="flex flex-col items-center" style={{ minWidth: 0 }}>
                     <div className="text-[11px] font-semibold text-gray-500 mb-1">{c.dow}</div>
-                    <Card c={c} />
+                    <div style={{ width: "100%" }}><Card c={c} /></div>
                   </div>
                 ))}
               </div>
