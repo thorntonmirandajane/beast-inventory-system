@@ -225,14 +225,21 @@ export async function computeDailyPlan(
     },
     include: { user: { select: { id: true, firstName: true, lastName: true, isActive: true } } },
   });
+  // SPECIFIC_DATE wins over RECURRING; multiple SPECIFIC_DATE rows on a day are
+  // split shifts and their hours SUM.
   const byUser = new Map<string, { name: string; hours: number; specific: boolean }>();
   for (const sc of schedules) {
     if (!sc.user.isActive) continue;
     const hours = Math.max(0, parseTime(sc.endTime) - parseTime(sc.startTime));
     const isSpecific = sc.scheduleType === "SPECIFIC_DATE";
+    const name = `${sc.user.firstName} ${sc.user.lastName}`;
     const existing = byUser.get(sc.userId);
-    if (!existing || (isSpecific && !existing.specific)) {
-      byUser.set(sc.userId, { name: `${sc.user.firstName} ${sc.user.lastName}`, hours, specific: isSpecific });
+    if (!existing) {
+      byUser.set(sc.userId, { name, hours, specific: isSpecific });
+    } else if (isSpecific && !existing.specific) {
+      byUser.set(sc.userId, { name, hours, specific: true }); // specific replaces recurring
+    } else if (isSpecific && existing.specific) {
+      existing.hours += hours; // split shift on the same day
     }
   }
   const workers: WorkerCapacity[] = Array.from(byUser.entries()).map(([userId, v]) => ({

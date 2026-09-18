@@ -112,7 +112,7 @@ function from12(hIdx: number, mIdx: number, apIdx: number): string {
   return `${String(H).padStart(2, "0")}:${String(mIdx).padStart(2, "0")}`;
 }
 
-function TimeWheels({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function TimeWheels({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const cur = to12(value || "08:00");
   return (
     <div style={{ display: "flex", gap: 2, alignItems: "center", background: "#fff", borderRadius: 8 }}>

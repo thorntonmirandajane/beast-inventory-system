@@ -4,10 +4,10 @@ import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { useState } from "react";
-import { parseShorthand, toShorthand } from "../utils/schedule-hours";
+import { parseShorthand, toShorthand, format12 } from "../utils/schedule-hours";
 import { buildShifts } from "../utils/overtime.server";
 import { useFetcher } from "react-router";
-import { TimeRangePicker, BottomSheetTimePicker } from "../components/TimePicker";
+import { TimeRangePicker, TimeWheels } from "../components/TimePicker";
 
 const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const ymd = (d: Date) => {
@@ -37,6 +37,16 @@ const weekLabel = (monday: Date) => {
   const so = sun.toLocaleDateString("en-US", { month: "short" });
   return mo === so ? `${mo} ${monday.getDate()}–${sun.getDate()}` : `${mo} ${monday.getDate()}–${so} ${sun.getDate()}`;
 };
+type Shift = { start: string; end: string };
+const hoursOf = (s: string, e: string) => {
+  if (!s || !e) return 0;
+  const [sh, sm] = s.split(":").map(Number);
+  const [eh, em] = e.split(":").map(Number);
+  return Math.max(0, eh + em / 60 - (sh + sm / 60));
+};
+const shiftsLabel = (shifts: Shift[]) => shifts.map((s) => toShorthand(s.start, s.end)).join(", ");
+const shiftsHours = (shifts: Shift[]) => Math.round(shifts.reduce((t, s) => t + hoursOf(s.start, s.end), 0) * 100) / 100;
+const sortShifts = (shifts: Shift[]) => [...shifts].sort((a, b) => a.start.localeCompare(b.start));
 
 const DAYS = [
   { id: 0, name: "SUNDAY", short: "SUN" },
@@ -81,8 +91,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { userId: { in: workerIds }, scheduleType: "SPECIFIC_DATE", isActive: true, scheduleDate: { gte: rangeStart, lte: rangeEnd } },
     select: { userId: true, scheduleDate: true, startTime: true, endTime: true },
   });
-  const savedByKey = new Map<string, { start: string; end: string }>();
-  for (const r of weekRows) if (r.scheduleDate) savedByKey.set(`${r.userId}|${ymd(r.scheduleDate)}`, { start: r.startTime, end: r.endTime });
+  const savedByKey = new Map<string, Shift[]>();
+  for (const r of weekRows) if (r.scheduleDate) {
+    const k = `${r.userId}|${ymd(r.scheduleDate)}`;
+    const a = savedByKey.get(k) ?? [];
+    a.push({ start: r.startTime, end: r.endTime });
+    savedByKey.set(k, a);
+  }
 
   // Recurring pattern (deactivated) — used only to pre-fill unsaved cells.
   const patternRows = await prisma.workerSchedule.findMany({
@@ -98,10 +113,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cells: weekDates.map((d) => {
       const dateY = ymd(d);
       const saved = savedByKey.get(`${w.id}|${dateY}`);
-      if (saved) return { date: dateY, start: saved.start, end: saved.end, value: toShorthand(saved.start, saved.end), saved: true };
+      if (saved && saved.length) { const sh = sortShifts(saved); return { date: dateY, shifts: sh, value: shiftsLabel(sh), hours: shiftsHours(sh), saved: true }; }
       const pat = patternByKey.get(`${w.id}|${d.getDay()}`);
-      if (pat) return { date: dateY, start: pat.start, end: pat.end, value: toShorthand(pat.start, pat.end), saved: false };
-      return { date: dateY, start: "", end: "", value: "", saved: false };
+      if (pat) { const sh = [{ start: pat.start, end: pat.end }]; return { date: dateY, shifts: sh, value: shiftsLabel(sh), hours: shiftsHours(sh), saved: false }; }
+      return { date: dateY, shifts: [] as Shift[], value: "", hours: 0, saved: false };
     }),
   }));
 
@@ -197,20 +212,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       where: { userId: user.id, scheduleType: "SPECIFIC_DATE", isActive: true, scheduleDate: { gte: lo, lte: hi } },
       select: { scheduleDate: true, startTime: true, endTime: true },
     });
-    const apprBy = new Map<string, { start: string; end: string }>();
-    for (const r of appr) if (r.scheduleDate) apprBy.set(ymd(r.scheduleDate), { start: r.startTime, end: r.endTime });
-    const pendBy = new Map<string, { start: string; end: string }>();
-    if (myRequest) { try { for (const c of (JSON.parse(myRequest.days).cells ?? [])) if (c.start && c.end) pendBy.set(c.date, { start: c.start, end: c.end }); } catch { /* older format */ } }
+    const apprBy = new Map<string, Shift[]>();
+    for (const r of appr) if (r.scheduleDate) { const k = ymd(r.scheduleDate); const a = apprBy.get(k) ?? []; a.push({ start: r.startTime, end: r.endTime }); apprBy.set(k, a); }
+    const pendBy = new Map<string, Shift[]>();
+    if (myRequest) { try { for (const c of (JSON.parse(myRequest.days).cells ?? [])) { const sh = cellToShifts(c); if (sh.length) pendBy.set(c.date, sh); } } catch { /* older format */ } }
 
     const card = (d: Date, dowLabel = false) => {
       const dY = ymd(d);
       const pend = pendBy.get(dY);
       const app = apprBy.get(dY);
-      const src = pend ?? app ?? null;
+      const src = pend ?? app ?? [];
+      const shifts = sortShifts(src);
       return {
         date: dY, dom: d.getDate(), inMonth: d.getMonth() === monthIdx,
-        start: src?.start ?? "", end: src?.end ?? "",
-        hours: src ? toShorthand(src.start, src.end) : "",
+        shifts,
+        hours: shifts.length ? shiftsLabel(shifts) : "",
         status: pend ? "pending" : app ? "approved" : "none",
         ...(dowLabel ? { dow: DAY_ABBR[d.getDay()] } : {}),
       };
@@ -263,15 +279,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // pending request (does NOT go live until approved). Off/blank removes it.
   if (intent === "set-my-day") {
     const date = String(formData.get("date") || "");
-    const start = String(formData.get("start") || "");
-    const end = String(formData.get("end") || "");
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Bad date." };
+    let shifts: { start: string; end: string }[] = [];
+    try { shifts = JSON.parse(String(formData.get("shifts") || "[]")); } catch { shifts = []; }
+    const valid = (Array.isArray(shifts) ? shifts : []).filter((s) => s.start && s.end && s.end > s.start);
     const req = await prisma.scheduleRequest.findFirst({ where: { userId: user.id, status: "PENDING" } });
     let cells: any[] = [];
     if (req) { try { cells = JSON.parse(req.days).cells ?? []; } catch { cells = []; } }
     cells = cells.filter((c: any) => c.date !== date);
-    const on = !!(start && end && end > start);
-    if (on) cells.push({ date, start, end, value: toShorthand(start, end) });
+    if (valid.length) cells.push({ date, shifts: valid, value: valid.map((s) => toShorthand(s.start, s.end)).join(", ") });
     cells.sort((a: any, b: any) => a.date.localeCompare(b.date));
     if (cells.length === 0) {
       if (req) await prisma.scheduleRequest.delete({ where: { id: req.id } });
@@ -280,7 +296,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const days = JSON.stringify({ cells });
     if (req) await prisma.scheduleRequest.update({ where: { id: req.id }, data: { days, status: "PENDING", submittedAt: new Date() } });
     else await prisma.scheduleRequest.create({ data: { userId: user.id, days, status: "PENDING" } });
-    return { success: true, message: on ? "Requested — pending approval." : "Cleared." };
+    return { success: true, message: valid.length ? "Requested — pending approval." : "Cleared." };
   }
 
   // Everything below is admin-only.
@@ -291,39 +307,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const workerId = String(formData.get("workerId") || "");
     const date = String(formData.get("date") || "");
     if (!workerId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Bad cell." };
-    const input = formData.has("value")
-      ? { value: String(formData.get("value") || "") }
-      : { start: String(formData.get("start") || ""), end: String(formData.get("end") || "") };
-    const res = await writeCell(workerId, date, input);
-    if (res.error) return { cellError: true, workerId, date, message: res.error };
+    let shifts: { start: string; end: string }[] = [];
+    if (formData.has("shifts")) { try { shifts = JSON.parse(String(formData.get("shifts"))); } catch { shifts = []; } }
+    else { const s = String(formData.get("start") || ""), e = String(formData.get("end") || ""); shifts = s && e ? [{ start: s, end: e }] : []; }
+    await writeDayShifts(workerId, date, shifts);
     return { cellSaved: true, workerId, date };
   }
 
   // Commit the whole visible week (one-click save of a pre-filled week).
   if (intent === "commit-week") {
-    let cells: { workerId: string; date: string; start?: string; end?: string }[] = [];
+    let cells: any[] = [];
     try { cells = JSON.parse(String(formData.get("cells") || "[]")); } catch { cells = []; }
-    let saved = 0, errors = 0;
     await prisma.$transaction(async (tx) => {
-      for (const c of cells) {
-        const res = await writeCell(c.workerId, c.date, { start: c.start ?? "", end: c.end ?? "" }, tx);
-        if (res.error) errors++; else saved++;
-      }
+      for (const c of cells) await writeDayShifts(c.workerId, c.date, cellToShifts(c), tx);
     }, { timeout: 120000, maxWait: 15000 });
-    await createAuditLog(user.id, "COMMIT_SCHEDULE_WEEK", "WorkerSchedule", "week", { saved, errors });
-    return { success: true, message: `Saved ${saved} day(s)${errors ? `, ${errors} invalid skipped` : ""}.` };
+    await createAuditLog(user.id, "COMMIT_SCHEDULE_WEEK", "WorkerSchedule", "week", { days: cells.length });
+    return { success: true, message: `Saved ${cells.length} day(s).` };
   }
 
   if (intent === "approve-schedule-request") {
     const requestId = formData.get("requestId") as string;
     const req = await prisma.scheduleRequest.findUnique({ where: { id: requestId } });
     if (!req || req.status !== "PENDING") return { error: "Request not found or already handled." };
-    let cells: { date: string; value: string }[] = [];
+    let cells: any[] = [];
     const editedRaw = formData.get("cells") as string | null;
     try { cells = editedRaw ? JSON.parse(editedRaw) : (JSON.parse(req.days).cells ?? []); }
     catch { try { cells = JSON.parse(req.days).cells ?? []; } catch { cells = []; } }
     await prisma.$transaction(async (tx) => {
-      for (const c of cells) await writeCell(req.userId, c.date, { start: (c as any).start, end: (c as any).end, value: c.value }, tx);
+      for (const c of cells) await writeDayShifts(req.userId, c.date, cellToShifts(c), tx);
       let meta: any = {}; try { meta = JSON.parse(req.days || "{}"); } catch { meta = {}; }
       await tx.scheduleRequest.update({ where: { id: requestId }, data: { status: "APPROVED", reviewedAt: new Date(), reviewedById: user.id, days: JSON.stringify({ ...meta, cells }) } });
     }, { timeout: 120000, maxWait: 15000 });
@@ -344,40 +355,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return { error: "INVALID ACTION" };
 };
 
-// Write one (worker, date) cell. Accepts explicit start/end (from the time
-// picker) or a shorthand `value` (worker request / older paths). Both empty =>
-// day off (clears the row). Invalid -> reported.
-async function writeCell(
-  workerId: string,
-  date: string,
-  input: { start?: string; end?: string; value?: string },
-  tx: any = prisma
-): Promise<{ error?: string }> {
-  let start = input.start;
-  let end = input.end;
-  let off = false;
-  if (start == null && end == null && input.value != null) {
-    const parsed = parseShorthand(input.value);
-    if (parsed.error) return { error: parsed.error };
-    if (parsed.off) off = true;
-    else { start = parsed.start; end = parsed.end; }
-  } else {
-    if (!start && !end) off = true;
-    else if (!start || !end) return { error: "incomplete" };
-    else if (end <= start) return { error: "order" };
+// Normalize a cell (which may carry `shifts[]`, a single start/end, or a
+// shorthand `value`) to a list of {start,end} shifts.
+function cellToShifts(c: any): { start: string; end: string }[] {
+  if (Array.isArray(c?.shifts)) return c.shifts.filter((s: any) => s?.start && s?.end);
+  if (c?.start && c?.end) return [{ start: c.start, end: c.end }];
+  if (typeof c?.value === "string" && c.value.trim()) {
+    const p = parseShorthand(c.value);
+    if (!p.error && !p.off && p.start && p.end) return [{ start: p.start, end: p.end }];
   }
+  return [];
+}
+
+// Write a day's shifts as SPECIFIC_DATE rows (one per block — a split shift is
+// several rows). Empty list = day off. Delete-then-create keeps exactly the set.
+async function writeDayShifts(workerId: string, date: string, shifts: { start: string; end: string }[], tx: any = prisma) {
   const scheduleDate = dateAtNoon(date);
   const dayStart = new Date(scheduleDate); dayStart.setHours(0, 0, 0, 0);
   const dayEnd = new Date(scheduleDate); dayEnd.setHours(23, 59, 59, 999);
-  // Clear any existing date-specific row(s) for that day first. (dayOfWeek is
-  // NULL for SPECIFIC_DATE, and Postgres treats NULLs as distinct in the unique
-  // index, so upsert can't reliably match — delete-then-create keeps exactly one.)
   await tx.workerSchedule.deleteMany({ where: { userId: workerId, scheduleType: "SPECIFIC_DATE", scheduleDate: { gte: dayStart, lte: dayEnd } } });
-  if (off) return {};
-  await tx.workerSchedule.create({
-    data: { userId: workerId, dayOfWeek: null, scheduleDate, scheduleType: "SPECIFIC_DATE", startTime: start as string, endTime: end as string, isActive: true },
-  });
-  return {};
+  for (const s of (shifts || []).filter((x) => x.start && x.end && x.end > x.start)) {
+    await tx.workerSchedule.create({
+      data: { userId: workerId, dayOfWeek: null, scheduleDate, scheduleType: "SPECIFIC_DATE", startTime: s.start, endTime: s.end, isActive: true },
+    });
+  }
 }
 
 // Calendar helper functions
@@ -991,15 +992,15 @@ export default function Schedules() {
 // ---- Worker mobile Month/Week view ----
 function WorkerSchedule({ view, myMonth, myWeek }: any) {
   const fetcher = useFetcher();
-  const [open, setOpen] = useState<{ date: string; start: string; end: string; label: string } | null>(null);
+  const [open, setOpen] = useState<{ date: string; shifts: any[]; label: string } | null>(null);
 
-  const submit = (date: string, start: string, end: string) => {
-    fetcher.submit({ intent: "set-my-day", date, start, end }, { method: "post" });
+  const submit = (date: string, shifts: any[]) => {
+    fetcher.submit({ intent: "set-my-day", date, shifts: JSON.stringify(shifts) }, { method: "post" });
   };
   const onTap = (c: any) => {
     const d = dateAtNoon(c.date);
     const label = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-    setOpen({ date: c.date, start: c.start || "", end: c.end || "", label });
+    setOpen({ date: c.date, shifts: (c.shifts || []).map((s: any) => ({ ...s })), label });
   };
 
   // Inline grid so the global "@media(max-width:768px){.grid{grid-cols-1}}" hack
@@ -1014,18 +1015,22 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
       }}
     />
   );
-  const Card = ({ c, muted }: { c: any; muted?: boolean }) => (
-    <button
-      type="button"
-      onClick={() => onTap(c)}
-      style={{ position: "relative", aspectRatio: "1 / 1", minWidth: 0 }}
-      className={`rounded-xl border flex flex-col items-center justify-center p-1 transition-colors ${muted ? "opacity-40" : ""} ${c.status === "approved" ? "border-green-300 bg-green-50" : c.status === "pending" ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"} hover:border-blue-400`}
-    >
-      <Dot status={c.status} />
-      <span className="text-sm font-semibold text-gray-800 leading-none">{c.dom}</span>
-      {c.hours && <span className="text-[9px] sm:text-[10px] text-gray-600 mt-1 leading-none">{c.hours}</span>}
-    </button>
-  );
+  const Card = ({ c, muted, interactive }: { c: any; muted?: boolean; interactive?: boolean }) => {
+    const cls = `rounded-xl border flex flex-col items-center justify-center p-1 transition-colors ${muted ? "opacity-40" : ""} ${c.status === "approved" ? "border-green-300 bg-green-50" : c.status === "pending" ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"} ${interactive ? "hover:border-blue-400" : ""}`;
+    const style: React.CSSProperties = { position: "relative", aspectRatio: "1 / 1", minWidth: 0 };
+    const inner = (
+      <>
+        <Dot status={c.status} />
+        <span className="text-sm font-semibold text-gray-800 leading-none">{c.dom}</span>
+        {c.hours && <span className="text-[8px] sm:text-[9px] text-gray-600 mt-1 leading-tight text-center px-0.5" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{c.hours}</span>}
+      </>
+    );
+    return interactive ? (
+      <button type="button" onClick={() => onTap(c)} style={style} className={cls}>{inner}</button>
+    ) : (
+      <div style={style} className={cls}>{inner}</div>
+    );
+  };
 
   return (
     <>
@@ -1034,7 +1039,6 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
         <Link to="/schedules?view=week" className={`px-4 py-2 font-medium border-b-2 ${view === "week" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}>Week</Link>
       </div>
 
-      {/* Legend */}
       <div className="flex items-center gap-4 text-xs text-gray-600 mb-3">
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ background: "#10b981" }} /> Approved</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ background: "#f59e0b" }} /> Pending</span>
@@ -1056,14 +1060,16 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
               <div className="space-y-1">
                 {myMonth.weeks.map((wk: any[], wi: number) => (
                   <div key={wi} style={g7(4)}>
-                    {wk.map((c) => <Card key={c.date} c={c} muted={!c.inMonth} />)}
+                    {wk.map((c) => <Card key={c.date} c={c} muted={!c.inMonth} interactive />)}
                   </div>
                 ))}
               </div>
+              <p className="text-[11px] text-gray-400 mt-3 text-center">Tap a day to set your hours. Add a second block for a split shift.</p>
             </>
           ) : (
             <>
-              <div className="text-center font-semibold mb-3">{myWeek.label}</div>
+              <div className="text-center font-semibold mb-1">{myWeek.label}</div>
+              <p className="text-[11px] text-gray-400 mb-3 text-center">This week at a glance (view only). Edit hours on the Month tab.</p>
               <div style={g7(6)}>
                 {myWeek.days.map((c: any) => (
                   <div key={c.date} className="flex flex-col items-center" style={{ minWidth: 0 }}>
@@ -1078,16 +1084,67 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
       </div>
 
       {open && (
-        <BottomSheetTimePicker
-          start={open.start}
-          end={open.end}
-          title={open.label}
-          onDone={(s, e) => submit(open.date, s, e)}
-          onClear={() => submit(open.date, "", "")}
+        <MultiShiftSheet
+          dateLabel={open.label}
+          initial={open.shifts}
+          onSave={(shifts: any[]) => submit(open.date, shifts)}
           onClose={() => setOpen(null)}
         />
       )}
     </>
+  );
+}
+
+// Bottom sheet with one or more Start/End shift blocks (split-shift support).
+function MultiShiftSheet({ dateLabel, initial, onSave, onClose }: any) {
+  const [shifts, setShifts] = useState<{ start: string; end: string }[]>(() => (initial?.length ? initial.map((s: any) => ({ start: s.start || "", end: s.end || "" })) : [{ start: "", end: "" }]));
+  const [edit, setEdit] = useState<{ i: number; f: "start" | "end" } | null>(null);
+  const total = shifts.reduce((t, s) => t + hoursOf(s.start, s.end), 0);
+  const setF = (i: number, f: "start" | "end", v: string) => setShifts((s) => s.map((x, j) => (j === i ? { ...x, [f]: v } : x)));
+  const openEdit = (i: number, f: "start" | "end") => {
+    if (!shifts[i][f]) setF(i, f, f === "start" ? "08:00" : "17:00");
+    setEdit({ i, f });
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "rgba(0,0,0,.4)", display: "flex", alignItems: "flex-end" }} onClick={onClose}>
+      <div style={{ background: "#fff", width: "100%", borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 16, paddingBottom: 24, maxHeight: "88vh", overflowY: "auto", animation: "sheetUp .2s ease-out" }} onClick={(ev) => ev.stopPropagation()}>
+        <style>{`@keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}`}</style>
+        <div style={{ textAlign: "center", fontWeight: 600, marginBottom: 12 }}>{dateLabel}</div>
+
+        {shifts.map((s, i) => (
+          <div key={i} className="mb-3 rounded-lg border border-gray-200 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-gray-500">Shift {i + 1}</span>
+              {shifts.length > 1 && (
+                <button type="button" onClick={() => setShifts((ss) => ss.filter((_, j) => j !== i))} className="text-red-500 text-sm" title="Remove shift">🗑</button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => openEdit(i, "start")} className={`flex-1 rounded-lg border px-2 py-2 text-sm ${edit?.i === i && edit.f === "start" ? "border-blue-500 bg-blue-50" : "border-gray-300"}`}>{s.start ? format12(s.start) : "Start"}</button>
+              <span className="text-gray-400">→</span>
+              <button type="button" onClick={() => openEdit(i, "end")} className={`flex-1 rounded-lg border px-2 py-2 text-sm ${edit?.i === i && edit.f === "end" ? "border-blue-500 bg-blue-50" : "border-gray-300"}`}>{s.end ? format12(s.end) : "End"}</button>
+            </div>
+            {edit?.i === i && (
+              <div className="mt-3 flex flex-col items-center">
+                <TimeWheels value={shifts[i][edit.f] || (edit.f === "start" ? "08:00" : "17:00")} onChange={(v) => setF(i, edit.f, v)} />
+                <button type="button" onClick={() => setEdit(null)} className="btn btn-secondary btn-sm mt-2">Set {edit.f === "start" ? "start" : "end"}</button>
+              </div>
+            )}
+          </div>
+        ))}
+
+        <button type="button" onClick={() => setShifts((s) => [...s, { start: "", end: "" }])} className="btn btn-secondary btn-sm w-full mb-3">+ Add another shift</button>
+
+        <div className="text-center text-sm font-medium mb-3">Total: {fmtHrs(Math.round(total * 100) / 100)} h</div>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="btn btn-secondary text-red-600" style={{ flex: 1 }} onClick={() => { onSave([]); onClose(); }}>Off</button>
+          <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
+          <button type="button" className="btn btn-primary" style={{ flex: 2 }} onClick={() => { onSave(shifts.filter((s) => s.start && s.end && s.end > s.start)); onClose(); }}>Done</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1108,9 +1165,9 @@ function WeekNav({ weekTitle, prevWeek, nextWeek, weekTabs }: any) {
 
 function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStartYmd }: any) {
   const key = (w: string, d: string) => `${w}|${d}`;
-  const [cells, setCells] = useState<Record<string, { start: string; end: string }>>(() => {
-    const o: Record<string, { start: string; end: string }> = {};
-    for (const w of gridWorkers) for (const c of w.cells) o[key(w.id, c.date)] = { start: c.start || "", end: c.end || "" };
+  const [cells, setCells] = useState<Record<string, { shifts: any[]; value: string; hours: number }>>(() => {
+    const o: Record<string, { shifts: any[]; value: string; hours: number }> = {};
+    for (const w of gridWorkers) for (const c of w.cells) o[key(w.id, c.date)] = { shifts: c.shifts || [], value: c.value || "", hours: c.hours || 0 };
     return o;
   });
   const [savedKeys, setSavedKeys] = useState<Set<string>>(() => {
@@ -1121,32 +1178,32 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
   const [open, setOpen] = useState<{ k: string; wid: string; date: string; anchor: { left: number; bottom: number; width: number } } | null>(null);
   const [showActual, setShowActual] = useState(false);
 
-  const save = (wid: string, date: string, start: string, end: string) => {
+  const save = (wid: string, date: string, shifts: any[]) => {
     const fd = new FormData();
     fd.append("intent", "set-schedule-cell");
     fd.append("workerId", wid);
     fd.append("date", date);
-    fd.append("start", start);
-    fd.append("end", end);
+    fd.append("shifts", JSON.stringify(shifts));
     fetch(window.location.pathname + window.location.search, { method: "POST", body: fd }).catch(() => {});
   };
+  // Admin picker sets a single shift (collapses a split-shift day to one on edit).
   const setCell = (wid: string, date: string, start: string, end: string) => {
     const k = key(wid, date);
-    setCells((s) => ({ ...s, [k]: { start, end } }));
+    const shifts = start && end ? [{ start, end }] : [];
+    setCells((s) => ({ ...s, [k]: { shifts, value: shifts.length ? toShorthand(start, end) : "", hours: shifts.length ? Math.round(hhmmHours(start, end) * 100) / 100 : 0 } }));
     setSavedKeys((s) => new Set(s).add(k));
-    save(wid, date, start, end);
+    save(wid, date, shifts);
   };
 
-  const cellHrs = (k: string) => { const c = cells[k]; return c ? hhmmHours(c.start, c.end) : 0; };
-  const dayTotal = (di: number) => gridWorkers.reduce((t: number, w: any) => t + cellHrs(key(w.id, days[di].ymd)), 0);
-  const rowTotal = (w: any) => days.reduce((t: number, d: any) => t + cellHrs(key(w.id, d.ymd)), 0);
+  const dayTotal = (di: number) => gridWorkers.reduce((t: number, w: any) => t + (cells[key(w.id, days[di].ymd)]?.hours || 0), 0);
+  const rowTotal = (w: any) => days.reduce((t: number, d: any) => t + (cells[key(w.id, d.ymd)]?.hours || 0), 0);
   const grand = days.reduce((t: number, _d: any, di: number) => t + dayTotal(di), 0);
-  const commitCells = gridWorkers.flatMap((w: any) => w.cells.map((c: any) => { const cur = cells[key(w.id, c.date)] || { start: "", end: "" }; return { workerId: w.id, date: c.date, start: cur.start, end: cur.end }; }));
-  const th = "px-3 py-3 whitespace-nowrap";
+  const commitCells = gridWorkers.flatMap((w: any) => w.cells.map((c: any) => ({ workerId: w.id, date: c.date, shifts: cells[key(w.id, c.date)]?.shifts || [] })));
+  const hcell = "px-3 py-3.5 whitespace-nowrap";
 
   return (
     <div className="card mx-1 md:mx-4">
-      <div className="card-body p-4 md:p-6">
+      <div className="card-body p-5 md:p-7">
         <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
           <Form method="post">
             <input type="hidden" name="intent" value="commit-week" />
@@ -1158,69 +1215,73 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
             <a href={`/schedules/print?weekStart=${weekStartYmd}`} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">Print / Export</a>
           </div>
         </div>
-        <p className="text-xs text-gray-500 mb-4">Click a day to set start/end times. Amber = pre-filled, not yet saved. Red ⚠ = conflicts with approved time off.</p>
+        <p className="text-xs text-gray-500 mb-4">Click a day to set start/end. Amber = pre-filled, not yet saved. Red ⚠ = conflicts with approved time off. Split shifts (from worker requests) show as "7-9, 11:30-4".</p>
 
-        <div className="overflow-x-auto pb-2">
-          <table className="text-sm" style={{ borderSpacing: "8px 4px", borderCollapse: "separate" }}>
-            <thead>
-              <tr className="text-gray-500">
-                <th className={`${th} text-left sticky left-0 bg-white z-10`}>Worker</th>
-                {days.map((d: any) => <th key={d.ymd} className={`${th} text-center`}>{d.label} {d.dom}</th>)}
-                <th className={`${th} text-right`}>Total</th>
-                {showActual && <><th className={`${th} text-right`}>Actual</th><th className={`${th} text-right`}>Diff</th></>}
-              </tr>
-            </thead>
-            <tbody>
-              {gridWorkers.map((w: any) => {
-                const sched = rowTotal(w);
-                const actual = actualByWorker[w.id] ?? 0;
-                const diff = Math.round((actual - sched) * 100) / 100;
-                return (
-                  <tr key={w.id}>
-                    <td className="px-3 py-2 whitespace-nowrap font-medium sticky left-0 bg-white z-10">{w.name}</td>
-                    {days.map((d: any) => {
-                      const k = key(w.id, d.ymd);
-                      const c = cells[k] || { start: "", end: "" };
-                      const has = !!(c.start && c.end);
-                      const label = has ? toShorthand(c.start, c.end) : "—";
-                      const prefilled = !savedKeys.has(k) && has;
-                      const conflict = has && !!timeOffByCell[k];
-                      return (
-                        <td key={d.ymd} className="px-1 py-1 text-center">
-                          <button
-                            type="button"
-                            onClick={(ev) => {
-                              const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-                              setOpen(open?.k === k ? null : { k, wid: w.id, date: d.ymd, anchor: { left: r.left, bottom: r.bottom, width: r.width } });
-                            }}
-                            title={conflict ? `Conflicts with approved time off (${timeOffByCell[k]})` : prefilled ? "Pre-filled — not saved yet" : ""}
-                            className={`w-20 h-11 rounded border text-sm transition-colors ${conflict ? "border-red-500 bg-red-50 text-red-700" : prefilled ? "border-amber-300 bg-amber-50 text-gray-500" : has ? "border-gray-300 hover:border-blue-400" : "border-dashed border-gray-300 text-gray-400 hover:border-blue-400"}`}
-                          >
-                            {conflict && <span className="mr-0.5">⚠</span>}{label}
-                          </button>
-                        </td>
-                      );
-                    })}
-                    <td className="px-3 py-2 text-right font-medium">{fmtHrs(sched)}</td>
-                    {showActual && (
-                      <>
-                        <td className="px-3 py-2 text-right">{fmtHrs(actual)}</td>
-                        <td className={`px-3 py-2 text-right font-medium ${Math.abs(diff) >= 2 ? (diff > 0 ? "text-green-700" : "text-red-600") : "text-gray-500"}`}>{diff > 0 ? "+" : ""}{fmtHrs(diff)}</td>
-                      </>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="font-semibold bg-gray-50">
-                <td className="px-3 py-3 sticky left-0 bg-gray-50 z-10">Daily total</td>
-                {days.map((d: any, di: number) => <td key={d.ymd} className="px-3 py-3 text-center">{fmtHrs(dayTotal(di))}</td>)}
-                <td className="px-3 py-3 text-right">{fmtHrs(grand)}</td>
-                {showActual && <><td className="px-3 py-3 text-right">{fmtHrs(gridWorkers.reduce((t: number, w: any) => t + (actualByWorker[w.id] ?? 0), 0))}</td><td /></>}
-              </tr>
-            </tfoot>
-          </table>
+        <div style={{ position: "relative" }}>
+          <div className="rounded-lg border border-gray-200" style={{ maxHeight: "calc(100vh - 340px)", overflow: "auto" }}>
+            <table className="w-full text-sm" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
+              <thead>
+                <tr className="text-gray-600">
+                  <th className={`${hcell} text-left`} style={{ position: "sticky", top: 0, left: 0, zIndex: 30, background: "#fff" }}>Worker</th>
+                  {days.map((d: any) => <th key={d.ymd} className={`${hcell} text-center`} style={{ position: "sticky", top: 0, zIndex: 20, background: "#fff" }}>{d.label} {d.dom}</th>)}
+                  <th className={`${hcell} text-right`} style={{ position: "sticky", top: 0, zIndex: 20, background: "#fff" }}>Total</th>
+                  {showActual && <><th className={`${hcell} text-right`} style={{ position: "sticky", top: 0, zIndex: 20, background: "#fff" }}>Actual</th><th className={`${hcell} text-right`} style={{ position: "sticky", top: 0, zIndex: 20, background: "#fff" }}>Diff</th></>}
+                </tr>
+              </thead>
+              <tbody>
+                {gridWorkers.map((w: any, ri: number) => {
+                  const sched = rowTotal(w);
+                  const actual = actualByWorker[w.id] ?? 0;
+                  const diff = Math.round((actual - sched) * 100) / 100;
+                  const zebra = ri % 2 === 1 ? "#f9fafb" : "#fff";
+                  return (
+                    <tr key={w.id}>
+                      <td className="px-3 py-3 whitespace-nowrap font-medium text-[15px]" style={{ position: "sticky", left: 0, zIndex: 10, background: zebra }}>{w.name}</td>
+                      {days.map((d: any) => {
+                        const k = key(w.id, d.ymd);
+                        const c = cells[k] || { shifts: [], value: "", hours: 0 };
+                        const has = c.hours > 0;
+                        const label = c.value || "—";
+                        const prefilled = !savedKeys.has(k) && has;
+                        const conflict = has && !!timeOffByCell[k];
+                        return (
+                          <td key={d.ymd} className="px-1.5 py-2 text-center" style={{ background: zebra }}>
+                            <button
+                              type="button"
+                              onClick={(ev) => {
+                                const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
+                                setOpen(open?.k === k ? null : { k, wid: w.id, date: d.ymd, anchor: { left: r.left, bottom: r.bottom, width: r.width } });
+                              }}
+                              title={conflict ? `Conflicts with approved time off (${timeOffByCell[k]})` : prefilled ? "Pre-filled — not saved yet" : ""}
+                              className={`w-full min-w-[68px] h-12 rounded-lg border px-1 text-sm truncate transition-colors ${conflict ? "border-red-500 bg-red-50 text-red-700" : prefilled ? "border-amber-300 bg-amber-50 text-gray-500" : has ? "border-gray-300 bg-white hover:border-blue-400" : "border-dashed border-gray-300 bg-white text-gray-400 hover:border-blue-400"}`}
+                            >
+                              {conflict ? "⚠ " : ""}{label}
+                            </button>
+                          </td>
+                        );
+                      })}
+                      <td className="px-3 py-3 text-right font-medium text-[15px]" style={{ background: zebra }}>{fmtHrs(sched)}</td>
+                      {showActual && (
+                        <>
+                          <td className="px-3 py-3 text-right" style={{ background: zebra }}>{fmtHrs(actual)}</td>
+                          <td className={`px-3 py-3 text-right font-medium ${Math.abs(diff) >= 2 ? (diff > 0 ? "text-green-700" : "text-red-600") : "text-gray-500"}`} style={{ background: zebra }}>{diff > 0 ? "+" : ""}{fmtHrs(diff)}</td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="font-semibold" style={{ position: "sticky", bottom: 0 }}>
+                  <td className="px-3 py-3" style={{ position: "sticky", left: 0, zIndex: 10, background: "#f3f4f6" }}>Daily total</td>
+                  {days.map((d: any, di: number) => <td key={d.ymd} className="px-3 py-3 text-center" style={{ background: "#f3f4f6" }}>{fmtHrs(dayTotal(di))}</td>)}
+                  <td className="px-3 py-3 text-right" style={{ background: "#f3f4f6" }}>{fmtHrs(grand)}</td>
+                  {showActual && <><td className="px-3 py-3 text-right" style={{ background: "#f3f4f6" }}>{fmtHrs(gridWorkers.reduce((t: number, w: any) => t + (actualByWorker[w.id] ?? 0), 0))}</td><td style={{ background: "#f3f4f6" }} /></>}
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div style={{ position: "absolute", left: 0, right: 0, bottom: 44, height: 36, background: "linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0.95))", pointerEvents: "none" }} />
         </div>
       </div>
 
@@ -1228,8 +1289,8 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
         <>
           <div className="fixed inset-0 z-50" onClick={() => setOpen(null)} />
           <TimeRangePicker
-            start={cells[open.k]?.start || ""}
-            end={cells[open.k]?.end || ""}
+            start={cells[open.k]?.shifts?.[0]?.start || ""}
+            end={cells[open.k]?.shifts?.[0]?.end || ""}
             anchor={open.anchor}
             onDone={(s, e) => setCell(open.wid, open.date, s, e)}
             onClear={() => setCell(open.wid, open.date, "", "")}
@@ -1252,17 +1313,22 @@ function RequestReviewCard({ req, isSubmitting }: any) {
   let meta: any = {};
   try { meta = JSON.parse(req.days); } catch { meta = {}; }
   const initCells: any[] = Array.isArray(meta.cells) ? meta.cells : [];
-  const [cells, setCells] = useState(() => initCells.map((c) => ({ date: c.date, start: c.start ?? "", end: c.end ?? "", value: c.value ?? toShorthand(c.start, c.end), edited: false })));
+  const [cells, setCells] = useState(() => initCells.map((c) => {
+    const shifts = Array.isArray(c.shifts) ? c.shifts.filter((s: any) => s.start && s.end) : (c.start && c.end ? [{ start: c.start, end: c.end }] : []);
+    return { date: c.date, shifts, value: c.value || shifts.map((s: any) => toShorthand(s.start, s.end)).join(", "), edited: false };
+  }));
   const [denying, setDenying] = useState(false);
-  const total = cells.reduce((t, c) => t + cellHours(c.value), 0);
+  const cellHrs = (c: any) => c.edited ? (() => { const p = parseShorthand(c.value); return p.error ? 0 : p.hours; })() : c.shifts.reduce((u: number, s: any) => u + hoursOf(s.start, s.end), 0);
+  const total = cells.reduce((t, c) => t + cellHrs(c), 0);
   const dow = (y: string) => { const d = dateAtNoon(y); return `${DAY_ABBR[d.getDay()]} ${d.getDate()}`; };
-  // Edited cells re-parse the shorthand; untouched keep the worker's exact times.
+  // Untouched cells keep the worker's exact shifts (incl. splits); an edited cell
+  // re-parses the shorthand (a single shift), or keeps the original if unparseable.
   const postCells = cells.map((c) => {
-    if (!c.edited) return { date: c.date, start: c.start, end: c.end, value: c.value };
+    if (!c.edited) return { date: c.date, shifts: c.shifts };
     const p = parseShorthand(c.value);
-    if (p.off) return { date: c.date, value: "" };
-    if (p.error) return { date: c.date, value: c.value };
-    return { date: c.date, start: p.start, end: p.end, value: c.value };
+    if (p.off) return { date: c.date, shifts: [] };
+    if (p.error) return { date: c.date, shifts: c.shifts };
+    return { date: c.date, shifts: [{ start: p.start, end: p.end }] };
   });
 
   return (
@@ -1282,8 +1348,8 @@ function RequestReviewCard({ req, isSubmitting }: any) {
                 <thead><tr>{cells.map((c, i) => <th key={i} className="p-2 text-center whitespace-nowrap">{dow(c.date)}</th>)}<th className="p-2">Total</th></tr></thead>
                 <tbody><tr>
                   {cells.map((c, i) => {
-                    const err = !!parseShorthand(c.value).error;
-                    return <td key={i} className="p-1 text-center"><input value={c.value} onChange={(e) => setCells((cs) => cs.map((x, j) => (j === i ? { ...x, value: e.target.value, edited: true } : x)))} placeholder="—" className={`w-16 text-center rounded border px-1 py-1 ${err ? "border-red-400 bg-red-50" : "border-gray-200"}`} /></td>;
+                    const err = c.value.includes(",") ? false : !!parseShorthand(c.value).error;
+                    return <td key={i} className="p-1 text-center"><input value={c.value} onChange={(e) => setCells((cs) => cs.map((x, j) => (j === i ? { ...x, value: e.target.value, edited: true } : x)))} placeholder="—" title={c.value.includes(",") ? "Split shift — edit collapses to one; leave as-is to keep the split" : ""} className={`w-20 text-center rounded border px-1 py-1 ${err ? "border-red-400 bg-red-50" : "border-gray-200"}`} /></td>;
                   })}
                   <td className="p-2 text-right font-medium">{fmtHrs(total)}</td>
                 </tr></tbody>

@@ -57,6 +57,16 @@ export function parseShorthand(raw: string): ParsedCell {
   return { off: false, hours, start: fmt(startMin), end: fmt(endMin) };
 }
 
+// "07:00" -> "7:00 AM", "15:30" -> "3:30 PM"
+export function format12(hhmm?: string | null): string {
+  if (!hhmm) return "";
+  const [h, m] = hhmm.split(":").map(Number);
+  if (isNaN(h)) return hhmm;
+  const ap = h < 12 ? "AM" : "PM";
+  const hh = h % 12 === 0 ? 12 : h % 12;
+  return `${hh}:${String(m || 0).padStart(2, "0")} ${ap}`;
+}
+
 // "07:00","15:00" -> "7-3"; "07:30","15:30" -> "7:30-3:30"
 export function toShorthand(start?: string | null, end?: string | null): string {
   if (!start || !end) return "";
