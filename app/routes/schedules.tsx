@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, Link } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, Link, redirect } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -253,6 +253,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     timeOffByCell, actualByWorker,
     scheduleRequests, myRequest, pendingRequestCount,
     myMonth, myWeek,
+    justApproved: url.searchParams.get("approved") === "1",
   };
 };
 
@@ -339,6 +340,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await tx.scheduleRequest.update({ where: { id: requestId }, data: { status: "APPROVED", reviewedAt: new Date(), reviewedById: user.id, days: JSON.stringify({ ...meta, cells }) } });
     }, { timeout: 120000, maxWait: 15000 });
     await createAuditLog(user.id, "APPROVE_SCHEDULE_REQUEST", "ScheduleRequest", requestId, {});
+    // Land the admin on the week that was just approved so the hours are visible
+    // (the request's dates may be in a different week than the current view).
+    const firstDate = cells.map((c: any) => c.date).filter(Boolean).sort()[0];
+    if (firstDate) {
+      const wk = ymd(mondayOf(dateAtNoon(firstDate)));
+      return redirect(`/schedules?view=week&weekStart=${wk}&approved=1`);
+    }
     return { success: true, message: "Request approved — schedule updated." };
   }
 
@@ -928,7 +936,7 @@ export default function Schedules() {
   const {
     user, isWorkerView, view, gridWorkers, days, weekStartYmd, weekTitle, weekTabs,
     prevWeek, nextWeek, workers, upcomingDateSchedules, timeOffByCell, actualByWorker,
-    scheduleRequests, myRequest, pendingRequestCount, myMonth, myWeek,
+    scheduleRequests, myRequest, pendingRequestCount, myMonth, myWeek, justApproved,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -961,6 +969,7 @@ export default function Schedules() {
 
       {actionData && "error" in actionData && actionData.error && <div className="alert alert-error mb-6">{actionData.error}</div>}
       {actionData && "success" in actionData && actionData.success && <div className="alert alert-success mb-6">{actionData.message}</div>}
+      {justApproved && view === "week" && <div className="alert alert-success mb-6">Request approved — showing the approved week ({weekTitle}) below.</div>}
 
       <div className="flex gap-2 mb-6 border-b border-gray-200">
         <Link to={`/schedules?view=week&weekStart=${weekStartYmd}`} className={tabCls("week")}>Weekly Grid</Link>
