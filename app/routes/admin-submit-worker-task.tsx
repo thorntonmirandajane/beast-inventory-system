@@ -88,9 +88,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "No tasks to submit" };
     }
 
-    // Parse the selected date
-    const selectedDate = new Date(date);
-    selectedDate.setHours(12, 0, 0, 0);
+    // Parse the selected date as a LOCAL calendar date (noon avoids TZ rollover).
+    // `new Date("YYYY-MM-DD")` parses as UTC midnight, which lands on the previous
+    // day in a behind-UTC timezone (the Mountain server) — hence the off-by-one.
+    const selectedDate = new Date(`${date}T12:00:00`);
 
     const startOfDay = new Date(selectedDate);
     startOfDay.setHours(0, 0, 0, 0);

@@ -35,8 +35,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { error: "All fields are required" };
     }
 
-    const startDateObj = new Date(startDate);
-    const endDateObj = new Date(endDate);
+    // Parse as local calendar dates (noon) so they don't roll back a day.
+    const startDateObj = new Date(`${startDate}T12:00:00`);
+    const endDateObj = new Date(`${endDate}T12:00:00`);
 
     // Validate dates
     if (startDateObj > endDateObj) {

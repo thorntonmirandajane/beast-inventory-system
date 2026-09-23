@@ -113,7 +113,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: {
         poNumber,
         vendorName: "SUPPLIER",
-        estimatedArrival: estimatedArrival ? new Date(estimatedArrival) : null,
+        estimatedArrival: estimatedArrival ? new Date(`${estimatedArrival}T12:00:00`) : null,
         notes: notes || null,
         createdById: user.id,
         items: {

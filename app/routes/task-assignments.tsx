@@ -104,7 +104,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       priority: priority ? parseInt(priority, 10) : 0,
       assignmentType,
       assignedById: user.id,
-      dueDate: dueDate ? new Date(dueDate) : null,
+      dueDate: dueDate ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? `${dueDate}T12:00:00` : dueDate) : null,
       notes: notes || null,
     });
 
