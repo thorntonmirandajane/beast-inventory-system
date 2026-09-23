@@ -135,6 +135,62 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { success: true, message: `${poNumber} created with ${items.length} item(s)` };
   }
 
+  if (intent === "edit") {
+    const poId = formData.get("poId") as string;
+    const estimatedArrival = (formData.get("estimatedArrival") as string) || "";
+    const notes = (formData.get("notes") as string) || "";
+    const itemsJson = formData.get("itemsJson") as string;
+    const items: { poItemId?: string; skuId: string; quantity: number; manufacturerId?: string | null; unitCost?: number | null }[] = itemsJson ? JSON.parse(itemsJson) : [];
+    if (items.length === 0) return { error: "At least one item is required" };
+
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: poId }, include: { items: { include: { sku: true } } } });
+    if (!po) return { error: "PO not found" };
+    if (["RECEIVED", "APPROVED", "CANCELLED"].includes(po.status)) {
+      return { error: `A ${po.status.toLowerCase()} PO can't be edited.` };
+    }
+
+    const existingById = new Map(po.items.map((i) => [i.id, i]));
+    const keptIds = new Set(items.filter((i) => i.poItemId).map((i) => i.poItemId as string));
+    // Can't remove a line that already has receipts.
+    for (const it of po.items) {
+      if (!keptIds.has(it.id) && it.quantityReceived > 0) {
+        return { error: `Can't remove ${it.sku.sku} — ${it.quantityReceived} already received. Zero out other lines instead.` };
+      }
+    }
+    // Ordered qty can't drop below what's already received.
+    for (const it of items) {
+      if (!it.quantity || it.quantity < 1) return { error: "Every line needs a quantity of at least 1." };
+      const ex = it.poItemId ? existingById.get(it.poItemId) : null;
+      if (ex && it.quantity < ex.quantityReceived) {
+        return { error: `${ex.sku.sku}: ordered (${it.quantity}) can't be below received (${ex.quantityReceived}).` };
+      }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.purchaseOrder.update({
+        where: { id: poId },
+        data: {
+          estimatedArrival: estimatedArrival ? new Date(`${estimatedArrival}T12:00:00`) : null,
+          notes: notes || null,
+        },
+      });
+      const removeIds = po.items.filter((i) => !keptIds.has(i.id)).map((i) => i.id);
+      if (removeIds.length) await tx.pOItem.deleteMany({ where: { id: { in: removeIds } } });
+      for (const it of items) {
+        const data = {
+          quantityOrdered: it.quantity,
+          unitCost: it.unitCost && it.unitCost > 0 ? it.unitCost : null,
+          manufacturerId: it.manufacturerId || null,
+        };
+        if (it.poItemId) await tx.pOItem.update({ where: { id: it.poItemId }, data });
+        else await tx.pOItem.create({ data: { purchaseOrderId: poId, skuId: it.skuId, ...data } });
+      }
+    }, { timeout: 60000, maxWait: 10000 });
+
+    await createAuditLog(user.id, "EDIT_PO", "PurchaseOrder", poId, { poNumber: po.poNumber, itemCount: items.length });
+    return { success: true, message: `${po.poNumber} updated.` };
+  }
+
   if (intent === "delete") {
     const poId = formData.get("poId") as string;
 
@@ -254,6 +310,7 @@ export default function PurchaseOrders() {
 
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [expandedPO, setExpandedPO] = useState<string | null>(null);
+  const [editingPO, setEditingPO] = useState<{ id: string; poNumber: string; estimatedArrival: string; notes: string } | null>(null);
   const [selectedItems, setSelectedItems] = useState<{
     skuId: string;
     sku: string;
@@ -261,8 +318,27 @@ export default function PurchaseOrders() {
     quantity: number;
     manufacturerId?: string | null;
     unitCost?: number | null;
+    poItemId?: string;
+    received?: number;
   }[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
+  // Local YYYY-MM-DD for a stored Date (so the ETA input shows the right day).
+  const toDateInput = (d: any) => {
+    if (!d) return "";
+    const dt = new Date(d);
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  };
+  const startEdit = (po: any) => {
+    setEditingPO({ id: po.id, poNumber: po.poNumber, estimatedArrival: toDateInput(po.estimatedArrival), notes: po.notes || "" });
+    setSelectedItems(po.items.map((it: any) => ({
+      skuId: it.skuId, sku: it.sku.sku, name: it.sku.name,
+      quantity: it.quantityOrdered, manufacturerId: it.manufacturerId, unitCost: it.unitCost,
+      poItemId: it.id, received: it.quantityReceived,
+    })));
+    setSearchTerm("");
+    setShowCreateForm(true);
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const tabs = [
     { id: "all", label: "All", count: counts.all },
@@ -300,7 +376,7 @@ export default function PurchaseOrders() {
   };
 
   const updateQuantity = (skuId: string, quantity: number) => {
-    setSelectedItems(selectedItems.map((item) => item.skuId === skuId ? { ...item, quantity: Math.max(1, quantity) } : item));
+    setSelectedItems(selectedItems.map((item) => item.skuId === skuId ? { ...item, quantity: Math.max(item.received || 1, isNaN(quantity) ? 0 : quantity) } : item));
   };
 
   const updateManufacturer = (skuId: string, manufacturerId: string | null) => {
@@ -326,6 +402,7 @@ export default function PurchaseOrders() {
   const resetForm = () => {
     setSelectedItems([]);
     setSearchTerm("");
+    setEditingPO(null);
   };
 
   const getStatusColor = (status: string) => {
@@ -369,15 +446,17 @@ export default function PurchaseOrders() {
       {showCreateForm && (
         <div className="card mb-6">
           <div className="card-header">
-            <h2 className="card-title">Create Purchase Order</h2>
+            <h2 className="card-title">{editingPO ? `Edit ${editingPO.poNumber}` : "Create Purchase Order"}</h2>
           </div>
           <div className="card-body">
-            <Form method="post" onSubmit={() => resetForm()}>
-              <input type="hidden" name="intent" value="create" />
+            <Form method="post" onSubmit={() => resetForm()} key={editingPO?.id || "create"}>
+              <input type="hidden" name="intent" value={editingPO ? "edit" : "create"} />
+              {editingPO && <input type="hidden" name="poId" value={editingPO.id} />}
               <input
                 type="hidden"
                 name="itemsJson"
                 value={JSON.stringify(selectedItems.map((i) => ({
+                  poItemId: i.poItemId,
                   skuId: i.skuId,
                   quantity: i.quantity,
                   manufacturerId: i.manufacturerId,
@@ -388,15 +467,22 @@ export default function PurchaseOrders() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
                 <div className="form-group mb-0">
                   <label className="form-label">PO Number</label>
-                  <input type="text" name="poNumber" className="form-input" placeholder="Auto-generated if blank" />
+                  <input
+                    type="text"
+                    name="poNumber"
+                    className="form-input"
+                    placeholder="Auto-generated if blank"
+                    defaultValue={editingPO?.poNumber || ""}
+                    readOnly={!!editingPO}
+                  />
                 </div>
                 <div className="form-group mb-0">
                   <label className="form-label">Estimated Arrival</label>
-                  <input type="date" name="estimatedArrival" className="form-input" />
+                  <input type="date" name="estimatedArrival" className="form-input" defaultValue={editingPO?.estimatedArrival || ""} />
                 </div>
                 <div className="form-group mb-0">
                   <label className="form-label">Notes</label>
-                  <input type="text" name="notes" className="form-input" placeholder="Optional notes" />
+                  <input type="text" name="notes" className="form-input" placeholder="Optional notes" defaultValue={editingPO?.notes || ""} />
                 </div>
               </div>
 
@@ -443,8 +529,11 @@ export default function PurchaseOrders() {
                                 value={item.quantity}
                                 onChange={(e) => updateQuantity(item.skuId, parseInt(e.target.value, 10))}
                                 className="form-input w-20 text-center"
-                                min="1"
+                                min={item.received || 1}
                               />
+                              {!!item.received && item.received > 0 && (
+                                <span className="text-xs text-gray-500 whitespace-nowrap">({item.received} recvd)</span>
+                              )}
                             </div>
                             <div className="flex items-center gap-2">
                               <span className="text-sm text-gray-500">$/unit:</span>
@@ -465,7 +554,13 @@ export default function PurchaseOrders() {
                               <span className="text-gray-500">Total:</span>{" "}
                               <span className="font-semibold">${lineTotal.toFixed(2)}</span>
                             </div>
-                            <button type="button" onClick={() => removeItem(item.skuId)} className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded">
+                            <button
+                              type="button"
+                              onClick={() => removeItem(item.skuId)}
+                              disabled={!!item.received && item.received > 0}
+                              title={!!item.received && item.received > 0 ? "Can't remove — already received" : "Remove"}
+                              className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
                               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                               </svg>
@@ -520,7 +615,7 @@ export default function PurchaseOrders() {
               </div>
 
               <button type="submit" className="btn btn-primary" disabled={isSubmitting || selectedItems.length === 0}>
-                {isSubmitting ? "Creating..." : "Create PO"}
+                {isSubmitting ? "Saving..." : editingPO ? "Save Changes" : "Create PO"}
               </button>
             </Form>
           </div>
@@ -787,6 +882,15 @@ export default function PurchaseOrders() {
                           <Link to={`/po/${po.id}/pdf`} className="btn btn-ghost">
                             View PDF
                           </Link>
+                          {["SUBMITTED", "IN_ROUTE", "PARTIAL"].includes(po.status) && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); startEdit(po); }}
+                              className="btn btn-secondary btn-sm"
+                            >
+                              Edit
+                            </button>
+                          )}
                           {po.status !== "APPROVED" && po.children.length === 0 && (
                             <Form method="post" onSubmit={(e) => {
                               if (!confirm(`Delete ${po.poNumber}? This cannot be undone.`)) e.preventDefault();
