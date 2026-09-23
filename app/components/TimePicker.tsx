@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 // iOS-style scrollable wheel time picker. Start + End, each with hour (1–12),
 // minute (0–59, every minute), and AM/PM wheels. Values are "HH:MM" 24h strings;
@@ -180,22 +180,37 @@ export function TimeRangePicker({
 }: {
   start: string;
   end: string;
-  anchor: { left: number; bottom: number; width: number };
+  anchor: { left: number; top: number; bottom: number; width: number };
   onDone: (start: string, end: string) => void;
   onClear: () => void;
   onClose: () => void;
 }) {
   const [s, setS] = useState(start || "08:00");
   const [e, setE] = useState(end || "17:00");
+  const ref = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState<number>(anchor.bottom + 6);
+  // Viewport-aware: open below the cell, but flip above when there isn't room
+  // (rows near the bottom of the list would otherwise cut off the wheels).
+  useLayoutEffect(() => {
+    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+    const h = ref.current?.offsetHeight ?? 280;
+    let t = anchor.bottom + 6;
+    if (t + h > vh - 8) {
+      const above = anchor.top - h - 6;
+      t = above >= 8 ? above : Math.max(8, vh - h - 8);
+    }
+    setTop(t);
+  }, [anchor]);
   const centerX = anchor.left + anchor.width / 2;
   const vw = typeof window !== "undefined" ? window.innerWidth : 1200;
   const left = Math.max(150, Math.min(vw - 150, centerX));
   return (
     <div
+      ref={ref}
       style={{
         position: "fixed",
         zIndex: 60,
-        top: anchor.bottom + 6,
+        top,
         left,
         transform: "translateX(-50%)",
         background: "#fff",

@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, Link, redirect } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, Link, redirect, useNavigate } from "react-router";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
@@ -982,7 +982,7 @@ export default function Schedules() {
 
       {view === "week" && (
         <>
-          <WeekNav weekTitle={weekTitle} prevWeek={prevWeek} nextWeek={nextWeek} weekTabs={weekTabs} />
+          <WeekNav weekStartYmd={weekStartYmd} weekTitle={weekTitle} prevWeek={prevWeek} nextWeek={nextWeek} />
           <WeeklyGrid gridWorkers={gridWorkers} days={days} timeOffByCell={timeOffByCell} actualByWorker={actualByWorker} weekStartYmd={weekStartYmd} />
         </>
       )}
@@ -1157,18 +1157,65 @@ function MultiShiftSheet({ dateLabel, initial, onSave, onClose }: any) {
   );
 }
 
-function WeekNav({ weekTitle, prevWeek, nextWeek, weekTabs }: any) {
+function WeekNav({ weekStartYmd, weekTitle, prevWeek, nextWeek }: any) {
+  const [openCal, setOpenCal] = useState(false);
   return (
-    <div className="flex items-center gap-2 mb-4 flex-wrap">
+    <div className="flex items-center gap-2 mb-4">
       <Link to={`/schedules?view=week&weekStart=${prevWeek}`} className="btn btn-secondary btn-sm">←</Link>
-      <span className="font-semibold px-2 min-w-[130px] text-center">{weekTitle}</span>
-      <Link to={`/schedules?view=week&weekStart=${nextWeek}`} className="btn btn-secondary btn-sm">→</Link>
-      <div className="flex gap-1 ml-2 flex-wrap">
-        {weekTabs.map((t: any) => (
-          <Link key={t.weekStart} to={`/schedules?view=week&weekStart=${t.weekStart}`} className={`px-2 py-1 rounded text-xs ${t.active ? "bg-blue-100 text-blue-700 font-semibold" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{t.label}</Link>
-        ))}
+      <div style={{ position: "relative" }}>
+        <button type="button" onClick={() => setOpenCal((o) => !o)} className="btn btn-secondary btn-sm flex items-center gap-1.5 justify-center" style={{ minWidth: 150 }}>
+          {weekTitle} <span className="text-gray-400 text-xs">▾</span>
+        </button>
+        {openCal && <MiniWeekCalendar selectedWeekStart={weekStartYmd} onClose={() => setOpenCal(false)} />}
       </div>
+      <Link to={`/schedules?view=week&weekStart=${nextWeek}`} className="btn btn-secondary btn-sm">→</Link>
     </div>
+  );
+}
+
+function MiniWeekCalendar({ selectedWeekStart, onClose }: { selectedWeekStart: string; onClose: () => void }) {
+  const navigate = useNavigate();
+  const selMonday = dateAtNoon(selectedWeekStart);
+  const [cursor, setCursor] = useState(() => new Date(selMonday.getFullYear(), selMonday.getMonth(), 1));
+  const y = cursor.getFullYear();
+  const m = cursor.getMonth();
+  const first = new Date(y, m, 1);
+  const offset = first.getDay() === 0 ? 6 : first.getDay() - 1; // days back to Monday
+  const gridStart = new Date(y, m, 1 - offset);
+  const cells = Array.from({ length: 42 }, (_, i) => { const d = new Date(gridStart); d.setDate(gridStart.getDate() + i); d.setHours(12, 0, 0, 0); return d; });
+  const todayY = ymd(new Date());
+  const jump = (d: Date) => { navigate(`/schedules?view=week&weekStart=${ymd(mondayOf(d))}`); onClose(); };
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+      <div className="absolute z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2" style={{ top: "100%", left: 0, marginTop: 4, width: 264 }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-1">
+          <button type="button" onClick={() => setCursor(new Date(y, m - 1, 1))} className="px-2 py-1 text-gray-500 hover:text-gray-800">←</button>
+          <span className="text-sm font-semibold">{cursor.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</span>
+          <button type="button" onClick={() => setCursor(new Date(y, m + 1, 1))} className="px-2 py-1 text-gray-500 hover:text-gray-800">→</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }} className="text-[10px] text-gray-400 text-center mb-1">
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d}>{d}</div>)}
+        </div>
+        {Array.from({ length: 6 }, (_, r) => {
+          const week = cells.slice(r * 7, r * 7 + 7);
+          const isSel = ymd(week[0]) === selectedWeekStart;
+          return (
+            <div key={r} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }} className={`rounded ${isSel ? "bg-blue-100" : ""}`}>
+              {week.map((d, ci) => {
+                const inMonth = d.getMonth() === m;
+                const isToday = ymd(d) === todayY;
+                return (
+                  <button key={ci} type="button" onClick={() => jump(d)} className={`text-xs py-1.5 rounded hover:bg-blue-200 ${inMonth ? "text-gray-800" : "text-gray-300"} ${isToday ? "font-bold underline" : ""}`}>{d.getDate()}</button>
+                );
+              })}
+            </div>
+          );
+        })}
+        <button type="button" onClick={() => jump(new Date())} className="w-full mt-2 text-xs text-blue-600 hover:underline py-1">Today</button>
+      </div>
+    </>
   );
 }
 
@@ -1184,7 +1231,7 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
     for (const w of gridWorkers) for (const c of w.cells) if (c.saved) s.add(key(w.id, c.date));
     return s;
   });
-  const [open, setOpen] = useState<{ k: string; wid: string; date: string; anchor: { left: number; bottom: number; width: number } } | null>(null);
+  const [open, setOpen] = useState<{ k: string; wid: string; date: string; anchor: { left: number; top: number; bottom: number; width: number } } | null>(null);
   const [showActual, setShowActual] = useState(false);
 
   const save = (wid: string, date: string, shifts: any[]) => {
@@ -1259,7 +1306,7 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
                               type="button"
                               onClick={(ev) => {
                                 const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
-                                setOpen(open?.k === k ? null : { k, wid: w.id, date: d.ymd, anchor: { left: r.left, bottom: r.bottom, width: r.width } });
+                                setOpen(open?.k === k ? null : { k, wid: w.id, date: d.ymd, anchor: { left: r.left, top: r.top, bottom: r.bottom, width: r.width } });
                               }}
                               title={conflict ? `Conflicts with approved time off (${timeOffByCell[k]})` : prefilled ? "Pre-filled — not saved yet" : ""}
                               className={`w-full min-w-[68px] h-12 rounded-lg border px-1 text-sm truncate transition-colors ${conflict ? "border-red-500 bg-red-50 text-red-700" : prefilled ? "border-amber-300 bg-amber-50 text-gray-500" : has ? "border-gray-300 bg-white hover:border-blue-400" : "border-dashed border-gray-300 bg-white text-gray-400 hover:border-blue-400"}`}
