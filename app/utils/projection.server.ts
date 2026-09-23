@@ -320,7 +320,8 @@ export async function refreshSales(): Promise<number> {
   // system SKU) so demand under an aliased spelling still lands on the right SKU
   // — the same mapping used by the Fulfilled Orders auto-deduction.
   const aliasKeysBySku = new Map<string, string[]>();
-  for (const a of await prisma.skuAlias.findMany({ select: { alias: true, skuId: true } })) {
+  for (const a of await prisma.skuAlias.findMany({ where: { isPattern: false }, select: { alias: true, skuId: true } })) {
+    if (!a.skuId) continue;
     const list = aliasKeysBySku.get(a.skuId) ?? [];
     list.push(norm(a.alias));
     aliasKeysBySku.set(a.skuId, list);

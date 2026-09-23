@@ -135,8 +135,9 @@ export async function runFulfillmentSync(
   });
   const idToSku = new Map(completed.map((s) => [s.id, s.sku]));
   const bySku = new Map(completed.map((s) => [norm(s.sku), { id: s.id, sku: s.sku }]));
-  const aliases = await prisma.skuAlias.findMany();
+  const aliases = await prisma.skuAlias.findMany({ where: { isPattern: false } });
   for (const a of aliases) {
+    if (!a.skuId) continue;
     const sysSku = idToSku.get(a.skuId);
     if (sysSku) bySku.set(a.alias, { id: a.skuId, sku: sysSku });
   }

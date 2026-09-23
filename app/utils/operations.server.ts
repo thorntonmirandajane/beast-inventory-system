@@ -126,8 +126,8 @@ export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildP
   const completed = skus.filter((s) => s.type === "COMPLETED");
   const skuIdByKey = new Map<string, string>();
   for (const s of completed) skuIdByKey.set(norm(s.sku), s.id);
-  for (const a of await prisma.skuAlias.findMany({ select: { alias: true, skuId: true } })) {
-    if (nodes.get(a.skuId)?.type === "COMPLETED") skuIdByKey.set(norm(a.alias), a.skuId);
+  for (const a of await prisma.skuAlias.findMany({ where: { isPattern: false }, select: { alias: true, skuId: true } })) {
+    if (a.skuId && nodes.get(a.skuId)?.type === "COMPLETED") skuIdByKey.set(norm(a.alias), a.skuId);
   }
 
   // Finished stock available to cover demand: local completed + Gallatin.

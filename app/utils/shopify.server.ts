@@ -404,6 +404,139 @@ export function aggregateUnfulfilledBySku(
 }
 
 // ============================================================
+// Full unfulfilled ORDERS (for backorder allocation) — richer than the
+// line-item feed above: carries customer/company/email/state/tags so the
+// backorder dashboard can build a fulfillment tag list and shortfall reports.
+// Read-only. Cached per store.
+// ============================================================
+
+export interface UnfulfilledOrderLine {
+  sku: string;
+  title: string;
+  quantity: number; // remaining unfulfilled, refund/removal-adjusted
+}
+
+export interface UnfulfilledOrder {
+  orderId: string;
+  orderName: string;
+  source: StoreSource;
+  createdAt: string;
+  customerName: string;
+  company: string | null;
+  email: string | null;
+  shippingState: string | null; // province/state code
+  tags: string[];
+  lineItems: UnfulfilledOrderLine[];
+}
+
+export async function getUnfulfilledOrders(): Promise<UnfulfilledOrder[]> {
+  const archery = cached("unfulfilled-orders:archery", () =>
+    fetchUnfulfilledOrdersForStore(getArcheryCreds(), "archery")
+  );
+  const beastCreds = getBeastCreds();
+  const beast = beastCreds
+    ? cached("unfulfilled-orders:beast", () =>
+        fetchUnfulfilledOrdersForStore(beastCreds, "beast")
+      )
+    : Promise.resolve([] as UnfulfilledOrder[]);
+
+  const [a, b] = await Promise.all([archery, beast]);
+  return [...a, ...b];
+}
+
+async function fetchUnfulfilledOrdersForStore(
+  creds: StoreCreds,
+  source: StoreSource
+): Promise<UnfulfilledOrder[]> {
+  const orders: UnfulfilledOrder[] = [];
+  let cursor: string | null = null;
+
+  while (true) {
+    const data: any = await shopifyGraphQL(
+      `
+      query($cursor: String) {
+        orders(
+          first: 100,
+          after: $cursor,
+          query: "fulfillment_status:unfulfilled OR fulfillment_status:partial"
+        ) {
+          pageInfo { hasNextPage endCursor }
+          edges {
+            node {
+              id
+              name
+              createdAt
+              cancelledAt
+              email
+              tags
+              customer { firstName lastName }
+              shippingAddress { company provinceCode }
+              lineItems(first: 100) {
+                edges {
+                  node {
+                    sku
+                    title
+                    currentQuantity
+                    unfulfilledQuantity
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `,
+      { cursor },
+      creds
+    );
+
+    const page = data.orders;
+    if (!page) break;
+
+    for (const edge of page.edges) {
+      const o = edge.node;
+      if (o.cancelledAt) continue;
+
+      const lines: UnfulfilledOrderLine[] = [];
+      for (const liEdge of o.lineItems.edges) {
+        const li = liEdge.node;
+        if (!li.sku) continue;
+        const current = li.currentQuantity ?? 0;
+        if (current <= 0) continue;
+        const unfulfilled = li.unfulfilledQuantity ?? current;
+        const remaining = Math.min(unfulfilled, current);
+        if (remaining <= 0) continue;
+        lines.push({ sku: li.sku, title: li.title, quantity: remaining });
+      }
+      if (lines.length === 0) continue;
+
+      const cust = o.customer;
+      const customerName = cust
+        ? [cust.firstName, cust.lastName].filter(Boolean).join(" ").trim()
+        : "";
+
+      orders.push({
+        orderId: o.id,
+        orderName: o.name,
+        source,
+        createdAt: o.createdAt,
+        customerName,
+        company: o.shippingAddress?.company || null,
+        email: o.email || null,
+        shippingState: o.shippingAddress?.provinceCode || null,
+        tags: Array.isArray(o.tags) ? o.tags : [],
+        lineItems: lines,
+      });
+    }
+
+    if (!page.pageInfo.hasNextPage) break;
+    cursor = page.pageInfo.endCursor;
+  }
+
+  return orders;
+}
+
+// ============================================================
 // Historical sales by SKU (DtC) — for the demand-projection forecaster.
 // Read-only orders query, paginated with cursors, summed by SKU. Cached.
 // `start`/`end` are YYYY-MM-DD (inclusive).
