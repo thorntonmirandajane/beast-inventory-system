@@ -839,10 +839,40 @@ export default function Inventory() {
 
   // Reset confirmation state
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const handleResetAll = () => {
     fetcher.submit({ intent: "reset-all" }, { method: "post" });
     setShowResetConfirm(false);
+  };
+
+  // Fetch the CSV and save it via a blob so the click never navigates to the
+  // resource route (which has no component and renders blank).
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await fetch("/skus/export", { credentials: "same-origin" });
+      if (!res.ok) {
+        alert("Export failed. Please try again.");
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match ? match[1] : `skus-export-${new Date().toISOString().split("T")[0]}.csv`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Export failed. Please try again.");
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -929,9 +959,9 @@ export default function Inventory() {
         {/* Admin Actions */}
         {user.role === "ADMIN" && (
           <div className="flex gap-3">
-            <a href="/skus/export" className="btn btn-secondary">
-              Export CSV
-            </a>
+            <button onClick={handleExport} disabled={exporting} className="btn btn-secondary">
+              {exporting ? "Exporting…" : "Export CSV"}
+            </button>
             <Link to="/skus/import" className="btn btn-secondary">
               Import CSV
             </Link>
