@@ -6,6 +6,7 @@ import { Layout } from "../components/Layout";
 import prisma from "../db.server";
 import { calculateBuildEligibility } from "../utils/inventory.server";
 import { getUsedInProducts } from "../utils/bom.server";
+import { resolveProcessConfig } from "../utils/process";
 import { useState, Fragment } from "react";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -1487,7 +1488,10 @@ export default function SkuDetail() {
                   <select
                     name="material"
                     className="form-select"
-                    defaultValue={sku.material || ""}
+                    // Resolve the stored value (which may be a displayName OR an
+                    // internal processName) to the matching config so the saved
+                    // process pre-selects instead of falling back to "No process".
+                    defaultValue={resolveProcessConfig(sku.material, processConfigs)?.processName || ""}
                   >
                     <option value="">No process</option>
                     {processConfigs.map((config) => (

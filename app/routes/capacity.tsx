@@ -4,29 +4,12 @@ import { useState } from "react";
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
-
-// Helper to match SKU material field to process config
-// SKU material: "Tipped", "Bladed", "Stud Tested", "Completed Packs"
-// Process displayName: "Tipping", "Blading", "Stud Testing", "Complete Packs"
-function matchesProcess(skuMaterial: string | null, processDisplayName: string): boolean {
-  if (!skuMaterial) return false;
-  const materialLower = skuMaterial.toLowerCase().replace(/\s+/g, ' ');
-  const processLower = processDisplayName.toLowerCase().replace(/\s+/g, ' ');
-
-  // Direct match
-  if (materialLower === processLower) return true;
-
-  // "Tipped" -> "Tipping", "Bladed" -> "Blading"
-  if (materialLower.replace(/ed$/, 'ing') === processLower) return true;
-
-  // "Stud Tested" -> "Stud Testing"
-  if (materialLower.replace(/ed$/, 'ing') === processLower) return true;
-
-  // "Completed Packs" -> "Complete Packs"
-  if (materialLower.replace('completed', 'complete') === processLower) return true;
-
-  return false;
-}
+// Shared matcher: canonicalizes underscores/hyphens too, so it matches a SKU's
+// `material` whether it was stored as the process displayName ("Stud Testing")
+// or its internal processName ("STUD_TESTING"). The old local copy here only
+// handled spaces, so SKUs whose material was saved as processName silently
+// dropped out of the per-process counts and assignment list.
+import { matchesProcess } from "../utils/process";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
