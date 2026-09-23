@@ -610,6 +610,9 @@ export async function computeBackorder(): Promise<BackorderSnapshot> {
     buildPlan = await computeBuildPlan({
       extra: [...extraBySku.entries()].map(([skuId, qty]) => ({ skuId, qty })),
       includeProgrammed: false,
+      // Use the same Gallatin source (ShipHero Apex) as the rest of this page,
+      // so the plan's "still short" doesn't ignore stock sitting in Gallatin.
+      gallatinBySkuId: gallatinCompleted,
     });
   } catch (err) {
     dataProblems.push(

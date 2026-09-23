@@ -95,6 +95,14 @@ export interface BuildPlanOpts {
   /** Programmed-orders window (YYYY-MM-DD). Defaults today → +365d. */
   programmedFrom?: string;
   programmedTo?: string;
+  /**
+   * Override Gallatin finished stock, keyed by inventory skuId. When provided,
+   * this replaces the Shopify-location lookup (getGallatinInventory) for both
+   * the displayed Gallatin column and the finished-stock coverage ledger. The
+   * backorder dashboard passes its ShipHero-Apex numbers here so the build plan
+   * uses the same Gallatin source as the rest of that page.
+   */
+  gallatinBySkuId?: Map<string, number>;
 }
 
 export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildPlan> {
@@ -134,12 +142,14 @@ export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildP
   const ymd = (d: Date) => d.toISOString().split("T")[0];
   const progFrom = opts.programmedFrom || ymd(new Date());
   const progTo = opts.programmedTo || ymd(new Date(Date.now() + 365 * 86400000));
+  const gallatinOverride = opts.gallatinBySkuId;
   const [unfulfilledR, programmedR, gallatinR] = await Promise.allSettled([
     getUnfulfilledLineItems(),
     includeProgrammed
       ? fetchProgrammedOrders({ from: progFrom, to: progTo }).then((r) => r.bySku).catch(() => [] as { sku: string; quantity: number }[])
       : Promise.resolve([] as { sku: string; quantity: number }[]),
-    getGallatinInventory().catch(() => new Map<string, number>()),
+    // Skip the Shopify-location lookup entirely when an override is supplied.
+    gallatinOverride ? Promise.resolve(new Map<string, number>()) : getGallatinInventory().catch(() => new Map<string, number>()),
   ]);
   const unfulfilled = unfulfilledR.status === "fulfilled" ? unfulfilledR.value : [];
   const programmed = programmedR.status === "fulfilled" ? programmedR.value : [];
@@ -147,6 +157,10 @@ export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildP
 
   const gallatinByKey = new Map<string, number>();
   for (const [s, q] of gallatin) gallatinByKey.set(norm(s), (gallatinByKey.get(norm(s)) ?? 0) + q);
+  // Gallatin finished stock for a SKU: override (by skuId) wins, else Shopify-
+  // location lookup (by normalized SKU string).
+  const galFor = (skuId: string, skuStr: string) =>
+    gallatinOverride ? (gallatinOverride.get(skuId) ?? 0) : (gallatinByKey.get(norm(skuStr)) ?? 0);
 
   const rows = new Map<string, BuildPlanRow>();
   const row = (skuId: string): BuildPlanRow => {
@@ -157,7 +171,7 @@ export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildP
         skuId, sku: n.sku, name: n.name,
         unfulfilled: 0, programmed: 0,
         stockLocal: Math.max(0, onHand.get(skuId) ?? 0),
-        stockGallatin: Math.max(0, gallatinByKey.get(norm(n.sku)) ?? 0),
+        stockGallatin: Math.max(0, galFor(skuId, n.sku)),
         coveredFromStock: 0, built: 0, short: 0, bindingSku: null, bindingName: null,
       };
       rows.set(skuId, r);
@@ -167,7 +181,7 @@ export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildP
 
   // Finished stock ledger (local + Gallatin), drawn down as we cover demand.
   const finished = new Map<string, number>();
-  for (const s of completed) finished.set(s.id, (onHand.get(s.id) ?? 0) + (gallatinByKey.get(norm(s.sku)) ?? 0));
+  for (const s of completed) finished.set(s.id, (onHand.get(s.id) ?? 0) + galFor(s.id, s.sku));
 
   const unmatched = new Map<string, number>();
 
