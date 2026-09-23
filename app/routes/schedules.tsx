@@ -74,7 +74,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Workers (admin: all active; worker: self). Kept for the calendar too.
   const workersRaw = await prisma.user.findMany({
-    where: isWorkerView ? { id: user.id } : { isActive: true },
+    // Admin-role accounts are not schedulable workers, so keep them out of the
+    // Weekly Grid entirely (the Requests tab and other admin features are
+    // unaffected — they don't use this list).
+    where: isWorkerView ? { id: user.id } : { isActive: true, role: { not: "ADMIN" } },
     include: { schedules: { where: { isActive: true }, orderBy: [{ scheduleDate: "asc" }, { dayOfWeek: "asc" }] } },
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });

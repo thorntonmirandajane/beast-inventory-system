@@ -20,7 +20,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const rangeStart = new Date(monday); rangeStart.setHours(0, 0, 0, 0);
   const rangeEnd = addDays(monday, 6); rangeEnd.setHours(23, 59, 59, 999);
 
-  const workers = await prisma.user.findMany({ where: { isActive: true }, select: { id: true, firstName: true, lastName: true }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
+  // Exclude admin-role accounts so the Print/Export matches the Weekly Grid.
+  const workers = await prisma.user.findMany({ where: { isActive: true, role: { not: "ADMIN" } }, select: { id: true, firstName: true, lastName: true }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
   const rows = await prisma.workerSchedule.findMany({
     where: { userId: { in: workers.map((w) => w.id) }, scheduleType: "SPECIFIC_DATE", isActive: true, scheduleDate: { gte: rangeStart, lte: rangeEnd } },
     select: { userId: true, scheduleDate: true, startTime: true, endTime: true },
