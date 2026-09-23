@@ -19,6 +19,10 @@ model User {
   role                   UserRole          @default(WORKER)
   payRate                Float?
   canLogTime             Boolean           @default(false)
+  // Force this account onto the Worker Schedules grid even though its role is
+  // Admin/Manager (e.g. an admin who still works scheduled shifts). Does not
+  // change role or access.
+  showOnSchedule         Boolean           @default(false)
   auditLogs              AuditLog[]
   clockEvents            ClockEvent[]
   purchaseOrdersApproved PurchaseOrder[]   @relation("POApprovedBy")

@@ -56,6 +56,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const hashedPassword = await hashPassword(password);
     const payRate = payRateStr ? parseFloat(payRateStr) : null;
     const canLogTime = formData.get("canLogTime") === "on";
+    const showOnSchedule = formData.get("showOnSchedule") === "on";
 
     const newUser = await prisma.user.create({
       data: {
@@ -66,6 +67,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         role,
         payRate,
         canLogTime,
+        showOnSchedule,
       },
     });
 
@@ -88,6 +90,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const payRateStr = formData.get("payRate") as string;
     const payRate = payRateStr ? parseFloat(payRateStr) : null;
     const canLogTime = formData.get("canLogTime") === "on";
+    const showOnSchedule = formData.get("showOnSchedule") === "on";
     const emailInput = ((formData.get("email") as string) || "").trim().toLowerCase();
 
     const data: {
@@ -95,8 +98,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       isActive: boolean;
       payRate: number | null;
       canLogTime: boolean;
+      showOnSchedule: boolean;
       email?: string;
-    } = { role, isActive, payRate, canLogTime };
+    } = { role, isActive, payRate, canLogTime, showOnSchedule };
 
     // Allow changing the login/email later (e.g. a worker provides a real
     // email). Blank is ignored so we never wipe the login identifier.
@@ -262,6 +266,12 @@ export default function Users() {
                   Can log time
                 </label>
               </div>
+              <div className="form-group mb-0 flex items-end">
+                <label className="flex items-center gap-2 text-sm" title="Show on the Worker Schedules grid even if Admin/Manager (works scheduled shifts)">
+                  <input type="checkbox" name="showOnSchedule" />
+                  Shows on schedule
+                </label>
+              </div>
             </div>
             <div className="mt-4">
               <button
@@ -369,6 +379,13 @@ export default function Users() {
                         >
                           <input type="checkbox" name="canLogTime" defaultChecked={u.canLogTime} />
                           Logs time
+                        </label>
+                        <label
+                          className="flex items-center gap-1 text-xs whitespace-nowrap"
+                          title="Show on the Worker Schedules grid even if Admin/Manager"
+                        >
+                          <input type="checkbox" name="showOnSchedule" defaultChecked={u.showOnSchedule} />
+                          On schedule
                         </label>
                         <button
                           type="submit"
