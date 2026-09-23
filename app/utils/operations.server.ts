@@ -9,9 +9,31 @@
 
 import prisma from "../db.server";
 import { getUnfulfilledLineItems, getGallatinInventory } from "./shopify.server";
+import { getOnHandForSkus } from "./shiphero.server";
 import { fetchProgrammedOrders } from "./queued-orders-client.server";
 
 const norm = (s: string) => s.trim().toUpperCase();
+
+// Completed-SKU Gallatin stock keyed by inventory skuId, from ShipHero (Apex) —
+// the same source the Forecasting tab treats as authoritative. Used to override
+// the Shopify-location lookup so the Build Plan, Forecasting, and Backorder
+// views all show the same Gallatin numbers. Throws if ShipHero is unavailable
+// (callers decide how to degrade).
+export async function getGallatinBySkuId(): Promise<Map<string, number>> {
+  const completed = await prisma.sku.findMany({
+    where: { isActive: true, type: "COMPLETED" },
+    select: { id: true, sku: true },
+  });
+  const onHand = await getOnHandForSkus(completed.map((s) => s.sku));
+  const byNorm = new Map<string, number>();
+  for (const [s, q] of onHand) byNorm.set(norm(s), (byNorm.get(norm(s)) ?? 0) + q);
+  const out = new Map<string, number>();
+  for (const s of completed) {
+    const q = byNorm.get(norm(s.sku));
+    if (q && q > 0) out.set(s.id, q);
+  }
+  return out;
+}
 
 type Node = {
   id: string;

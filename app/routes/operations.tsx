@@ -3,7 +3,7 @@ import { useLoaderData, useActionData, Form, useNavigation, Link } from "react-r
 import { useState } from "react";
 import { requireRole } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
-import { computeBuildPlan, type BuildPlanRow } from "../utils/operations.server";
+import { computeBuildPlan, getGallatinBySkuId, type BuildPlanRow } from "../utils/operations.server";
 
 const YMD = (d: Date) => d.toISOString().split("T")[0];
 const cleanYmd = (v: string | null) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
@@ -14,9 +14,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const includeProgrammed = url.searchParams.get("includeProgrammed") !== "0";
   const programmedFrom = cleanYmd(url.searchParams.get("progFrom")) || YMD(new Date());
   const programmedTo = cleanYmd(url.searchParams.get("progTo")) || YMD(new Date(Date.now() + 365 * 86400000));
-  const settings = { includeProgrammed, programmedFrom, programmedTo };
+  // Gallatin from ShipHero (Apex) — same source as Forecasting/Backorder — so
+  // all three views agree. Degrade to the Shopify-location lookup if ShipHero
+  // is unavailable.
+  const gallatinBySkuId = await getGallatinBySkuId().catch(() => undefined);
+  const settings = { includeProgrammed, programmedFrom, programmedTo, gallatinBySkuId };
   const plan = await computeBuildPlan(settings);
-  return { user, plan, settings };
+  return { user, plan, settings: { includeProgrammed, programmedFrom, programmedTo } };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -28,10 +32,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     .map((skuId, i) => ({ skuId, qty: qtys[i] }))
     .filter((e) => e.skuId && Number.isFinite(e.qty) && e.qty > 0);
 
+  const gallatinBySkuId = await getGallatinBySkuId().catch(() => undefined);
   const settings = {
     includeProgrammed: String(form.get("includeProgrammed") || "1") !== "0",
     programmedFrom: cleanYmd(String(form.get("progFrom") || "")) || undefined,
     programmedTo: cleanYmd(String(form.get("progTo") || "")) || undefined,
+    gallatinBySkuId,
   };
   const [base, withExtra] = await Promise.all([
     computeBuildPlan(settings),

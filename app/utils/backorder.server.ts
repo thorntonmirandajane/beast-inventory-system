@@ -14,8 +14,7 @@
 
 import prisma from "../db.server";
 import { getUnfulfilledOrders, type UnfulfilledOrder } from "./shopify.server";
-import { getOnHandForSkus } from "./shiphero.server";
-import { computeBuildPlan, type BuildPlan } from "./operations.server";
+import { computeBuildPlan, getGallatinBySkuId, type BuildPlan } from "./operations.server";
 
 const norm = (s: string) => s.trim().toUpperCase();
 
@@ -424,32 +423,16 @@ export async function computeBackorder(): Promise<BackorderSnapshot> {
     });
   }
 
-  // --- Gallatin completed stock (ShipHero Apex), attributed to inventory SKUs ---
-  const gallatinCompleted = new Map<string, number>(); // invSkuId -> units
-  // Query ShipHero for every distinct in-scope Shopify SKU plus the completed
-  // inventory SKUs themselves; attribute each returned SKU to its inventory SKU.
-  const shipheroQuery = new Set<string>();
-  for (const o of scoped) for (const l of o.lines) shipheroQuery.add(l.shopifySku);
-  for (const s of skus) if (s.type === "COMPLETED") shipheroQuery.add(s.sku);
-
-  if (shipheroQuery.size > 0) {
-    try {
-      const onHand = await getOnHandForSkus([...shipheroQuery]);
-      const counted = new Set<string>();
-      for (const [rawSku, qty] of onHand) {
-        if (qty <= 0) continue;
-        if (counted.has(norm(rawSku))) continue;
-        counted.add(norm(rawSku));
-        const invSkuId = resolveSku(rawSku, mapping, skuIdBySku);
-        if (!invSkuId || !isBuildPlan(invSkuId)) continue;
-        gallatinCompleted.set(invSkuId, (gallatinCompleted.get(invSkuId) ?? 0) + qty);
-      }
-    } catch (err) {
-      dataHealth.shipheroOk = false;
-      dataProblems.push(
-        `Could not load Gallatin (ShipHero) stock: ${err instanceof Error ? err.message : String(err)}. Gallatin treated as 0.`
-      );
-    }
+  // --- Gallatin completed stock (ShipHero Apex), keyed by inventory skuId ---
+  // Same source/method as the Forecasting tab (authoritative), so all views agree.
+  let gallatinCompleted = new Map<string, number>();
+  try {
+    gallatinCompleted = await getGallatinBySkuId();
+  } catch (err) {
+    dataHealth.shipheroOk = false;
+    dataProblems.push(
+      `Could not load Gallatin (ShipHero) stock: ${err instanceof Error ? err.message : String(err)}. Gallatin treated as 0.`
+    );
   }
 
   // --- Backorder mode: any build-plan SKU with demand > STG + Gallatin ---
