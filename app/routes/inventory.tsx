@@ -929,9 +929,9 @@ export default function Inventory() {
         {/* Admin Actions */}
         {user.role === "ADMIN" && (
           <div className="flex gap-3">
-            <Link to="/skus/export" className="btn btn-secondary">
+            <a href="/skus/export" className="btn btn-secondary">
               Export CSV
-            </Link>
+            </a>
             <Link to="/skus/import" className="btn btn-secondary">
               Import CSV
             </Link>
