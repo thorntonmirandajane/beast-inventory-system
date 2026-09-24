@@ -9,6 +9,7 @@ const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart
 const addDays = (d: Date, n: number) => { const r = new Date(d); r.setDate(r.getDate() + n); r.setHours(12, 0, 0, 0); return r; };
 const mondayOf = (d: Date) => { const r = new Date(d); const dow = r.getDay(); r.setDate(r.getDate() + (dow === 0 ? -6 : 1 - dow)); r.setHours(12, 0, 0, 0); return r; };
 const hhmmHours = (s: string, e: string) => { if (!s || !e) return 0; const [sh, sm] = s.split(":").map(Number); const [eh, em] = e.split(":").map(Number); return Math.max(0, eh + em / 60 - (sh + sm / 60)); };
+type Shift = { start: string; end: string };
 const fmtHrs = (n: number) => String(Math.round(n * 100) / 100);
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -26,14 +27,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { userId: { in: workers.map((w) => w.id) }, scheduleType: "SPECIFIC_DATE", isActive: true, scheduleDate: { gte: rangeStart, lte: rangeEnd } },
     select: { userId: true, scheduleDate: true, startTime: true, endTime: true },
   });
-  const byKey = new Map<string, { start: string; end: string }>();
-  for (const r of rows) if (r.scheduleDate) byKey.set(`${r.userId}|${ymd(r.scheduleDate)}`, { start: r.startTime, end: r.endTime });
+  // A day can hold several rows (a split shift), so collect them all — keying
+  // one row per day silently dropped every block but the last.
+  const byKey = new Map<string, Shift[]>();
+  for (const r of rows) if (r.scheduleDate) {
+    const k = `${r.userId}|${ymd(r.scheduleDate)}`;
+    const a = byKey.get(k) ?? [];
+    a.push({ start: r.startTime, end: r.endTime });
+    byKey.set(k, a);
+  }
+
+  // Days deliberately marked off print as "Off"; days nobody set stay blank.
+  const offRows = await prisma.scheduleDayOff.findMany({
+    where: { userId: { in: workers.map((w) => w.id) }, date: { gte: rangeStart, lte: rangeEnd } },
+    select: { userId: true, date: true },
+  });
+  const offKeys = new Set(offRows.map((r) => `${r.userId}|${ymd(r.date)}`));
 
   const gridWorkers = workers.map((w) => ({
     name: `${w.firstName} ${w.lastName}`,
     cells: weekDates.map((d) => {
-      const c = byKey.get(`${w.id}|${ymd(d)}`);
-      return c ? { label: toShorthand(c.start, c.end), hours: hhmmHours(c.start, c.end) } : { label: "", hours: 0 };
+      const k = `${w.id}|${ymd(d)}`;
+      const shifts = (byKey.get(k) ?? []).sort((a, b) => a.start.localeCompare(b.start));
+      if (shifts.length) {
+        return {
+          label: shifts.map((c) => toShorthand(c.start, c.end)).join(", "),
+          hours: shifts.reduce((t, c) => t + hhmmHours(c.start, c.end), 0),
+          off: false,
+        };
+      }
+      return { label: "", hours: 0, off: offKeys.has(k) };
     }),
   }));
 
@@ -53,7 +76,7 @@ export default function SchedulePrint() {
     <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", color: "#111" }}>
       <style>{`
         @page { size: landscape; margin: 12mm; }
-        @media print { .no-print { display: none !important; } }
+        @media print { .no-print { display: none !important; } td { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
         table { border-collapse: collapse; width: 100%; font-size: 12px; }
         th, td { border: 1px solid #cbd5e1; padding: 6px 8px; text-align: center; }
         th:first-child, td:first-child { text-align: left; white-space: nowrap; }
@@ -77,7 +100,11 @@ export default function SchedulePrint() {
           {gridWorkers.map((w, i) => (
             <tr key={i}>
               <td>{w.name}</td>
-              {w.cells.map((c, j) => <td key={j}>{c.label || "—"}</td>)}
+              {w.cells.map((c, j) => (
+                <td key={j} style={c.off ? { color: "#dc2626", fontWeight: 600 } : undefined}>
+                  {c.off ? "Off" : c.label || "—"}
+                </td>
+              ))}
               <td>{fmtHrs(rowTotal(w))}</td>
             </tr>
           ))}

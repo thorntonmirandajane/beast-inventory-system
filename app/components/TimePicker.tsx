@@ -195,12 +195,14 @@ export function TimeRangePicker({
   anchor,
   onDone,
   onClear,
+  onReset,
   onClose,
 }: {
   shifts: PickerShift[];
   anchor: { left: number; top: number; bottom: number; width: number };
   onDone: (shifts: PickerShift[]) => void;
   onClear: () => void;
+  onReset: () => void;
   onClose: () => void;
 }) {
   const [shifts, setShifts] = useState<PickerShift[]>(() =>
@@ -356,10 +358,21 @@ export function TimeRangePicker({
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "space-between" }}>
-        <button type="button" className="btn btn-secondary btn-sm text-red-600" onClick={() => { onClear(); onClose(); }}>
-          Day off
-        </button>
+      <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button type="button" className="btn btn-secondary btn-sm text-red-600" onClick={() => { onClear(); onClose(); }}>
+            Day off
+          </button>
+          {/* Back to an untouched day — neither hours nor an "Off" marking. */}
+          <button
+            type="button"
+            onClick={() => { onReset(); onClose(); }}
+            style={{ fontSize: 12, color: "#6b7280", textDecoration: "underline" }}
+            title="Leave this day unset"
+          >
+            Clear
+          </button>
+        </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button type="button" className="btn btn-secondary btn-sm" onClick={onClose}>Cancel</button>
           <button

@@ -105,6 +105,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     savedByKey.set(k, a);
   }
 
+  // Days deliberately marked off for the visible week. Distinct from "no rows",
+  // which just means nobody has filled the day in yet.
+  const offRows = await prisma.scheduleDayOff.findMany({
+    where: { userId: { in: workerIds }, date: { gte: rangeStart, lte: rangeEnd } },
+    select: { userId: true, date: true },
+  });
+  const offKeys = new Set(offRows.map((r) => `${r.userId}|${ymd(r.date)}`));
+
   // Recurring pattern (deactivated) — used only to pre-fill unsaved cells.
   const patternRows = await prisma.workerSchedule.findMany({
     where: { userId: { in: workerIds }, scheduleType: "RECURRING" },
@@ -119,10 +127,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cells: weekDates.map((d) => {
       const dateY = ymd(d);
       const saved = savedByKey.get(`${w.id}|${dateY}`);
-      if (saved && saved.length) { const sh = sortShifts(saved); return { date: dateY, shifts: sh, value: shiftsLabel(sh), hours: shiftsHours(sh), saved: true }; }
+      if (saved && saved.length) { const sh = sortShifts(saved); return { date: dateY, shifts: sh, value: shiftsLabel(sh), hours: shiftsHours(sh), saved: true, off: false }; }
+      // An explicit day off outranks the recurring pattern — it was a decision,
+      // not an empty cell waiting to be pre-filled.
+      if (offKeys.has(`${w.id}|${dateY}`)) return { date: dateY, shifts: [] as Shift[], value: "Off", hours: 0, saved: true, off: true };
       const pat = patternByKey.get(`${w.id}|${d.getDay()}`);
-      if (pat) { const sh = [{ start: pat.start, end: pat.end }]; return { date: dateY, shifts: sh, value: shiftsLabel(sh), hours: shiftsHours(sh), saved: false }; }
-      return { date: dateY, shifts: [] as Shift[], value: "", hours: 0, saved: false };
+      if (pat) { const sh = [{ start: pat.start, end: pat.end }]; return { date: dateY, shifts: sh, value: shiftsLabel(sh), hours: shiftsHours(sh), saved: false, off: false }; }
+      return { date: dateY, shifts: [] as Shift[], value: "", hours: 0, saved: false, off: false };
     }),
   }));
 
@@ -220,8 +231,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     });
     const apprBy = new Map<string, Shift[]>();
     for (const r of appr) if (r.scheduleDate) { const k = ymd(r.scheduleDate); const a = apprBy.get(k) ?? []; a.push({ start: r.startTime, end: r.endTime }); apprBy.set(k, a); }
+    const apprOff = new Set(
+      (await prisma.scheduleDayOff.findMany({ where: { userId: user.id, date: { gte: lo, lte: hi } }, select: { date: true } })).map((r) => ymd(r.date))
+    );
     const pendBy = new Map<string, Shift[]>();
-    if (myRequest) { try { for (const c of (JSON.parse(myRequest.days).cells ?? [])) { const sh = cellToShifts(c); if (sh.length) pendBy.set(c.date, sh); } } catch { /* older format */ } }
+    const pendOff = new Set<string>();
+    if (myRequest) {
+      try {
+        for (const c of (JSON.parse(myRequest.days).cells ?? [])) {
+          const sh = cellToShifts(c);
+          if (sh.length) pendBy.set(c.date, sh);
+          else if (c?.off === true) pendOff.add(c.date);
+        }
+      } catch { /* older format */ }
+    }
 
     const card = (d: Date, dowLabel = false) => {
       const dY = ymd(d);
@@ -229,11 +252,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const app = apprBy.get(dY);
       const src = pend ?? app ?? [];
       const shifts = sortShifts(src);
+      // A pending request wins over what's approved, for hours and for "Off".
+      const hasPending = !!pend || pendOff.has(dY);
+      const off = hasPending ? !pend && pendOff.has(dY) : !app && apprOff.has(dY);
       return {
         date: dY, dom: d.getDate(), inMonth: d.getMonth() === monthIdx,
         shifts,
+        off,
         hours: shifts.length ? shiftsLabel(shifts) : "",
-        status: pend ? "pending" : app ? "approved" : "none",
+        status: pend || pendOff.has(dY) ? "pending" : app || apprOff.has(dY) ? "approved" : "none",
         ...(dowLabel ? { dow: DAY_ABBR[d.getDay()] } : {}),
       };
     };
@@ -290,11 +317,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     let shifts: { start: string; end: string }[] = [];
     try { shifts = JSON.parse(String(formData.get("shifts") || "[]")); } catch { shifts = []; }
     const valid = (Array.isArray(shifts) ? shifts : []).filter((s) => s.start && s.end && s.end > s.start);
+    // "Off" is a request in its own right — it has to survive as a pending cell,
+    // otherwise asking for a day off is indistinguishable from clearing the day.
+    const off = formData.get("off") === "1" && valid.length === 0;
     const req = await prisma.scheduleRequest.findFirst({ where: { userId: user.id, status: "PENDING" } });
     let cells: any[] = [];
     if (req) { try { cells = JSON.parse(req.days).cells ?? []; } catch { cells = []; } }
     cells = cells.filter((c: any) => c.date !== date);
     if (valid.length) cells.push({ date, shifts: valid, value: valid.map((s) => toShorthand(s.start, s.end)).join(", ") });
+    else if (off) cells.push({ date, shifts: [], off: true, value: "Off" });
     cells.sort((a: any, b: any) => a.date.localeCompare(b.date));
     if (cells.length === 0) {
       if (req) await prisma.scheduleRequest.delete({ where: { id: req.id } });
@@ -303,7 +334,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const days = JSON.stringify({ cells });
     if (req) await prisma.scheduleRequest.update({ where: { id: req.id }, data: { days, status: "PENDING", submittedAt: new Date() } });
     else await prisma.scheduleRequest.create({ data: { userId: user.id, days, status: "PENDING" } });
-    return { success: true, message: valid.length ? "Requested — pending approval." : "Cleared." };
+    return { success: true, message: valid.length ? "Requested — pending approval." : off ? "Day off requested — pending approval." : "Cleared." };
   }
 
   // Everything below is admin-only.
@@ -317,7 +348,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     let shifts: { start: string; end: string }[] = [];
     if (formData.has("shifts")) { try { shifts = JSON.parse(String(formData.get("shifts"))); } catch { shifts = []; } }
     else { const s = String(formData.get("start") || ""), e = String(formData.get("end") || ""); shifts = s && e ? [{ start: s, end: e }] : []; }
-    await writeDayShifts(workerId, date, shifts);
+    await writeDayShifts(workerId, date, shifts, prisma, formData.get("off") === "1");
     return { cellSaved: true, workerId, date };
   }
 
@@ -326,7 +357,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     let cells: any[] = [];
     try { cells = JSON.parse(String(formData.get("cells") || "[]")); } catch { cells = []; }
     await prisma.$transaction(async (tx) => {
-      for (const c of cells) await writeDayShifts(c.workerId, c.date, cellToShifts(c), tx);
+      for (const c of cells) await writeDayShifts(c.workerId, c.date, cellToShifts(c), tx, cellIsOff(c));
     }, { timeout: 120000, maxWait: 15000 });
     await createAuditLog(user.id, "COMMIT_SCHEDULE_WEEK", "WorkerSchedule", "week", { days: cells.length });
     return { success: true, message: `Saved ${cells.length} day(s).` };
@@ -341,7 +372,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try { cells = editedRaw ? JSON.parse(editedRaw) : (JSON.parse(req.days).cells ?? []); }
     catch { try { cells = JSON.parse(req.days).cells ?? []; } catch { cells = []; } }
     await prisma.$transaction(async (tx) => {
-      for (const c of cells) await writeDayShifts(req.userId, c.date, cellToShifts(c), tx);
+      for (const c of cells) await writeDayShifts(req.userId, c.date, cellToShifts(c), tx, cellIsOff(c));
       let meta: any = {}; try { meta = JSON.parse(req.days || "{}"); } catch { meta = {}; }
       await tx.scheduleRequest.update({ where: { id: requestId }, data: { status: "APPROVED", reviewedAt: new Date(), reviewedById: user.id, days: JSON.stringify({ ...meta, cells }) } });
     }, { timeout: 120000, maxWait: 15000 });
@@ -382,17 +413,32 @@ function cellToShifts(c: any): { start: string; end: string }[] {
 }
 
 // Write a day's shifts as SPECIFIC_DATE rows (one per block — a split shift is
-// several rows). Empty list = day off. Delete-then-create keeps exactly the set.
-async function writeDayShifts(workerId: string, date: string, shifts: { start: string; end: string }[], tx: any = prisma) {
+// several rows). Delete-then-create keeps exactly the set.
+//
+// `off` is what separates "marked as a day off" from "nobody has filled this in
+// yet": both store zero shift rows, but an explicit off also writes a
+// ScheduleDayOff marker. Any write with real hours clears that marker, so the
+// two can never disagree.
+async function writeDayShifts(workerId: string, date: string, shifts: { start: string; end: string }[], tx: any = prisma, off = false) {
   const scheduleDate = dateAtNoon(date);
   const dayStart = new Date(scheduleDate); dayStart.setHours(0, 0, 0, 0);
   const dayEnd = new Date(scheduleDate); dayEnd.setHours(23, 59, 59, 999);
   await tx.workerSchedule.deleteMany({ where: { userId: workerId, scheduleType: "SPECIFIC_DATE", scheduleDate: { gte: dayStart, lte: dayEnd } } });
-  for (const s of (shifts || []).filter((x) => x.start && x.end && x.end > x.start)) {
+  const blocks = (shifts || []).filter((x) => x.start && x.end && x.end > x.start);
+  for (const s of blocks) {
     await tx.workerSchedule.create({
       data: { userId: workerId, dayOfWeek: null, scheduleDate, scheduleType: "SPECIFIC_DATE", startTime: s.start, endTime: s.end, isActive: true },
     });
   }
+  await tx.scheduleDayOff.deleteMany({ where: { userId: workerId, date: { gte: dayStart, lte: dayEnd } } });
+  if (blocks.length === 0 && off) {
+    await tx.scheduleDayOff.create({ data: { userId: workerId, date: scheduleDate } });
+  }
+}
+
+/** A grid/request cell that was deliberately marked off (rather than left blank). */
+function cellIsOff(c: any): boolean {
+  return c?.off === true && cellToShifts(c).length === 0;
 }
 
 // Calendar helper functions
@@ -964,7 +1010,7 @@ export default function Schedules() {
     <Layout user={user}>
       <div className="page-header">
         <h1 className="page-title">Worker Schedules</h1>
-        <p className="page-subtitle">Weekly hours grid — click a day to set start/end. Blank = day off.</p>
+        <p className="page-subtitle">Weekly hours grid — click a day to set start/end. A red "Off" is a day marked off; a dash is a day not set yet.</p>
       </div>
 
       {actionData && "error" in actionData && actionData.error && <div className="alert alert-error mb-6">{actionData.error}</div>}
@@ -1001,15 +1047,18 @@ export default function Schedules() {
 // ---- Worker mobile Month/Week view ----
 function WorkerSchedule({ view, myMonth, myWeek }: any) {
   const fetcher = useFetcher();
-  const [open, setOpen] = useState<{ date: string; shifts: any[]; label: string } | null>(null);
+  const [open, setOpen] = useState<{ date: string; shifts: any[]; label: string; off?: boolean } | null>(null);
 
-  const submit = (date: string, shifts: any[]) => {
-    fetcher.submit({ intent: "set-my-day", date, shifts: JSON.stringify(shifts) }, { method: "post" });
+  const submit = (date: string, shifts: any[], off = false) => {
+    fetcher.submit(
+      { intent: "set-my-day", date, shifts: JSON.stringify(shifts), ...(off ? { off: "1" } : {}) },
+      { method: "post" }
+    );
   };
   const onTap = (c: any) => {
     const d = dateAtNoon(c.date);
     const label = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-    setOpen({ date: c.date, shifts: (c.shifts || []).map((s: any) => ({ ...s })), label });
+    setOpen({ date: c.date, shifts: (c.shifts || []).map((s: any) => ({ ...s })), label, off: !!c.off });
   };
 
   // Inline grid so the global "@media(max-width:768px){.grid{grid-cols-1}}" hack
@@ -1031,7 +1080,11 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
       <>
         <Dot status={c.status} />
         <span className="text-sm font-semibold text-gray-800 leading-none">{c.dom}</span>
-        {c.hours && <span className="text-[8px] sm:text-[9px] text-gray-600 mt-1 leading-tight text-center px-0.5" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{c.hours}</span>}
+        {c.hours ? (
+          <span className="text-[8px] sm:text-[9px] text-gray-600 mt-1 leading-tight text-center px-0.5" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{c.hours}</span>
+        ) : c.off ? (
+          <span className="text-[9px] sm:text-[10px] font-semibold text-red-600 mt-1 leading-none">Off</span>
+        ) : null}
       </>
     );
     return interactive ? (
@@ -1096,7 +1149,7 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
         <MultiShiftSheet
           dateLabel={open.label}
           initial={open.shifts}
-          onSave={(shifts: any[]) => submit(open.date, shifts)}
+          onSave={(shifts: any[], off?: boolean) => submit(open.date, shifts, !!off)}
           onClose={() => setOpen(null)}
         />
       )}
@@ -1145,10 +1198,14 @@ function MultiShiftSheet({ dateLabel, initial, onSave, onClose }: any) {
 
         <button type="button" onClick={() => setShifts((s) => [...s, { start: "", end: "" }])} className="btn btn-secondary btn-sm w-full mb-3">+ Add another shift</button>
 
-        <div className="text-center text-sm font-medium mb-3">Total: {fmtHrs(Math.round(total * 100) / 100)} h</div>
+        <div className="text-center text-sm font-medium mb-1">Total: {fmtHrs(Math.round(total * 100) / 100)} h</div>
+        <div className="text-center mb-3">
+          {/* Back to an untouched day — neither hours nor an "Off" marking. */}
+          <button type="button" onClick={() => { onSave([], false); onClose(); }} className="text-xs text-gray-500 underline">Clear this day</button>
+        </div>
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" className="btn btn-secondary text-red-600" style={{ flex: 1 }} onClick={() => { onSave([]); onClose(); }}>Off</button>
+          <button type="button" className="btn btn-secondary text-red-600" style={{ flex: 1 }} onClick={() => { onSave([], true); onClose(); }}>Off</button>
           <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={onClose}>Cancel</button>
           <button type="button" className="btn btn-primary" style={{ flex: 2 }} onClick={() => { onSave(shifts.filter((s) => s.start && s.end && s.end > s.start)); onClose(); }}>Done</button>
         </div>
@@ -1221,9 +1278,9 @@ function MiniWeekCalendar({ selectedWeekStart, onClose }: { selectedWeekStart: s
 
 function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStartYmd }: any) {
   const key = (w: string, d: string) => `${w}|${d}`;
-  const [cells, setCells] = useState<Record<string, { shifts: any[]; value: string; hours: number }>>(() => {
-    const o: Record<string, { shifts: any[]; value: string; hours: number }> = {};
-    for (const w of gridWorkers) for (const c of w.cells) o[key(w.id, c.date)] = { shifts: c.shifts || [], value: c.value || "", hours: c.hours || 0 };
+  const [cells, setCells] = useState<Record<string, { shifts: any[]; value: string; hours: number; off: boolean }>>(() => {
+    const o: Record<string, { shifts: any[]; value: string; hours: number; off: boolean }> = {};
+    for (const w of gridWorkers) for (const c of w.cells) o[key(w.id, c.date)] = { shifts: c.shifts || [], value: c.value || "", hours: c.hours || 0, off: !!c.off };
     return o;
   });
   const [savedKeys, setSavedKeys] = useState<Set<string>>(() => {
@@ -1234,28 +1291,30 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
   const [open, setOpen] = useState<{ k: string; wid: string; date: string; anchor: { left: number; top: number; bottom: number; width: number } } | null>(null);
   const [showActual, setShowActual] = useState(false);
 
-  const save = (wid: string, date: string, shifts: any[]) => {
+  const save = (wid: string, date: string, shifts: any[], off: boolean) => {
     const fd = new FormData();
     fd.append("intent", "set-schedule-cell");
     fd.append("workerId", wid);
     fd.append("date", date);
     fd.append("shifts", JSON.stringify(shifts));
+    if (off) fd.append("off", "1");
     fetch(window.location.pathname + window.location.search, { method: "POST", body: fd }).catch(() => {});
   };
   // A day is a list of shifts — one block for a normal day, several for a split
   // shift. Stored sorted so the cell always reads "7-9, 11:30-4".
-  const setCell = (wid: string, date: string, next: Shift[]) => {
+  const setCell = (wid: string, date: string, next: Shift[], off = false) => {
     const k = key(wid, date);
     const shifts = sortShifts((next || []).filter((s) => s.start && s.end && s.end > s.start));
-    setCells((s) => ({ ...s, [k]: { shifts, value: shiftsLabel(shifts), hours: shiftsHours(shifts) } }));
+    const isOff = off && shifts.length === 0;
+    setCells((s) => ({ ...s, [k]: { shifts, value: isOff ? "Off" : shiftsLabel(shifts), hours: shiftsHours(shifts), off: isOff } }));
     setSavedKeys((s) => new Set(s).add(k));
-    save(wid, date, shifts);
+    save(wid, date, shifts, isOff);
   };
 
   const dayTotal = (di: number) => gridWorkers.reduce((t: number, w: any) => t + (cells[key(w.id, days[di].ymd)]?.hours || 0), 0);
   const rowTotal = (w: any) => days.reduce((t: number, d: any) => t + (cells[key(w.id, d.ymd)]?.hours || 0), 0);
   const grand = days.reduce((t: number, _d: any, di: number) => t + dayTotal(di), 0);
-  const commitCells = gridWorkers.flatMap((w: any) => w.cells.map((c: any) => ({ workerId: w.id, date: c.date, shifts: cells[key(w.id, c.date)]?.shifts || [] })));
+  const commitCells = gridWorkers.flatMap((w: any) => w.cells.map((c: any) => ({ workerId: w.id, date: c.date, shifts: cells[key(w.id, c.date)]?.shifts || [], off: !!cells[key(w.id, c.date)]?.off })));
   const hcell = "px-3 py-3.5 whitespace-nowrap";
 
   return (
@@ -1272,7 +1331,7 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
             <a href={`/schedules/print?weekStart=${weekStartYmd}`} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">Print / Export</a>
           </div>
         </div>
-        <p className="text-xs text-gray-500 mb-4">Click a day to set start/end, and "+ Add another shift" for a split day. Amber = pre-filled, not yet saved. Red ⚠ = conflicts with approved time off. Split shifts show as "7-9, 11:30-4".</p>
+        <p className="text-xs text-gray-500 mb-4">Click a day to set start/end, and "+ Add another shift" for a split day. A red "Off" is a day marked off; a dash is a day nobody has set yet. Amber = pre-filled, not yet saved. Red ⚠ = conflicts with approved time off. Split shifts show as "7-9, 11:30-4".</p>
 
         <div style={{ position: "relative" }}>
           <div className="rounded-lg border border-gray-200" style={{ maxHeight: "calc(100vh - 340px)", overflow: "auto" }}>
@@ -1296,9 +1355,9 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
                       <td className="px-3 py-3 whitespace-nowrap font-medium text-[15px]" style={{ position: "sticky", left: 0, zIndex: 10, background: zebra }}>{w.name}</td>
                       {days.map((d: any) => {
                         const k = key(w.id, d.ymd);
-                        const c = cells[k] || { shifts: [], value: "", hours: 0 };
+                        const c = cells[k] || { shifts: [], value: "", hours: 0, off: false };
                         const has = c.hours > 0;
-                        const label = c.value || "—";
+                        const label = c.off ? "Off" : c.value || "—";
                         const prefilled = !savedKeys.has(k) && has;
                         const conflict = has && !!timeOffByCell[k];
                         return (
@@ -1310,7 +1369,7 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
                                 setOpen(open?.k === k ? null : { k, wid: w.id, date: d.ymd, anchor: { left: r.left, top: r.top, bottom: r.bottom, width: r.width } });
                               }}
                               title={conflict ? `Conflicts with approved time off (${timeOffByCell[k]})` : prefilled ? "Pre-filled — not saved yet" : ""}
-                              className={`w-full min-w-[68px] h-12 rounded-lg border px-1 text-sm truncate transition-colors ${conflict ? "border-red-500 bg-red-50 text-red-700" : prefilled ? "border-amber-300 bg-amber-50 text-gray-500" : has ? "border-gray-300 bg-white hover:border-blue-400" : "border-dashed border-gray-300 bg-white text-gray-400 hover:border-blue-400"}`}
+                              className={`w-full min-w-[68px] h-12 rounded-lg border px-1 text-sm truncate transition-colors ${conflict ? "border-red-500 bg-red-50 text-red-700" : prefilled ? "border-amber-300 bg-amber-50 text-gray-500" : c.off ? "border-gray-300 bg-white text-red-600 font-semibold hover:border-blue-400" : has ? "border-gray-300 bg-white hover:border-blue-400" : "border-dashed border-gray-300 bg-white text-gray-400 hover:border-blue-400"}`}
                             >
                               {conflict ? "⚠ " : ""}{label}
                             </button>
@@ -1350,7 +1409,8 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
             shifts={cells[open.k]?.shifts || []}
             anchor={open.anchor}
             onDone={(next) => setCell(open.wid, open.date, next)}
-            onClear={() => setCell(open.wid, open.date, [])}
+            onClear={() => setCell(open.wid, open.date, [], true)}
+            onReset={() => setCell(open.wid, open.date, [], false)}
             onClose={() => setOpen(null)}
           />
         </>
@@ -1399,7 +1459,7 @@ function RequestReviewCard({ req, isSubmitting }: any) {
           <p className="text-sm text-gray-500">This request was submitted in an older format and can't be shown here — ask the worker to resubmit.</p>
         ) : (
           <>
-            <p className="text-sm text-gray-600 mb-2">Adjust hours if needed, then approve. Blank = day off.</p>
+            <p className="text-sm text-gray-600 mb-2">Adjust hours if needed, then approve. "Off" = a day the worker asked to have off.</p>
             <div className="overflow-x-auto">
               <table className="text-sm">
                 <thead><tr>{cells.map((c, i) => <th key={i} className="p-2 text-center whitespace-nowrap">{dow(c.date)}</th>)}<th className="p-2">Total</th></tr></thead>

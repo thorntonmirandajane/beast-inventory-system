@@ -40,6 +40,7 @@ model User {
   approvedTimeOffRequests TimeOffRequest[] @relation("ApprovedTimeOffRequests")
   forecastTemplates      ForecastTemplate[]
   aiConversations        AiConversation[]
+  scheduleDaysOff        ScheduleDayOff[]
 
   @@map("users")
 }
@@ -829,4 +830,25 @@ model AiMessage {
 
   @@index([conversationId, createdAt])
   @@map("ai_messages")
+}
+
+// An explicit "Day off" marking for one worker on one date.
+//
+// Kept out of WorkerSchedule on purpose: a day off is the ABSENCE of shifts,
+// and a placeholder row in that table would show up as a phantom 0-hour shift
+// in payroll, capacity planning, the time clock and the calendar. Here it can
+// only be seen by code that asks for it.
+//
+// No row = the day was never touched (blank). A row = someone deliberately
+// marked it off, which the grids show as "Off".
+model ScheduleDayOff {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  date      DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@map("schedule_days_off")
 }
