@@ -931,12 +931,6 @@ const cellHours = (v: string) => {
   const p = parseShorthand(v);
   return p.error ? 0 : p.hours;
 };
-const hhmmHours = (start: string, end: string) => {
-  if (!start || !end) return 0;
-  const [sh, sm] = start.split(":").map(Number);
-  const [eh, em] = end.split(":").map(Number);
-  return Math.max(0, eh + em / 60 - (sh + sm / 60));
-};
 
 export default function Schedules() {
   const {
@@ -1248,11 +1242,12 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
     fd.append("shifts", JSON.stringify(shifts));
     fetch(window.location.pathname + window.location.search, { method: "POST", body: fd }).catch(() => {});
   };
-  // Admin picker sets a single shift (collapses a split-shift day to one on edit).
-  const setCell = (wid: string, date: string, start: string, end: string) => {
+  // A day is a list of shifts — one block for a normal day, several for a split
+  // shift. Stored sorted so the cell always reads "7-9, 11:30-4".
+  const setCell = (wid: string, date: string, next: Shift[]) => {
     const k = key(wid, date);
-    const shifts = start && end ? [{ start, end }] : [];
-    setCells((s) => ({ ...s, [k]: { shifts, value: shifts.length ? toShorthand(start, end) : "", hours: shifts.length ? Math.round(hhmmHours(start, end) * 100) / 100 : 0 } }));
+    const shifts = sortShifts((next || []).filter((s) => s.start && s.end && s.end > s.start));
+    setCells((s) => ({ ...s, [k]: { shifts, value: shiftsLabel(shifts), hours: shiftsHours(shifts) } }));
     setSavedKeys((s) => new Set(s).add(k));
     save(wid, date, shifts);
   };
@@ -1277,7 +1272,7 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
             <a href={`/schedules/print?weekStart=${weekStartYmd}`} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">Print / Export</a>
           </div>
         </div>
-        <p className="text-xs text-gray-500 mb-4">Click a day to set start/end. Amber = pre-filled, not yet saved. Red ⚠ = conflicts with approved time off. Split shifts (from worker requests) show as "7-9, 11:30-4".</p>
+        <p className="text-xs text-gray-500 mb-4">Click a day to set start/end, and "+ Add another shift" for a split day. Amber = pre-filled, not yet saved. Red ⚠ = conflicts with approved time off. Split shifts show as "7-9, 11:30-4".</p>
 
         <div style={{ position: "relative" }}>
           <div className="rounded-lg border border-gray-200" style={{ maxHeight: "calc(100vh - 340px)", overflow: "auto" }}>
@@ -1351,11 +1346,11 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
         <>
           <div className="fixed inset-0 z-50" onClick={() => setOpen(null)} />
           <TimeRangePicker
-            start={cells[open.k]?.shifts?.[0]?.start || ""}
-            end={cells[open.k]?.shifts?.[0]?.end || ""}
+            key={open.k}
+            shifts={cells[open.k]?.shifts || []}
             anchor={open.anchor}
-            onDone={(s, e) => setCell(open.wid, open.date, s, e)}
-            onClear={() => setCell(open.wid, open.date, "", "")}
+            onDone={(next) => setCell(open.wid, open.date, next)}
+            onClear={() => setCell(open.wid, open.date, [])}
             onClose={() => setOpen(null)}
           />
         </>
