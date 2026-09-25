@@ -45,6 +45,7 @@ export default [
   route("payroll", "routes/payroll.tsx"),
   route("capacity", "routes/capacity.tsx"),
   route("capacity/import", "routes/capacity.import.tsx"),
+  route("process-cleanup", "routes/process-cleanup.tsx"),
   route("forecasting", "routes/forecasting.tsx"),
   route("fulfilled-orders", "routes/fulfilled-orders.tsx"),
   route("projections", "routes/projections.tsx"),

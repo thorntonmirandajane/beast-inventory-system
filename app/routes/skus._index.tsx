@@ -32,7 +32,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   if (processFilter) {
-    whereClause.material = processFilter;
+    // Match both spellings a SKU may still hold for the same process — the
+    // internal name and the display name — so the filter is correct whether or
+    // not the one-off cleanup has run yet.
+    const cfg = await prisma.processConfig.findFirst({
+      where: { OR: [{ processName: processFilter }, { displayName: processFilter }] },
+      select: { processName: true, displayName: true },
+    });
+    whereClause.material = cfg
+      ? { in: [...new Set([cfg.processName, cfg.displayName, processFilter])] }
+      : processFilter;
   }
 
   if (categoryFilter) {
@@ -73,13 +82,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     finished: await prisma.sku.count({ where: { isActive: true, type: { in: ["ASSEMBLY", "COMPLETED"] } } }),
   };
 
-  // Get unique processes and categories for filters
-  const uniqueProcesses = await prisma.sku.findMany({
-    where: { material: { not: null }, isActive: true },
-    select: { material: true },
-    distinct: ["material"],
-    orderBy: { material: "asc" },
-  });
+  // Categories for the filter still come from the SKUs themselves (there is no
+  // Category table). The PROCESS filter must not: it used to be built from
+  // DISTINCT sku.material, and because two writers stored the same process
+  // under two different strings ("COMPLETE_PACKS" from the SKU form,
+  // "Complete Packs" from the Process Times import), it listed every process
+  // twice. It is now built from the process list itself, deduped by name.
 
   const uniqueCategories = await prisma.sku.findMany({
     where: { category: { not: null }, isActive: true },
@@ -90,11 +98,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Load process configs to map processName -> displayName
   const processConfigs = await prisma.processConfig.findMany({
+    where: { isActive: true },
     select: { processName: true, displayName: true },
+    orderBy: { displayName: "asc" },
   });
   const processDisplayMap: Record<string, string> = {};
   for (const config of processConfigs) {
     processDisplayMap[config.processName] = config.displayName;
+    // A SKU may still hold the display name from before the two conventions
+    // were merged; map that spelling too so the badge reads correctly.
+    processDisplayMap[config.displayName] = config.displayName;
+  }
+
+  // One option per distinct display name, so a leftover duplicate config can't
+  // put the same process in the list twice.
+  const seenProcess = new Set<string>();
+  const processOptions: { value: string; label: string }[] = [];
+  for (const c of processConfigs) {
+    const key = c.displayName.trim().toLowerCase();
+    if (seenProcess.has(key)) continue;
+    seenProcess.add(key);
+    processOptions.push({ value: c.processName, label: c.displayName });
   }
 
   return {
@@ -105,14 +129,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     search,
     processFilter,
     categoryFilter,
-    processes: uniqueProcesses.map(p => p.material).filter(Boolean) as string[],
+    processOptions,
     categories: uniqueCategories.map(c => c.category).filter(Boolean) as string[],
     processDisplayMap,
   };
 };
 
 export default function SkusList() {
-  const { user, skus, counts, currentType, search, processFilter, categoryFilter, processes, categories, processDisplayMap } = useLoaderData<typeof loader>();
+  const { user, skus, counts, currentType, search, processFilter, categoryFilter, processOptions, categories, processDisplayMap } = useLoaderData<typeof loader>();
 
   const tabs = [
     { id: "all", label: "All", count: counts.all },
@@ -188,9 +212,9 @@ export default function SkusList() {
                   defaultValue={processFilter}
                 >
                   <option value="">All Processes</option>
-                  {processes.map((process) => (
-                    <option key={process} value={process}>
-                      {processDisplayMap[process] || process}
+                  {processOptions.map((process) => (
+                    <option key={process.value} value={process.value}>
+                      {process.label}
                     </option>
                   ))}
                 </select>

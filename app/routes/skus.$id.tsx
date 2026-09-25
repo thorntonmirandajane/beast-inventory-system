@@ -383,6 +383,27 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       return { error: "Name is required" };
     }
 
+    // The process is stored on the SKU as a plain string (`material`), not a
+    // foreign key, and two writers used two conventions for it: this form saved
+    // the internal name ("COMPLETE_PACKS") while the Process Times import saved
+    // the display name ("Complete Packs"). Both are the same process, but they
+    // are different strings — which is why the catalog's process filter listed
+    // every process twice. Resolve whatever arrives to a real ProcessConfig and
+    // always store its canonical processName.
+    let materialValue: string | null = null;
+    if (material && material.trim()) {
+      const configs = await prisma.processConfig.findMany({
+        select: { processName: true, displayName: true },
+      });
+      const match =
+        configs.find((c) => c.processName === material) ??
+        resolveProcessConfig(material, configs);
+      if (!match) {
+        return { error: `"${material}" isn't a known process. Pick one from the list, or add it on Process Times.` };
+      }
+      materialValue = match.processName;
+    }
+
     // NOTE: This handler used to also wipe + recreate BOM components from
     // `components[N][skuId]` form fields, but the Edit SKU form on this
     // page no longer renders those inputs (BOM editing moved to the
@@ -397,8 +418,11 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         name,
         description: description || null,
         isActive,
-        category: category || null,
-        material: material || null,
+        // Category is free text with a datalist of existing values — there is no
+        // Category table, so nothing can be duplicated as a record. Trimming is
+        // what keeps " Aluminum" from becoming a second entry in that list.
+        category: category?.trim() || null,
+        material: materialValue,
         upc: upc || null,
         processOrder: processOrder,
         grain,

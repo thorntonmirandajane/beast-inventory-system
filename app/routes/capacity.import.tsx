@@ -64,10 +64,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: 'Need a "SKU" column and a "Process" column.' };
   }
 
-  type Cfg = { id: string; displayName: string; secondsPerUnit: number };
+  type Cfg = { id: string; processName: string; displayName: string; secondsPerUnit: number };
   let configs: Cfg[] = await prisma.processConfig.findMany({
     where: { isActive: true },
-    select: { id: true, displayName: true, secondsPerUnit: true },
+    select: { id: true, processName: true, displayName: true, secondsPerUnit: true },
   });
 
   // SKU lookup, case-insensitive.
@@ -77,7 +77,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const rows = lines.slice(1).map((l) => parseCsvLine(l));
   const processesCreated: string[] = [];
-  const assignments = new Map<string, string[]>(); // process displayName -> [skuId]
+  const assignments = new Map<string, string[]>(); // canonical processName -> [skuId]
   const unknown: string[] = [];
 
   // 1) Ensure a ProcessConfig exists for every process named in the file.
@@ -100,13 +100,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         secondsPerUnit: inheritSeconds(p, configs),
         isActive: true,
       },
-      select: { id: true, displayName: true, secondsPerUnit: true },
+      select: { id: true, processName: true, displayName: true, secondsPerUnit: true },
     });
     configs.push(newCfg);
     processesCreated.push(`${p} (${newCfg.secondsPerUnit}s, adjust on Process Times)`);
   }
 
-  // 2) Build per-process SKU assignment lists (store the canonical displayName).
+  // 2) Build per-process SKU assignment lists, keyed by the process's canonical
+  //    internal name. This used to store the DISPLAY name while the Edit SKU
+  //    form stored the internal name, so the same process ended up in the data
+  //    as two different strings and the catalog's process filter listed it
+  //    twice. One convention now: always the internal processName.
   for (const r of rows) {
     const code = (r[skuIdx] || "").trim();
     const proc = (r[procIdx] || "").trim();
@@ -117,16 +121,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       continue;
     }
     const cfg = resolveProcessConfig(proc, configs); // always resolves now
-    const display = cfg ? cfg.displayName : proc;
-    const arr = assignments.get(display) ?? [];
+    const key = cfg ? cfg.processName : deriveProcessName(proc);
+    const arr = assignments.get(key) ?? [];
     arr.push(skuId);
-    assignments.set(display, arr);
+    assignments.set(key, arr);
   }
 
-  // 3) Apply: set each SKU's material to its process display name.
+  // 3) Apply: set each SKU's material to its canonical process name.
   let assignedCount = 0;
-  for (const [display, skuIds] of assignments) {
-    await prisma.sku.updateMany({ where: { id: { in: skuIds } }, data: { material: display } });
+  for (const [processName, skuIds] of assignments) {
+    await prisma.sku.updateMany({ where: { id: { in: skuIds } }, data: { material: processName } });
     assignedCount += skuIds.length;
   }
 
