@@ -363,14 +363,80 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // Commit the whole visible week (one-click save of a pre-filled week).
+  // Commit the visible week's pre-filled cells.
+  //
+  // This action is deliberately non-destructive. It used to write every cell the
+  // browser sent, including empty ones, and an empty cell deletes that day — so
+  // one click on a stale grid wiped a week of approved hours. Now an empty cell
+  // is ignored outright, and a cell that would change a day already holding
+  // hours needs explicit confirmation, checked against the DATABASE rather than
+  // against whatever the screen was showing.
   if (intent === "commit-week") {
     let cells: any[] = [];
     try { cells = JSON.parse(String(formData.get("cells") || "[]")); } catch { cells = []; }
+    const confirmed = formData.get("confirmOverwrite") === "1";
+
+    const toWrite = cells.filter((c) => c?.workerId && /^\d{4}-\d{2}-\d{2}$/.test(c?.date || "") && (cellToShifts(c).length > 0 || cellIsOff(c)));
+    const skippedEmpty = cells.length - toWrite.length;
+    if (toWrite.length === 0) {
+      return { error: `Nothing to save — no pre-filled days were submitted.${skippedEmpty ? ` ${skippedEmpty} empty cell(s) ignored (they would have cleared saved days).` : ""}` };
+    }
+
+    // What do these days hold right now?
+    const dates = [...new Set(toWrite.map((c) => c.date as string))].sort();
+    const lo = dateAtNoon(dates[0]); lo.setHours(0, 0, 0, 0);
+    const hi = dateAtNoon(dates[dates.length - 1]); hi.setHours(23, 59, 59, 999);
+    const existingRows = await prisma.workerSchedule.findMany({
+      where: { userId: { in: [...new Set(toWrite.map((c) => c.workerId as string))] }, scheduleType: "SPECIFIC_DATE", isActive: true, scheduleDate: { gte: lo, lte: hi } },
+      select: { userId: true, scheduleDate: true, startTime: true, endTime: true },
+    });
+    const existing = new Map<string, Shift[]>();
+    for (const r of existingRows) if (r.scheduleDate) {
+      const k = `${r.userId}|${ymd(r.scheduleDate)}`;
+      const a = existing.get(k) ?? [];
+      a.push({ start: r.startTime, end: r.endTime });
+      existing.set(k, a);
+    }
+    const existingOff = new Set(
+      (await prisma.scheduleDayOff.findMany({ where: { date: { gte: lo, lte: hi } }, select: { userId: true, date: true } }))
+        .map((r) => `${r.userId}|${ymd(r.date)}`)
+    );
+
+    const conflicts: { workerId: string; date: string; current: string; incoming: string }[] = [];
+    for (const c of toWrite) {
+      const k = `${c.workerId}|${c.date}`;
+      const cur = existing.get(k) ?? [];
+      const hadData = cur.length > 0 || existingOff.has(k);
+      if (!hadData) continue;
+      const currentLabel = cur.length ? shiftsLabel(sortShifts(cur)) : "Off";
+      const incomingLabel = cellIsOff(c) ? "Off" : shiftsLabel(sortShifts(cellToShifts(c)));
+      if (currentLabel !== incomingLabel) {
+        conflicts.push({ workerId: c.workerId, date: c.date, current: currentLabel, incoming: incomingLabel });
+      }
+    }
+
+    if (conflicts.length > 0 && !confirmed) {
+      const names = await prisma.user.findMany({ where: { id: { in: [...new Set(conflicts.map((c) => c.workerId))] } }, select: { id: true, firstName: true, lastName: true } });
+      const nameById = new Map(names.map((n) => [n.id, `${n.firstName} ${n.lastName}`]));
+      return {
+        needsConfirm: true,
+        conflicts: conflicts.map((c) => ({ ...c, worker: nameById.get(c.workerId) ?? c.workerId })),
+        message: `${conflicts.length} day(s) already have saved hours that differ from what's on screen. Nothing has been changed.`,
+      };
+    }
+
     await prisma.$transaction(async (tx) => {
-      for (const c of cells) await writeDayShifts(c.workerId, c.date, cellToShifts(c), tx, cellIsOff(c));
+      for (const c of toWrite) await writeDayShifts(c.workerId, c.date, cellToShifts(c), tx, cellIsOff(c));
     }, { timeout: 120000, maxWait: 15000 });
-    await createAuditLog(user.id, "COMMIT_SCHEDULE_WEEK", "WorkerSchedule", "week", { days: cells.length });
-    return { success: true, message: `Saved ${cells.length} day(s).` };
+    await createAuditLog(user.id, "COMMIT_SCHEDULE_WEEK", "WorkerSchedule", "week", {
+      days: toWrite.length,
+      overwritten: confirmed ? conflicts.length : 0,
+      skippedEmpty,
+    });
+    return {
+      success: true,
+      message: `Saved ${toWrite.length} day(s).${skippedEmpty ? ` ${skippedEmpty} empty cell(s) ignored.` : ""}${confirmed && conflicts.length ? ` ${conflicts.length} existing day(s) overwritten.` : ""}`,
+    };
   }
 
   if (intent === "approve-schedule-request") {
@@ -997,6 +1063,9 @@ export default function Schedules() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const isSubmitting = navigation.state === "submitting";
+  // True while a week change (or any loader revalidation) is in flight, so the
+  // grid reads as "updating" rather than as an empty week.
+  const loadingWeek = navigation.state === "loading";
 
   const tabCls = (v: string) =>
     `px-4 py-2 font-medium border-b-2 transition-colors ${view === v ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`;
@@ -1023,6 +1092,30 @@ export default function Schedules() {
         <p className="page-subtitle">Weekly hours grid — click a day to set start/end. A red "Off" is a day marked off; a dash is a day not set yet.</p>
       </div>
 
+      {actionData && "needsConfirm" in actionData && actionData.needsConfirm && (
+        <div className="alert alert-warning mb-6">
+          <p className="font-semibold mb-1">Nothing was saved.</p>
+          <p className="mb-2">{actionData.message}</p>
+          <div className="overflow-x-auto">
+            <table className="data-table text-sm mb-3">
+              <thead><tr><th>Worker</th><th>Date</th><th>Saved now</th><th>Would become</th></tr></thead>
+              <tbody>
+                {(actionData.conflicts ?? []).map((c: any) => (
+                  <tr key={`${c.workerId}|${c.date}`}>
+                    <td>{c.worker}</td><td>{c.date}</td>
+                    <td className="font-medium">{c.current}</td>
+                    <td>{c.incoming}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-sm">
+            If the grid looks wrong, reload the page before deciding — it may have been showing an older week.
+          </p>
+        </div>
+      )}
+
       {actionData && "error" in actionData && actionData.error && <div className="alert alert-error mb-6">{actionData.error}</div>}
       {actionData && "success" in actionData && actionData.success && <div className="alert alert-success mb-6">{actionData.message}</div>}
       {justApproved && view === "week" && <div className="alert alert-success mb-6">Request approved — showing the approved week ({weekTitle}) below.</div>}
@@ -1039,7 +1132,27 @@ export default function Schedules() {
       {view === "week" && (
         <>
           <WeekNav weekStartYmd={weekStartYmd} weekTitle={weekTitle} prevWeek={prevWeek} nextWeek={nextWeek} />
-          <WeeklyGrid gridWorkers={gridWorkers} days={days} timeOffByCell={timeOffByCell} actualByWorker={actualByWorker} weekStartYmd={weekStartYmd} meOnSchedule={meOnSchedule} />
+          {loadingWeek && (
+            <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
+              <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              Loading week…
+            </div>
+          )}
+          <div style={loadingWeek ? { opacity: 0.45, pointerEvents: "none", transition: "opacity .15s" } : undefined}>
+            {/* key={weekStartYmd}: the grid holds the week's cells in local state,
+                so it must remount when the week changes — otherwise it keeps
+                showing (and would commit) the previous week's values. */}
+            <WeeklyGrid
+              key={weekStartYmd}
+              gridWorkers={gridWorkers}
+              days={days}
+              timeOffByCell={timeOffByCell}
+              actualByWorker={actualByWorker}
+              weekStartYmd={weekStartYmd}
+              meOnSchedule={meOnSchedule}
+              needsConfirm={!!(actionData && "needsConfirm" in actionData && actionData.needsConfirm)}
+            />
+          </div>
         </>
       )}
 
@@ -1313,7 +1426,7 @@ function MiniWeekCalendar({ selectedWeekStart, onClose }: { selectedWeekStart: s
   );
 }
 
-function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStartYmd, meOnSchedule }: any) {
+function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStartYmd, meOnSchedule, needsConfirm }: any) {
   const key = (w: string, d: string) => `${w}|${d}`;
   const [cells, setCells] = useState<Record<string, { shifts: any[]; value: string; hours: number; off: boolean }>>(() => {
     const o: Record<string, { shifts: any[]; value: string; hours: number; off: boolean }> = {};
@@ -1351,18 +1464,69 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
   const dayTotal = (di: number) => gridWorkers.reduce((t: number, w: any) => t + (cells[key(w.id, days[di].ymd)]?.hours || 0), 0);
   const rowTotal = (w: any) => days.reduce((t: number, d: any) => t + (cells[key(w.id, d.ymd)]?.hours || 0), 0);
   const grand = days.reduce((t: number, _d: any, di: number) => t + dayTotal(di), 0);
-  const commitCells = gridWorkers.flatMap((w: any) => w.cells.map((c: any) => ({ workerId: w.id, date: c.date, shifts: cells[key(w.id, c.date)]?.shifts || [], off: !!cells[key(w.id, c.date)]?.off })));
+  // Only the amber, not-yet-saved cells are committed. Sending every cell is
+  // what let one click on a stale grid clear a week of approved hours: a cell
+  // the browser happened to be showing as empty was written as "no shifts",
+  // which deleted that day.
+  const commitCells = gridWorkers.flatMap((w: any) =>
+    w.cells
+      .filter((c: any) => {
+        const k = key(w.id, c.date);
+        const cell = cells[k];
+        if (!cell || savedKeys.has(k)) return false;
+        return cell.hours > 0 || cell.off;
+      })
+      .map((c: any) => {
+        const cell = cells[key(w.id, c.date)];
+        return { workerId: w.id, date: c.date, shifts: cell.shifts || [], off: !!cell.off };
+      })
+  );
   const hcell = "px-3 py-3.5 whitespace-nowrap";
 
   return (
     <div className="card mx-1 md:mx-4">
       <div className="card-body p-5 md:p-7">
         <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
-          <Form method="post">
+          <Form
+            method="post"
+            onSubmit={(e) => {
+              if (commitCells.length === 0) {
+                e.preventDefault();
+                alert("Nothing to save — no pre-filled (amber) days on this week. Days already saved are left alone.");
+                return;
+              }
+              const preview = commitCells
+                .slice(0, 8)
+                .map((c: any) => `• ${gridWorkers.find((w: any) => w.id === c.workerId)?.name ?? c.workerId} ${c.date}: ${c.off ? "Off" : shiftsLabel(c.shifts)}`)
+                .join("\n");
+              const more = commitCells.length > 8 ? `\n…and ${commitCells.length - 8} more` : "";
+              if (!confirm(`Save ${commitCells.length} pre-filled day(s)?\n\n${preview}${more}\n\nDays already saved are not touched.`)) {
+                e.preventDefault();
+              }
+            }}
+          >
             <input type="hidden" name="intent" value="commit-week" />
             <input type="hidden" name="cells" value={JSON.stringify(commitCells)} />
-            <button className="btn btn-secondary btn-sm" type="submit">Save week (commit pre-filled)</button>
+            <button className="btn btn-secondary btn-sm" type="submit">
+              Save week ({commitCells.length} pre-filled)
+            </button>
           </Form>
+
+          {/* Shown only after the server refused a save that would change days
+              already holding hours. Overwriting stays a separate, deliberate act. */}
+          {needsConfirm && commitCells.length > 0 && (
+            <Form
+              method="post"
+              onSubmit={(e) => {
+                if (!confirm("Overwrite the saved hours listed above? This replaces real data and can't be undone from here.")) e.preventDefault();
+              }}
+            >
+              <input type="hidden" name="intent" value="commit-week" />
+              <input type="hidden" name="cells" value={JSON.stringify(commitCells)} />
+              <input type="hidden" name="confirmOverwrite" value="1" />
+              <button className="btn btn-danger btn-sm" type="submit">Overwrite anyway</button>
+            </Form>
+          )}
           <div className="flex items-center gap-4 flex-wrap">
             {/* Shift-working admins (showOnSchedule) submit their own hours here —
                 they're routed into the admin UI and never see My Schedule. */}
