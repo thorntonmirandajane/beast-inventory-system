@@ -1,9 +1,10 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, useNavigation, redirect, useFetcher, useSubmit } from "react-router";
-import { requireUser, createAuditLog } from "../utils/auth.server";
+import { requireUser } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
-import { useState } from "react";
+import { resolveTodaysEntry, describeSubmitFailure } from "../utils/submit-tasks.server";
+import { useRef, useState } from "react";
 
 interface PendingTask {
   id: string; // Client-side temp ID
@@ -15,6 +16,13 @@ interface PendingTask {
   isMisc: boolean;
   miscDescription: string | null;
   secondsPerUnit: number;
+}
+
+/** crypto.randomUUID isn't available on older/insecure-context browsers. */
+function newId(): string {
+  const c = typeof crypto !== "undefined" ? crypto : undefined;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -94,99 +102,121 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (intent === "submit-tasks") {
     const tasksJson = formData.get("tasks") as string;
+    const submissionId = String(formData.get("submissionId") || "").slice(0, 64);
 
     if (!tasksJson) {
       return { error: "No tasks to submit" };
     }
 
-    const tasks: PendingTask[] = JSON.parse(tasksJson);
-
-    if (tasks.length === 0) {
+    let tasks: PendingTask[];
+    try {
+      tasks = JSON.parse(tasksJson);
+    } catch {
+      return { error: "Your task list couldn't be read. Add the tasks again and resubmit." };
+    }
+    if (!Array.isArray(tasks) || tasks.length === 0) {
       return { error: "No tasks to submit" };
     }
 
-    // Find or create today's time entry
-    // Workers can now submit tasks without being clocked in
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    // Try to find today's clock-in event first
-    const clockInEvent = await prisma.clockEvent.findFirst({
-      where: {
-        userId: user.id,
-        type: "CLOCK_IN",
-        timestamp: { gte: today, lt: tomorrow },
-      },
-      orderBy: { timestamp: "desc" },
-    });
-
-    let timeEntry;
-
-    if (clockInEvent) {
-      // If there's a clock-in today, use/create time entry linked to it
-      timeEntry = await prisma.workerTimeEntry.findUnique({
-        where: { clockInEventId: clockInEvent.id },
-      });
-
-      if (!timeEntry) {
-        timeEntry = await prisma.workerTimeEntry.create({
-          data: {
-            userId: user.id,
-            clockInEventId: clockInEvent.id,
-            clockInTime: clockInEvent.timestamp,
-            status: "DRAFT",
-          },
-        });
+    // Validate here rather than letting a bad value reach the database, where
+    // it used to surface as an unexplained "Something went wrong".
+    for (const [i, t] of tasks.entries()) {
+      const where = `Task ${i + 1}${t?.processDisplayName ? ` (${t.processDisplayName})` : ""}`;
+      if (!t?.processName) return { error: `${where}: no process selected.` };
+      if (!Number.isInteger(t.quantity) || t.quantity <= 0) {
+        return { error: `${where}: quantity must be a whole number greater than 0.` };
       }
-    } else {
-      // No clock-in today - create a synthetic clock event for task submission
-      // This is required since clockInEventId is a required field
-      const syntheticClockIn = await prisma.clockEvent.create({
-        data: {
-          userId: user.id,
-          type: "CLOCK_IN",
-          timestamp: new Date(),
-          notes: "Auto-created for task submission",
-        },
-      });
-
-      // Now create time entry linked to the synthetic clock event
-      timeEntry = await prisma.workerTimeEntry.create({
-        data: {
-          userId: user.id,
-          clockInEventId: syntheticClockIn.id,
-          clockInTime: syntheticClockIn.timestamp,
-          status: "DRAFT",
-        },
-      });
+      if (!Number.isFinite(t.secondsPerUnit) || t.secondsPerUnit <= 0) {
+        return { error: `${where}: that process has no time-per-unit set. Ask a manager to set it on Process Times.` };
+      }
+      if (!t.isMisc && !t.skuId) return { error: `${where}: no SKU selected.` };
+      if (t.isMisc && !t.miscDescription?.trim()) return { error: `${where}: misc work needs a description.` };
     }
 
-    // Create all TimeEntryLine records
-    for (const task of tasks) {
-      await prisma.timeEntryLine.create({
-        data: {
-          timeEntryId: timeEntry.id,
-          processName: task.processName,
-          skuId: task.isMisc ? null : task.skuId,
-          quantityCompleted: task.quantity,
-          secondsPerUnit: task.secondsPerUnit,
-          expectedSeconds: task.quantity * task.secondsPerUnit,
-          isMisc: task.isMisc,
-          miscDescription: task.isMisc ? task.miscDescription : null,
-        },
+    try {
+      // Double-tap guard. A second tap sends the same submissionId, so the
+      // duplicate is dropped instead of writing everyone's tasks twice.
+      if (submissionId) {
+        const already = await prisma.auditLog.findFirst({
+          where: { userId: user.id, action: "SUBMIT_TASK_BATCH", resourceId: submissionId },
+          select: { id: true },
+        });
+        if (already) return redirect("/worker-dashboard?submitted=true");
+      }
+
+      const skuIds = [...new Set(tasks.filter((t) => !t.isMisc && t.skuId).map((t) => t.skuId as string))];
+      if (skuIds.length) {
+        const found = await prisma.sku.findMany({ where: { id: { in: skuIds } }, select: { id: true } });
+        if (found.length !== skuIds.length) {
+          return { error: "One of the SKUs you picked no longer exists. Reload the page and add it again." };
+        }
+      }
+
+      const timeEntry = await resolveTodaysEntry(user.id);
+
+      // One transaction: either every line lands with its dedupe marker, or none
+      // does. A half-written batch was how duplicates crept in before.
+      await prisma.$transaction(async (tx) => {
+        // Written FIRST: a partial unique index on this marker is what settles
+        // two taps that arrive together — the loser throws here, before any
+        // line exists, and the whole transaction rolls back.
+        if (submissionId) {
+          await tx.auditLog.create({
+            data: {
+              userId: user.id,
+              action: "SUBMIT_TASK_BATCH",
+              resourceType: "WorkerTimeEntry",
+              resourceId: submissionId,
+              details: { timeEntryId: timeEntry.id, taskCount: tasks.length },
+            },
+          });
+        }
+        for (const task of tasks) {
+          await tx.timeEntryLine.create({
+            data: {
+              timeEntryId: timeEntry.id,
+              processName: task.processName,
+              skuId: task.isMisc ? null : task.skuId,
+              quantityCompleted: task.quantity,
+              secondsPerUnit: task.secondsPerUnit,
+              expectedSeconds: task.quantity * task.secondsPerUnit,
+              isMisc: task.isMisc,
+              miscDescription: task.isMisc ? task.miscDescription : null,
+            },
+          });
+        }
+        for (const task of tasks) {
+          await tx.auditLog.create({
+            data: {
+              userId: user.id,
+              action: "SUBMIT_TASK",
+              resourceType: "TimeEntryLine",
+              resourceId: timeEntry.id,
+              details: {
+                processName: task.processName,
+                skuId: task.skuId,
+                quantity: task.quantity,
+                isMisc: task.isMisc,
+              },
+            },
+          });
+        }
       });
 
-      await createAuditLog(user.id, "SUBMIT_TASK", "TimeEntryLine", timeEntry.id, {
-        processName: task.processName,
-        skuId: task.skuId,
-        quantity: task.quantity,
-        isMisc: task.isMisc,
-      });
+      return redirect("/worker-dashboard?submitted=true");
+    } catch (err) {
+      // Lost the race to an identical batch — the other request saved it.
+      if ((err as { code?: string })?.code === "P2002" && submissionId) {
+        return redirect("/worker-dashboard?submitted=true");
+      }
+      // Log the real reason — the worker only ever saw a generic screen, which
+      // left nothing to diagnose from.
+      console.error(
+        `[submit-task] failed for user=${user.id} tasks=${tasks.length} submissionId=${submissionId || "none"}:`,
+        err instanceof Error ? err.stack || err.message : err
+      );
+      return { error: describeSubmitFailure(err) };
     }
-
-    return redirect("/worker-dashboard?submitted=true");
   }
 
   if (intent === "delete-task") {
@@ -234,6 +264,7 @@ export default function WorkerSubmitTask() {
   const [selectedProcess, setSelectedProcess] = useState("");
   const [selectedSku, setSelectedSku] = useState("");
   const [quantity, setQuantity] = useState<number>(0);
+  const submissionIdRef = useRef<string | null>(null);
   const [miscDescription, setMiscDescription] = useState("");
   const [skuSearchQuery, setSkuSearchQuery] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
@@ -312,7 +343,7 @@ export default function WorkerSubmitTask() {
     const sku = skus.find(s => s.id === selectedSku);
 
     const newTask: PendingTask = {
-      id: crypto.randomUUID(),
+      id: newId(),
       processName: selectedProcess,
       processDisplayName: processConfig?.displayName || selectedProcess,
       skuId: isMiscTask ? null : selectedSku,
@@ -323,6 +354,8 @@ export default function WorkerSubmitTask() {
       secondsPerUnit: processConfig?.secondsPerUnit || 60,
     };
 
+    // A new batch is being built — the previous submission id no longer applies.
+    if (pendingTasks.length === 0) submissionIdRef.current = null;
     setPendingTasks([...pendingTasks, newTask]);
 
     // Reset form
@@ -343,12 +376,18 @@ export default function WorkerSubmitTask() {
     }
     setFormError(null);
 
+    // One id per staged batch, reused if the worker taps again. The server
+    // drops a repeat of the same id, so a double-tap can't post the day's work
+    // twice. Cleared once a fresh batch is started.
+    if (!submissionIdRef.current) submissionIdRef.current = newId();
+
     // Submit through React Router so navigation.state flips to "submitting"
     // (the button disables, preventing the double-submit that the old manual
     // form.submit() allowed) and the action runs without a full page reload.
     const formData = new FormData();
     formData.set("intent", "submit-tasks");
     formData.set("tasks", JSON.stringify(pendingTasks));
+    formData.set("submissionId", submissionIdRef.current);
     submit(formData, { method: "post" });
   };
 

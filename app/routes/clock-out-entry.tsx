@@ -208,7 +208,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     return redirect("/worker-dashboard?submitted=true");
   } catch (error) {
-    return { error: error instanceof Error ? error.message : "Failed to submit" };
+    // Log the real reason; workers were seeing raw Prisma text like
+    // "Unique constraint failed on the fields: (`clockOutEventId`)".
+    console.error(
+      `[clock-out] submit failed for user=${user.id} entry=${timeEntryId} lines=${validLines.length}:`,
+      error instanceof Error ? error.stack || error.message : error
+    );
+    const code = (error as { code?: string })?.code;
+    if (code === "P2002") {
+      return { error: "This clock-out has already been recorded. Check your dashboard before submitting again." };
+    }
+    if (code === "P2003" || code === "P2025") {
+      return { error: "A SKU or process you selected has changed. Reload this page and re-enter your items." };
+    }
+    const message = error instanceof Error ? error.message.split("\n")[0].slice(0, 160) : "Failed to submit";
+    return { error: `Couldn't submit: ${message}. Tell a manager if it keeps happening.` };
   }
 };
 
