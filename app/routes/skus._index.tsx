@@ -140,7 +140,7 @@ export default function SkusList() {
           <h1 className="page-title">SKU Catalog</h1>
           <p className="page-subtitle">Browse all products and components</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap w-full sm:w-auto">
           <Link to="/skus/print" className="btn btn-secondary">
             Print Barcodes
           </Link>
@@ -266,105 +266,107 @@ export default function SkusList() {
             </div>
           </div>
         ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Order</th>
-                <th>SKU</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Process</th>
-                <th>Category</th>
-                <th className="text-right">Grain</th>
-                <th className="text-right">Diameter</th>
-                <th className="text-right">Inventory</th>
-                <th className="text-right">Components</th>
-                <th className="text-right">Used In</th>
-              </tr>
-            </thead>
-            <tbody>
-              {skus.map((sku) => (
-                <tr key={sku.id}>
-                  <td>
-                    <span className="text-gray-600 font-mono text-sm">
-                      {sku.processOrder ?? "—"}
-                    </span>
-                  </td>
-                  <td>
-                    <Link
-                      to={`/skus/${sku.id}`}
-                      className="font-mono text-sm text-blue-600 hover:underline"
-                    >
-                      {sku.sku}
-                    </Link>
-                  </td>
-                  <td className="max-w-xs truncate">{sku.name}</td>
-                  <td>
-                    <span className={`badge ${getTypeColor(sku.type)}`}>
-                      {sku.type}
-                    </span>
-                  </td>
-                  <td>
-                    {sku.material ? (
-                      <span className="badge bg-yellow-100 text-yellow-800 text-xs">
-                        {processDisplayMap[sku.material] || sku.material}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td>
-                    {sku.category ? (
-                      <span className="badge bg-purple-100 text-purple-800 text-xs">
-                        {sku.category.replaceAll("_", " ")}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td className="text-right">
-                    {sku.grain != null ? (
-                      <span className="font-mono text-sm">{sku.grain}g</span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td className="text-right">
-                    {sku.diameter != null ? (
-                      <span className="font-mono text-sm">{sku.diameter.toFixed(1)}″</span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td className="text-right">
-                    <span
-                      className={
-                        sku.totalInventory > 0
-                          ? "font-semibold text-green-600"
-                          : "text-gray-400"
-                      }
-                    >
-                      {sku.totalInventory}
-                    </span>
-                  </td>
-                  <td className="text-right">
-                    {sku.componentCount > 0 ? (
-                      <span className="text-blue-600">{sku.componentCount}</span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td className="text-right">
-                    {sku.usedInCount > 0 ? (
-                      <span className="text-blue-600">{sku.usedInCount}</span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Order</th>
+                  <th>SKU</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Process</th>
+                  <th>Category</th>
+                  <th className="text-right">Grain</th>
+                  <th className="text-right">Diameter</th>
+                  <th className="text-right">Inventory</th>
+                  <th className="text-right">Components</th>
+                  <th className="text-right">Used In</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {skus.map((sku) => (
+                  <tr key={sku.id}>
+                    <td>
+                      <span className="text-gray-600 font-mono text-sm">
+                        {sku.processOrder ?? "—"}
+                      </span>
+                    </td>
+                    <td>
+                      <Link
+                        to={`/skus/${sku.id}`}
+                        className="font-mono text-sm text-blue-600 hover:underline"
+                      >
+                        {sku.sku}
+                      </Link>
+                    </td>
+                    <td className="max-w-xs truncate">{sku.name}</td>
+                    <td>
+                      <span className={`badge ${getTypeColor(sku.type)}`}>
+                        {sku.type}
+                      </span>
+                    </td>
+                    <td>
+                      {sku.material ? (
+                        <span className="badge bg-yellow-100 text-yellow-800 text-xs">
+                          {processDisplayMap[sku.material] || sku.material}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td>
+                      {sku.category ? (
+                        <span className="badge bg-purple-100 text-purple-800 text-xs">
+                          {sku.category.replaceAll("_", " ")}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="text-right">
+                      {sku.grain != null ? (
+                        <span className="font-mono text-sm">{sku.grain}g</span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="text-right">
+                      {sku.diameter != null ? (
+                        <span className="font-mono text-sm">{sku.diameter.toFixed(1)}″</span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="text-right">
+                      <span
+                        className={
+                          sku.totalInventory > 0
+                            ? "font-semibold text-green-600"
+                            : "text-gray-400"
+                        }
+                      >
+                        {sku.totalInventory}
+                      </span>
+                    </td>
+                    <td className="text-right">
+                      {sku.componentCount > 0 ? (
+                        <span className="text-blue-600">{sku.componentCount}</span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td className="text-right">
+                      {sku.usedInCount > 0 ? (
+                        <span className="text-blue-600">{sku.usedInCount}</span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </Layout>

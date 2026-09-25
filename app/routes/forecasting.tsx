@@ -875,47 +875,49 @@ function ForecastRow({
                     Assembled SKUs required for this product
                     {item.needToBuild > 0 && ` (to build ${item.needToBuild} units)`}
                   </p>
-                  <table className="data-table-sm">
-                    <thead>
-                      <tr>
-                        <th>Assembly SKU</th>
-                        <th>Name</th>
-                        <th className="text-right">Per Unit</th>
-                        {item.needToBuild > 0 && (
-                          <>
-                            <th className="text-right">Total Needed</th>
-                            <th className="text-right">Available</th>
-                            <th className="text-right">Shortfall</th>
-                          </>
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {item.assemblySkusNeeded.map((assembly) => {
-                        const shortfall = Math.max(0, assembly.totalNeeded - assembly.available);
-                        return (
-                          <tr key={assembly.skuId}>
-                            <td className="font-mono text-sm">{assembly.sku}</td>
-                            <td>{assembly.name}</td>
-                            <td className="text-right text-gray-600">{assembly.qtyPerUnit}</td>
-                            {item.needToBuild > 0 && (
-                              <>
-                                <td className="text-right font-semibold">{assembly.totalNeeded}</td>
-                                <td className="text-right text-green-600">{assembly.available}</td>
-                                <td className="text-right">
-                                  {shortfall > 0 ? (
-                                    <span className="font-bold text-orange-600">{shortfall}</span>
-                                  ) : (
-                                    <span className="text-green-600">✓</span>
-                                  )}
-                                </td>
-                              </>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  <div className="overflow-x-auto">
+                    <table className="data-table-sm">
+                      <thead>
+                        <tr>
+                          <th>Assembly SKU</th>
+                          <th>Name</th>
+                          <th className="text-right">Per Unit</th>
+                          {item.needToBuild > 0 && (
+                            <>
+                              <th className="text-right">Total Needed</th>
+                              <th className="text-right">Available</th>
+                              <th className="text-right">Shortfall</th>
+                            </>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {item.assemblySkusNeeded.map((assembly) => {
+                          const shortfall = Math.max(0, assembly.totalNeeded - assembly.available);
+                          return (
+                            <tr key={assembly.skuId}>
+                              <td className="font-mono text-sm">{assembly.sku}</td>
+                              <td>{assembly.name}</td>
+                              <td className="text-right text-gray-600">{assembly.qtyPerUnit}</td>
+                              {item.needToBuild > 0 && (
+                                <>
+                                  <td className="text-right font-semibold">{assembly.totalNeeded}</td>
+                                  <td className="text-right text-green-600">{assembly.available}</td>
+                                  <td className="text-right">
+                                    {shortfall > 0 ? (
+                                      <span className="font-bold text-orange-600">{shortfall}</span>
+                                    ) : (
+                                      <span className="text-green-600">✓</span>
+                                    )}
+                                  </td>
+                                </>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                   <p className="text-xs text-gray-500 mt-2">
                     Note: Raw materials below are only calculated for assemblies that need to be built (shortfall)
                   </p>
@@ -930,36 +932,38 @@ function ForecastRow({
                     Raw materials consumed in production
                     {item.needToBuild > 0 && ` (to build ${item.needToBuild} units)`}
                   </p>
-                  <table className="data-table-sm">
-                    <thead>
-                      <tr>
-                        <th>Raw Material SKU</th>
-                        <th>Name</th>
-                        {item.needToBuild > 0 && (
-                          <>
-                            <th className="text-right">Needed</th>
-                            <th className="text-right">Available</th>
-                          </>
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {item.rawMaterialsNeeded.map((raw) => {
-                        return (
-                          <tr key={raw.skuId}>
-                            <td className="font-mono text-sm">{raw.sku}</td>
-                            <td>{raw.name}</td>
-                            {item.needToBuild > 0 && (
-                              <>
-                                <td className="text-right font-semibold">{raw.needed}</td>
-                                <td className="text-right">{raw.available}</td>
-                              </>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                  <div className="overflow-x-auto">
+                    <table className="data-table-sm">
+                      <thead>
+                        <tr>
+                          <th>Raw Material SKU</th>
+                          <th>Name</th>
+                          {item.needToBuild > 0 && (
+                            <>
+                              <th className="text-right">Needed</th>
+                              <th className="text-right">Available</th>
+                            </>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {item.rawMaterialsNeeded.map((raw) => {
+                          return (
+                            <tr key={raw.skuId}>
+                              <td className="font-mono text-sm">{raw.sku}</td>
+                              <td>{raw.name}</td>
+                              {item.needToBuild > 0 && (
+                                <>
+                                  <td className="text-right font-semibold">{raw.needed}</td>
+                                  <td className="text-right">{raw.available}</td>
+                                </>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
 
@@ -973,24 +977,26 @@ function ForecastRow({
               {item.needToBuild > 0 && Object.keys(item.processTotals).length > 0 && (
                 <div>
                   <h4 className="font-semibold mb-3 text-gray-900">Process Time Required</h4>
-                  <table className="data-table-sm">
-                    <thead>
-                      <tr>
-                        <th>Process</th>
-                        <th className="text-right">Units</th>
-                        <th className="text-right">Hours</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Object.entries(item.processTotals).map(([process, totals]) => (
-                        <tr key={process}>
-                          <td>{process}</td>
-                          <td className="text-right">{totals.units}</td>
-                          <td className="text-right">{(totals.seconds / 3600).toFixed(1)}h</td>
+                  <div className="overflow-x-auto">
+                    <table className="data-table-sm">
+                      <thead>
+                        <tr>
+                          <th>Process</th>
+                          <th className="text-right">Units</th>
+                          <th className="text-right">Hours</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {Object.entries(item.processTotals).map(([process, totals]) => (
+                          <tr key={process}>
+                            <td>{process}</td>
+                            <td className="text-right">{totals.units}</td>
+                            <td className="text-right">{(totals.seconds / 3600).toFixed(1)}h</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
@@ -1258,29 +1264,31 @@ function ForecastView({ user, data }: { user: ForecastUser; data: ForecastLiveDa
         <div className="card-body">
           <Form method="post">
             <input type="hidden" name="intent" value="bulk-update-forecasts" />
-            <table className="data-table">
-            <thead>
-              <tr>
-                <th className="w-12"></th>
-                <th>SKU</th>
-                <th>Product Name</th>
-                <th className="text-right">Current Completed</th>
-                <th className="text-right">Current in Gallatin</th>
-                <th className="text-right" title="Open Shopify orders, unfulfilled qty">Unfulfilled</th>
-                <th className="text-right" title="Queued orders scheduled in the selected date range">Programmed</th>
-                <th className="text-right">Forecasted Demand</th>
-                <th className="text-right">Need to Build</th>
-                <th>Status</th>
-                <th className="text-center">Raw Materials</th>
-                <th className="text-right">Build Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {forecastData.map((item) => {
-                return <ForecastRow key={item.skuId} item={item} expandedSku={expandedSku} setExpandedSku={setExpandedSku} />;
-              })}
-            </tbody>
-          </table>
+            <div className="overflow-x-auto">
+              <table className="data-table">
+              <thead>
+                <tr>
+                  <th className="w-12"></th>
+                  <th>SKU</th>
+                  <th>Product Name</th>
+                  <th className="text-right">Current Completed</th>
+                  <th className="text-right">Current in Gallatin</th>
+                  <th className="text-right" title="Open Shopify orders, unfulfilled qty">Unfulfilled</th>
+                  <th className="text-right" title="Queued orders scheduled in the selected date range">Programmed</th>
+                  <th className="text-right">Forecasted Demand</th>
+                  <th className="text-right">Need to Build</th>
+                  <th>Status</th>
+                  <th className="text-center">Raw Materials</th>
+                  <th className="text-right">Build Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {forecastData.map((item) => {
+                  return <ForecastRow key={item.skuId} item={item} expandedSku={expandedSku} setExpandedSku={setExpandedSku} />;
+                })}
+              </tbody>
+            </table>
+            </div>
           <div className="mt-4 pt-4 border-t flex justify-end">
             <button type="submit" className="btn btn-primary" disabled={isSubmitting}>
               {isSubmitting ? "Saving..." : "Save Changes"}
@@ -1482,24 +1490,26 @@ function ForecastView({ user, data }: { user: ForecastUser; data: ForecastLiveDa
             {Object.keys(totalProcessRequirements).length > 0 && (
               <div className="mt-4">
                 <h4 className="font-semibold mb-2 text-sm">By Process</h4>
-                <table className="data-table-sm">
-                  <thead>
-                    <tr>
-                      <th>Process</th>
-                      <th className="text-right">Units</th>
-                      <th className="text-right">Hours</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(totalProcessRequirements).map(([process, totals]) => (
-                      <tr key={process}>
-                        <td>{process}</td>
-                        <td className="text-right">{totals.units}</td>
-                        <td className="text-right">{totals.hours.toFixed(1)}h</td>
+                <div className="overflow-x-auto">
+                  <table className="data-table-sm">
+                    <thead>
+                      <tr>
+                        <th>Process</th>
+                        <th className="text-right">Units</th>
+                        <th className="text-right">Hours</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {Object.entries(totalProcessRequirements).map(([process, totals]) => (
+                        <tr key={process}>
+                          <td>{process}</td>
+                          <td className="text-right">{totals.units}</td>
+                          <td className="text-right">{totals.hours.toFixed(1)}h</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
@@ -1517,33 +1527,35 @@ function ForecastView({ user, data }: { user: ForecastUser; data: ForecastLiveDa
                 <p className="text-gray-600">All raw materials sufficient</p>
               </div>
             ) : (
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Raw Material SKU</th>
-                    <th>Name</th>
-                    <th className="text-right">Available</th>
-                    <th className="text-right">Shortfall</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {allRawMaterialShortages.map((shortage) => (
-                    <tr key={shortage.skuId}>
-                      <td className="font-mono text-sm">{shortage.sku}</td>
-                      <td className="text-sm">
-                        {shortage.name}
-                        <div className="text-xs text-gray-500 mt-1">
-                          Used in: {shortage.forSkus.join(", ")}
-                        </div>
-                      </td>
-                      <td className="text-right">{shortage.available}</td>
-                      <td className="text-right">
-                        <span className="font-bold text-red-600">-{shortage.shortfall}</span>
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Raw Material SKU</th>
+                      <th>Name</th>
+                      <th className="text-right">Available</th>
+                      <th className="text-right">Shortfall</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {allRawMaterialShortages.map((shortage) => (
+                      <tr key={shortage.skuId}>
+                        <td className="font-mono text-sm">{shortage.sku}</td>
+                        <td className="text-sm">
+                          {shortage.name}
+                          <div className="text-xs text-gray-500 mt-1">
+                            Used in: {shortage.forSkus.join(", ")}
+                          </div>
+                        </td>
+                        <td className="text-right">{shortage.available}</td>
+                        <td className="text-right">
+                          <span className="font-bold text-red-600">-{shortage.shortfall}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>
@@ -1630,34 +1642,36 @@ function RawMaterialsTab({
                     <tr>
                       <td colSpan={7} className="bg-gray-50 p-4">
                         <div className="text-sm font-medium mb-2">Demand for {r.sku} by product</div>
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="text-left border-b text-gray-500">
-                              <th className="py-1 pr-4">Product</th>
-                              <th className="py-1 pr-4 text-right">Needs</th>
-                              <th className="py-1 pr-4 text-right">Got from stock</th>
-                              <th className="py-1 pr-4 text-right">Short</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {r.breakdown.map((b, i) => (
-                              <tr key={i} className="border-b last:border-0">
-                                <td className="py-1 pr-4 font-mono">{b.sku}</td>
-                                <td className="py-1 pr-4 text-right">{b.needed.toLocaleString()}</td>
-                                <td className="py-1 pr-4 text-right text-green-700">{b.allocated.toLocaleString()}</td>
-                                <td className="py-1 pr-4 text-right">
-                                  {b.needed - b.allocated > 0 ? <span className="text-red-600">-{(b.needed - b.allocated).toLocaleString()}</span> : "0"}
-                                </td>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left border-b text-gray-500">
+                                <th className="py-1 pr-4">Product</th>
+                                <th className="py-1 pr-4 text-right">Needs</th>
+                                <th className="py-1 pr-4 text-right">Got from stock</th>
+                                <th className="py-1 pr-4 text-right">Short</th>
                               </tr>
-                            ))}
-                            <tr className="font-semibold border-t-2">
-                              <td className="py-1 pr-4">Total</td>
-                              <td className="py-1 pr-4 text-right">{r.needed.toLocaleString()}</td>
-                              <td className="py-1 pr-4 text-right text-green-700">{totalAllocated.toLocaleString()}</td>
-                              <td className="py-1 pr-4 text-right">{r.short > 0 ? <span className="text-red-600">-{r.short.toLocaleString()}</span> : "0"}</td>
-                            </tr>
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody>
+                              {r.breakdown.map((b, i) => (
+                                <tr key={i} className="border-b last:border-0">
+                                  <td className="py-1 pr-4 font-mono">{b.sku}</td>
+                                  <td className="py-1 pr-4 text-right">{b.needed.toLocaleString()}</td>
+                                  <td className="py-1 pr-4 text-right text-green-700">{b.allocated.toLocaleString()}</td>
+                                  <td className="py-1 pr-4 text-right">
+                                    {b.needed - b.allocated > 0 ? <span className="text-red-600">-{(b.needed - b.allocated).toLocaleString()}</span> : "0"}
+                                  </td>
+                                </tr>
+                              ))}
+                              <tr className="font-semibold border-t-2">
+                                <td className="py-1 pr-4">Total</td>
+                                <td className="py-1 pr-4 text-right">{r.needed.toLocaleString()}</td>
+                                <td className="py-1 pr-4 text-right text-green-700">{totalAllocated.toLocaleString()}</td>
+                                <td className="py-1 pr-4 text-right">{r.short > 0 ? <span className="text-red-600">-{r.short.toLocaleString()}</span> : "0"}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
                         <p className="text-xs text-gray-500 mt-2">
                           "Got from stock" is each product's allocated share of the {r.available.toLocaleString()} on hand.
                           The total ({totalAllocated.toLocaleString()}) never exceeds on hand — that's the shared-pool fix.
@@ -1783,34 +1797,36 @@ function UnfulfilledTab({
                     <tr>
                       <td colSpan={6} className="bg-gray-50 p-0">
                         <div className="p-4">
-                          <table className="w-full text-sm">
-                            <thead>
-                              <tr className="text-left text-gray-600">
-                                <th className="pb-2">Store</th>
-                                <th className="pb-2">Order</th>
-                                <th className="pb-2">Title</th>
-                                <th className="pb-2">Created</th>
-                                <th className="pb-2 text-right">Qty unfulfilled</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {skuItems.map((li, idx) => (
-                                <tr key={`${li.source}-${li.orderId}-${idx}`} className="border-t border-gray-200">
-                                  <td className="py-2">
-                                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${li.source === "beast" ? "bg-purple-100 text-purple-700" : "bg-emerald-100 text-emerald-700"}`}>
-                                      {li.source === "beast" ? "Beast" : "Archery"}
-                                    </span>
-                                  </td>
-                                  <td className="py-2 font-mono">{li.orderName}</td>
-                                  <td className="py-2">{li.title}</td>
-                                  <td className="py-2">
-                                    {new Date(li.orderCreatedAt).toLocaleDateString()}
-                                  </td>
-                                  <td className="py-2 text-right">{li.quantity}</td>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="text-left text-gray-600">
+                                  <th className="pb-2">Store</th>
+                                  <th className="pb-2">Order</th>
+                                  <th className="pb-2">Title</th>
+                                  <th className="pb-2">Created</th>
+                                  <th className="pb-2 text-right">Qty unfulfilled</th>
                                 </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                              </thead>
+                              <tbody>
+                                {skuItems.map((li, idx) => (
+                                  <tr key={`${li.source}-${li.orderId}-${idx}`} className="border-t border-gray-200">
+                                    <td className="py-2">
+                                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${li.source === "beast" ? "bg-purple-100 text-purple-700" : "bg-emerald-100 text-emerald-700"}`}>
+                                        {li.source === "beast" ? "Beast" : "Archery"}
+                                      </span>
+                                    </td>
+                                    <td className="py-2 font-mono">{li.orderName}</td>
+                                    <td className="py-2">{li.title}</td>
+                                    <td className="py-2">
+                                      {new Date(li.orderCreatedAt).toLocaleDateString()}
+                                    </td>
+                                    <td className="py-2 text-right">{li.quantity}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -1919,47 +1935,49 @@ function ProgrammedOrdersTab({
                       <tr>
                         <td colSpan={4} className="bg-gray-50 p-0">
                           <div className="p-4">
-                            <table className="w-full text-sm">
-                              <thead>
-                                <tr className="text-left text-gray-600">
-                                  <th className="pb-2">Customer</th>
-                                  <th className="pb-2">PO #</th>
-                                  <th className="pb-2">Scheduled</th>
-                                  <th className="pb-2 text-right">Qty</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {ordersWithSku.map((o) => {
-                                  const qty = o.lineItems
-                                    .filter((li) => (li.sku || "(no SKU)") === row.sku)
-                                    .reduce((s, li) => s + li.quantity, 0);
-                                  return (
-                                    <tr key={o.id} className="border-t border-gray-200">
-                                      <td className="py-2">
-                                        {o.customerName}
-                                        {o.companyName && (
-                                          <span className="text-xs text-gray-500 ml-1">
-                                            ({o.companyName})
-                                          </span>
-                                        )}
-                                        {o.holdAutoConvert && (
-                                          <span className="ml-1 badge bg-yellow-100 text-yellow-800 text-xs">
-                                            Hold
-                                          </span>
-                                        )}
-                                      </td>
-                                      <td className="py-2 font-mono text-xs">
-                                        {o.poNumber || "—"}
-                                      </td>
-                                      <td className="py-2">
-                                        {new Date(o.scheduledDate).toLocaleDateString()}
-                                      </td>
-                                      <td className="py-2 text-right">{qty}</td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="text-left text-gray-600">
+                                    <th className="pb-2">Customer</th>
+                                    <th className="pb-2">PO #</th>
+                                    <th className="pb-2">Scheduled</th>
+                                    <th className="pb-2 text-right">Qty</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {ordersWithSku.map((o) => {
+                                    const qty = o.lineItems
+                                      .filter((li) => (li.sku || "(no SKU)") === row.sku)
+                                      .reduce((s, li) => s + li.quantity, 0);
+                                    return (
+                                      <tr key={o.id} className="border-t border-gray-200">
+                                        <td className="py-2">
+                                          {o.customerName}
+                                          {o.companyName && (
+                                            <span className="text-xs text-gray-500 ml-1">
+                                              ({o.companyName})
+                                            </span>
+                                          )}
+                                          {o.holdAutoConvert && (
+                                            <span className="ml-1 badge bg-yellow-100 text-yellow-800 text-xs">
+                                              Hold
+                                            </span>
+                                          )}
+                                        </td>
+                                        <td className="py-2 font-mono text-xs">
+                                          {o.poNumber || "—"}
+                                        </td>
+                                        <td className="py-2">
+                                          {new Date(o.scheduledDate).toLocaleDateString()}
+                                        </td>
+                                        <td className="py-2 text-right">{qty}</td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
                           </div>
                         </td>
                       </tr>

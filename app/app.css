@@ -633,11 +633,32 @@ body {
     @apply min-h-[44px];
   }
 
-  /* Disable hover effects on touch devices */
+  /* Form controls need a real tap target too, not just buttons. 44px is the
+     Apple/Material minimum; below that they're a miss-tap on a shop tablet. */
+  .form-input,
+  .form-select,
+  .form-textarea {
+    @apply min-h-[44px];
+  }
+
+  /* Icon-only buttons in tables and toolbars carry no padding of their own. */
+  .main-content button:not(.btn):not([class*="h-"]):not([class*="aspect"]) {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  .main-content input[type="checkbox"],
+  .main-content input[type="radio"] {
+    @apply w-5 h-5;
+  }
+
+  /* Hover styling doesn't apply on touch — but `bg-current` painted the row or
+     button solid in the text colour, which looked like a rendering fault.
+     Just leave the resting background in place. */
   .nav-link:hover,
   .btn:hover,
   .data-table tbody tr:hover {
-    @apply bg-current;
+    background-color: inherit;
   }
 }
 

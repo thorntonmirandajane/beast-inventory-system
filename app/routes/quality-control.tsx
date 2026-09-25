@@ -1163,111 +1163,113 @@ export default function QualityControl() {
               <h3 className="card-title">Tasks Submitted</h3>
             </div>
             <div className="card-body">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Process</th>
-                    <th>SKU</th>
-                    <th>Submitted Qty</th>
-                    <th>Adjusted Qty</th>
-                    <th>Expected Time</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {timeEntry.lines.map((line) => (
-                    <tr key={line.id} className={line.isRejected ? "bg-red-50" : ""}>
-                      <td className="font-medium">
-                        {getProcessDisplay(line.processName)}
-                      </td>
-                      <td>
-                        {line.isMisc ? (
-                          <div>
-                            <span className="text-gray-500">Miscellaneous</span>
-                            {line.miscDescription && (
-                              <p className="text-xs text-gray-500">{line.miscDescription}</p>
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Process</th>
+                      <th>SKU</th>
+                      <th>Submitted Qty</th>
+                      <th>Adjusted Qty</th>
+                      <th>Expected Time</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {timeEntry.lines.map((line) => (
+                      <tr key={line.id} className={line.isRejected ? "bg-red-50" : ""}>
+                        <td className="font-medium">
+                          {getProcessDisplay(line.processName)}
+                        </td>
+                        <td>
+                          {line.isMisc ? (
+                            <div>
+                              <span className="text-gray-500">Miscellaneous</span>
+                              {line.miscDescription && (
+                                <p className="text-xs text-gray-500">{line.miscDescription}</p>
+                              )}
+                            </div>
+                          ) : line.sku ? (
+                            <div>
+                              <Link to={`/skus/${line.skuId}`} className="text-blue-600 hover:underline">
+                                {line.sku.sku}
+                              </Link>
+                              <p className="text-xs text-gray-500">{line.sku.name}</p>
+                            </div>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="text-right">{line.quantityCompleted}</td>
+                        <td className="text-right">
+                          {timeEntry.status === "PENDING" && !line.isRejected ? (
+                            <EditableQuantityCell
+                              lineId={line.id}
+                              initialQuantity={line.quantityCompleted}
+                              adjustedQuantity={line.adminAdjustedQuantity}
+                            />
+                          ) : line.adminAdjustedQuantity ? (
+                            <span className="text-yellow-600 font-medium">
+                              {line.adminAdjustedQuantity}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="text-right">{(line.expectedSeconds / 60).toFixed(1)} min</td>
+                        <td>
+                          {line.isRejected ? (
+                            <span className="badge badge-error">
+                              Rejected ({line.rejectionQuantity} units)
+                            </span>
+                          ) : line.adminAdjustedQuantity ? (
+                            <span className="badge badge-warning">Adjusted</span>
+                          ) : (
+                            <span className="badge badge-success">OK</span>
+                          )}
+                        </td>
+                        <td>
+                          <div className="flex gap-2">
+                            {!line.isMisc && line.skuId && (
+                              <button
+                                onClick={() => setEditSkuLine(line)}
+                                className="btn btn-sm btn-secondary"
+                                title="Correct the SKU/process on this task and adjust inventory"
+                              >
+                                Edit SKU
+                              </button>
+                            )}
+                            {timeEntry.status === "PENDING" && (
+                              <>
+                                {!line.isRejected && (
+                                  <button
+                                    onClick={() => setRejectModalLine(line)}
+                                    className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
+                                  >
+                                    Reject
+                                  </button>
+                                )}
+                                <Form
+                                  method="post"
+                                  onSubmit={(e) => {
+                                    if (!confirm("Delete this task line? Use this if the wrong item was selected.")) e.preventDefault();
+                                  }}
+                                >
+                                  <input type="hidden" name="intent" value="delete-line" />
+                                  <input type="hidden" name="lineId" value={line.id} />
+                                  <input type="hidden" name="entryId" value={timeEntry.id} />
+                                  <button type="submit" className="btn btn-sm btn-secondary">Delete</button>
+                                </Form>
+                              </>
                             )}
                           </div>
-                        ) : line.sku ? (
-                          <div>
-                            <Link to={`/skus/${line.skuId}`} className="text-blue-600 hover:underline">
-                              {line.sku.sku}
-                            </Link>
-                            <p className="text-xs text-gray-500">{line.sku.name}</p>
-                          </div>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td className="text-right">{line.quantityCompleted}</td>
-                      <td className="text-right">
-                        {timeEntry.status === "PENDING" && !line.isRejected ? (
-                          <EditableQuantityCell
-                            lineId={line.id}
-                            initialQuantity={line.quantityCompleted}
-                            adjustedQuantity={line.adminAdjustedQuantity}
-                          />
-                        ) : line.adminAdjustedQuantity ? (
-                          <span className="text-yellow-600 font-medium">
-                            {line.adminAdjustedQuantity}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td className="text-right">{(line.expectedSeconds / 60).toFixed(1)} min</td>
-                      <td>
-                        {line.isRejected ? (
-                          <span className="badge badge-error">
-                            Rejected ({line.rejectionQuantity} units)
-                          </span>
-                        ) : line.adminAdjustedQuantity ? (
-                          <span className="badge badge-warning">Adjusted</span>
-                        ) : (
-                          <span className="badge badge-success">OK</span>
-                        )}
-                      </td>
-                      <td>
-                        <div className="flex gap-2">
-                          {!line.isMisc && line.skuId && (
-                            <button
-                              onClick={() => setEditSkuLine(line)}
-                              className="btn btn-sm btn-secondary"
-                              title="Correct the SKU/process on this task and adjust inventory"
-                            >
-                              Edit SKU
-                            </button>
-                          )}
-                          {timeEntry.status === "PENDING" && (
-                            <>
-                              {!line.isRejected && (
-                                <button
-                                  onClick={() => setRejectModalLine(line)}
-                                  className="btn btn-sm bg-red-600 text-white hover:bg-red-700"
-                                >
-                                  Reject
-                                </button>
-                              )}
-                              <Form
-                                method="post"
-                                onSubmit={(e) => {
-                                  if (!confirm("Delete this task line? Use this if the wrong item was selected.")) e.preventDefault();
-                                }}
-                              >
-                                <input type="hidden" name="intent" value="delete-line" />
-                                <input type="hidden" name="lineId" value={line.id} />
-                                <input type="hidden" name="entryId" value={timeEntry.id} />
-                                <button type="submit" className="btn btn-sm btn-secondary">Delete</button>
-                              </Form>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
 
               {/* Admin Notes */}
               {timeEntry.lines.some((line) => line.adminNotes) && (
@@ -1427,7 +1429,7 @@ export default function QualityControl() {
               <h1 className="page-title">Quality Control</h1>
               <p className="page-subtitle">Review and manage worker task submissions</p>
             </div>
-            <form method="get" action="/reports/approved-production" className="flex items-end gap-2">
+            <form method="get" action="/reports/approved-production" className="flex items-end gap-2 flex-wrap w-full sm:w-auto">
               <div className="form-group mb-0">
                 <label className="form-label text-xs">From</label>
                 <input type="date" name="from" className="form-input py-1 text-sm" />
@@ -1508,61 +1510,63 @@ export default function QualityControl() {
                 </div>
               </div>
             ) : (
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Worker</th>
-                    <th>Date</th>
-                    <th>Shift Time</th>
-                    <th>Tasks</th>
-                    <th>Efficiency</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {timeEntries.map((entry) => (
-                    <tr key={entry.id}>
-                      <td className="font-medium">
-                        {entry.user.firstName} {entry.user.lastName}
-                      </td>
-                      <td>{formatDate(entry.clockInTime)}</td>
-                      <td>
-                        {formatTime(entry.clockInTime)} - {entry.clockOutTime ? formatTime(entry.clockOutTime) : "—"}
-                        {entry.actualMinutes != null && (
-                          <span className="text-gray-500 text-sm ml-2">
-                            ({(entry.actualMinutes / 60).toFixed(1)}h)
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        {entry.lines.length} task{entry.lines.length !== 1 ? "s" : ""}
-                        {entry.lines.some((l) => l.isRejected) && (
-                          <span className="ml-2 text-xs text-red-600">
-                            ({entry.lines.filter((l) => l.isRejected).length} rejected)
-                          </span>
-                        )}
-                      </td>
-                      <td>
-                        {entry.efficiency !== null ? (
-                          <span className={`badge ${getEfficiencyBadge(entry.efficiency)}`}>
-                            {Math.round(entry.efficiency)}%
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </td>
-                      <td>
-                        <Link
-                          to={`/quality-control?entryId=${entry.id}&tab=${tab}`}
-                          className="btn btn-secondary btn-sm"
-                        >
-                          Review
-                        </Link>
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Worker</th>
+                      <th>Date</th>
+                      <th>Shift Time</th>
+                      <th>Tasks</th>
+                      <th>Efficiency</th>
+                      <th>Actions</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {timeEntries.map((entry) => (
+                      <tr key={entry.id}>
+                        <td className="font-medium">
+                          {entry.user.firstName} {entry.user.lastName}
+                        </td>
+                        <td>{formatDate(entry.clockInTime)}</td>
+                        <td>
+                          {formatTime(entry.clockInTime)} - {entry.clockOutTime ? formatTime(entry.clockOutTime) : "—"}
+                          {entry.actualMinutes != null && (
+                            <span className="text-gray-500 text-sm ml-2">
+                              ({(entry.actualMinutes / 60).toFixed(1)}h)
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          {entry.lines.length} task{entry.lines.length !== 1 ? "s" : ""}
+                          {entry.lines.some((l) => l.isRejected) && (
+                            <span className="ml-2 text-xs text-red-600">
+                              ({entry.lines.filter((l) => l.isRejected).length} rejected)
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          {entry.efficiency !== null ? (
+                            <span className={`badge ${getEfficiencyBadge(entry.efficiency)}`}>
+                              {Math.round(entry.efficiency)}%
+                            </span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td>
+                          <Link
+                            to={`/quality-control?entryId=${entry.id}&tab=${tab}`}
+                            className="btn btn-secondary btn-sm"
+                          >
+                            Review
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>

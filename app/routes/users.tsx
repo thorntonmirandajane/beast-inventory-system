@@ -291,140 +291,142 @@ export default function Users() {
         <div className="card-header">
           <h2 className="card-title">All Users ({users.length})</h2>
         </div>
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Role</th>
-              <th className="text-right">Pay Rate</th>
-              <th>Status</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((u) => (
-              <tr key={u.id} className={!u.isActive ? "opacity-50" : ""}>
-                <td className="font-medium">
-                  {u.firstName} {u.lastName}
-                </td>
-                <td>{u.email}</td>
-                <td>
-                  <span className={`badge ${getRoleColor(u.role)}`}>{u.role}</span>
-                </td>
-                <td className="text-right">
-                  {u.payRate ? (
-                    <span className="font-medium text-green-600">${u.payRate.toFixed(2)}/hr</span>
-                  ) : (
-                    <span className="text-gray-400">—</span>
-                  )}
-                </td>
-                <td>
-                  <span
-                    className={`badge ${
-                      u.isActive ? "status-approved" : "status-rejected"
-                    }`}
-                  >
-                    {u.isActive ? "Active" : "Inactive"}
-                  </span>
-                </td>
-                <td>{new Date(u.createdAt).toLocaleDateString()}</td>
-                <td>
-                  {u.id !== user.id && (
-                    <div className="space-y-2">
-                      {/* Update Role/Status/Pay Rate */}
-                      <Form method="post" className="flex items-center gap-2">
-                        <input type="hidden" name="intent" value="update" />
-                        <input type="hidden" name="userId" value={u.id} />
-                        <input
-                          type="text"
-                          name="email"
-                          className="form-input text-sm py-1.5 px-2 w-40"
-                          placeholder="username / email"
-                          defaultValue={u.email}
-                          title="Login / email"
-                        />
-                        <select
-                          name="role"
-                          className="form-select text-sm py-1.5 px-2 w-28"
-                          defaultValue={u.role}
-                        >
-                          {roles.map((role) => (
-                            <option key={role} value={role}>
-                              {role}
-                            </option>
-                          ))}
-                        </select>
-                        <select
-                          name="isActive"
-                          className="form-select text-sm py-1.5 px-2 w-24"
-                          defaultValue={u.isActive.toString()}
-                        >
-                          <option value="true">Active</option>
-                          <option value="false">Inactive</option>
-                        </select>
-                        <input
-                          type="number"
-                          name="payRate"
-                          className="form-input text-sm py-1.5 px-2 w-24"
-                          placeholder="$/hr"
-                          step="0.01"
-                          min="0"
-                          defaultValue={u.payRate || ""}
-                        />
-                        <label
-                          className="flex items-center gap-1 text-xs whitespace-nowrap"
-                          title="Allow this user to log time / be selected for time entry even if not a Worker"
-                        >
-                          <input type="checkbox" name="canLogTime" defaultChecked={u.canLogTime} />
-                          Logs time
-                        </label>
-                        <label
-                          className="flex items-center gap-1 text-xs whitespace-nowrap"
-                          title="Show on the Worker Schedules grid even if Admin/Manager"
-                        >
-                          <input type="checkbox" name="showOnSchedule" defaultChecked={u.showOnSchedule} />
-                          On schedule
-                        </label>
-                        <button
-                          type="submit"
-                          className="btn btn-sm btn-secondary"
-                          disabled={isSubmitting}
-                        >
-                          Save
-                        </button>
-                      </Form>
-
-                      {/* Reset Password */}
-                      <Form method="post" className="flex items-center gap-2">
-                        <input type="hidden" name="intent" value="resetPassword" />
-                        <input type="hidden" name="userId" value={u.id} />
-                        <input
-                          type="password"
-                          name="newPassword"
-                          className="form-input text-sm py-1.5 px-2 w-32"
-                          placeholder="New password"
-                          minLength={6}
-                        />
-                        <button
-                          type="submit"
-                          className="btn btn-sm btn-ghost text-blue-600"
-                          disabled={isSubmitting}
-                        >
-                          Reset Password
-                        </button>
-                      </Form>
-                    </div>
-                  )}
-                  {u.id === user.id && (
-                    <span className="text-sm text-gray-400 italic">(Current user)</span>
-                  )}
-                </td>
+        <div className="overflow-x-auto">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th className="text-right">Pay Rate</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.id} className={!u.isActive ? "opacity-50" : ""}>
+                  <td className="font-medium">
+                    {u.firstName} {u.lastName}
+                  </td>
+                  <td>{u.email}</td>
+                  <td>
+                    <span className={`badge ${getRoleColor(u.role)}`}>{u.role}</span>
+                  </td>
+                  <td className="text-right">
+                    {u.payRate ? (
+                      <span className="font-medium text-green-600">${u.payRate.toFixed(2)}/hr</span>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
+                  <td>
+                    <span
+                      className={`badge ${
+                        u.isActive ? "status-approved" : "status-rejected"
+                      }`}
+                    >
+                      {u.isActive ? "Active" : "Inactive"}
+                    </span>
+                  </td>
+                  <td>{new Date(u.createdAt).toLocaleDateString()}</td>
+                  <td>
+                    {u.id !== user.id && (
+                      <div className="space-y-2">
+                        {/* Update Role/Status/Pay Rate */}
+                        <Form method="post" className="flex items-center gap-2">
+                          <input type="hidden" name="intent" value="update" />
+                          <input type="hidden" name="userId" value={u.id} />
+                          <input
+                            type="text"
+                            name="email"
+                            className="form-input text-sm py-1.5 px-2 w-40"
+                            placeholder="username / email"
+                            defaultValue={u.email}
+                            title="Login / email"
+                          />
+                          <select
+                            name="role"
+                            className="form-select text-sm py-1.5 px-2 w-28"
+                            defaultValue={u.role}
+                          >
+                            {roles.map((role) => (
+                              <option key={role} value={role}>
+                                {role}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            name="isActive"
+                            className="form-select text-sm py-1.5 px-2 w-24"
+                            defaultValue={u.isActive.toString()}
+                          >
+                            <option value="true">Active</option>
+                            <option value="false">Inactive</option>
+                          </select>
+                          <input
+                            type="number"
+                            name="payRate"
+                            className="form-input text-sm py-1.5 px-2 w-24"
+                            placeholder="$/hr"
+                            step="0.01"
+                            min="0"
+                            defaultValue={u.payRate || ""}
+                          />
+                          <label
+                            className="flex items-center gap-1 text-xs whitespace-nowrap"
+                            title="Allow this user to log time / be selected for time entry even if not a Worker"
+                          >
+                            <input type="checkbox" name="canLogTime" defaultChecked={u.canLogTime} />
+                            Logs time
+                          </label>
+                          <label
+                            className="flex items-center gap-1 text-xs whitespace-nowrap"
+                            title="Show on the Worker Schedules grid even if Admin/Manager"
+                          >
+                            <input type="checkbox" name="showOnSchedule" defaultChecked={u.showOnSchedule} />
+                            On schedule
+                          </label>
+                          <button
+                            type="submit"
+                            className="btn btn-sm btn-secondary"
+                            disabled={isSubmitting}
+                          >
+                            Save
+                          </button>
+                        </Form>
+
+                        {/* Reset Password */}
+                        <Form method="post" className="flex items-center gap-2">
+                          <input type="hidden" name="intent" value="resetPassword" />
+                          <input type="hidden" name="userId" value={u.id} />
+                          <input
+                            type="password"
+                            name="newPassword"
+                            className="form-input text-sm py-1.5 px-2 w-32"
+                            placeholder="New password"
+                            minLength={6}
+                          />
+                          <button
+                            type="submit"
+                            className="btn btn-sm btn-ghost text-blue-600"
+                            disabled={isSubmitting}
+                          >
+                            Reset Password
+                          </button>
+                        </Form>
+                      </div>
+                    )}
+                    {u.id === user.id && (
+                      <span className="text-sm text-gray-400 italic">(Current user)</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </Layout>
   );

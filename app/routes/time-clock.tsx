@@ -449,55 +449,57 @@ export default function TimeClock() {
               Add Manual Time Entry
             </Link>
           </div>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Employee</th>
-                <th>Status</th>
-                <th>Last Action</th>
-                <th>Today</th>
-                <th>This Week</th>
-              </tr>
-            </thead>
-            <tbody>
-              {allUsersStatus.map(({ user: u, status }) => (
-                <tr key={u.id}>
-                  <td className="font-medium">
-                    {u.firstName} {u.lastName}
-                  </td>
-                  <td>
-                    <span
-                      className={`badge ${
-                        status.isOnBreak
-                          ? "bg-yellow-100 text-yellow-800"
-                          : status.isClockedIn
-                          ? "bg-green-100 text-green-800"
-                          : "bg-gray-100 text-gray-800"
-                      }`}
-                    >
-                      {status.isOnBreak
-                        ? "On Break"
-                        : status.isClockedIn
-                        ? "Clocked In"
-                        : "Clocked Out"}
-                    </span>
-                  </td>
-                  <td>
-                    {status.lastEvent ? (
-                      <span className="text-sm">
-                        {getEventLabel(status.lastEvent.type)} at{" "}
-                        {formatTime(status.lastEvent.timestamp)}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td>{formatHours(status.todayHours)}</td>
-                  <td>{formatHours(status.weekHours)}</td>
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Status</th>
+                  <th>Last Action</th>
+                  <th>Today</th>
+                  <th>This Week</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {allUsersStatus.map(({ user: u, status }) => (
+                  <tr key={u.id}>
+                    <td className="font-medium">
+                      {u.firstName} {u.lastName}
+                    </td>
+                    <td>
+                      <span
+                        className={`badge ${
+                          status.isOnBreak
+                            ? "bg-yellow-100 text-yellow-800"
+                            : status.isClockedIn
+                            ? "bg-green-100 text-green-800"
+                            : "bg-gray-100 text-gray-800"
+                        }`}
+                      >
+                        {status.isOnBreak
+                          ? "On Break"
+                          : status.isClockedIn
+                          ? "Clocked In"
+                          : "Clocked Out"}
+                      </span>
+                    </td>
+                    <td>
+                      {status.lastEvent ? (
+                        <span className="text-sm">
+                          {getEventLabel(status.lastEvent.type)} at{" "}
+                          {formatTime(status.lastEvent.timestamp)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    <td>{formatHours(status.todayHours)}</td>
+                    <td>{formatHours(status.weekHours)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -529,32 +531,34 @@ export default function TimeClock() {
             </div>
           </div>
         ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Time</th>
-                <th>Event</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentEvents.map((event) => (
-                <tr key={event.id}>
-                  <td>{formatDate(event.timestamp)}</td>
-                  <td>{formatTime(event.timestamp)}</td>
-                  <td>
-                    <span
-                      className={`inline-block px-2 py-1 rounded text-sm font-medium ${getEventColor(
-                        event.type
-                      )}`}
-                    >
-                      {getEventLabel(event.type)}
-                    </span>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>Event</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {recentEvents.map((event) => (
+                  <tr key={event.id}>
+                    <td>{formatDate(event.timestamp)}</td>
+                    <td>{formatTime(event.timestamp)}</td>
+                    <td>
+                      <span
+                        className={`inline-block px-2 py-1 rounded text-sm font-medium ${getEventColor(
+                          event.type
+                        )}`}
+                      >
+                        {getEventLabel(event.type)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </Layout>

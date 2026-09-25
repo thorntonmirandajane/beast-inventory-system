@@ -356,40 +356,42 @@ export default function Payroll() {
             <div className="text-center text-gray-500 py-8">No workers found for this date range</div>
           </div>
         ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Worker</th>
-                <th className="text-right">Pay Rate</th>
-                <th className="text-right">Regular Hours</th>
-                <th className="text-right">Overtime Hours</th>
-                <th className="text-right">Regular Pay</th>
-                <th className="text-right">Overtime Pay</th>
-                <th className="text-right">Total Pay</th>
-              </tr>
-            </thead>
-            <tbody>
-              {payrollData.map((worker) => (
-                <FragmentRow
-                  key={worker.id}
-                  worker={worker}
-                  open={expanded.has(worker.id)}
-                  onToggle={() => toggle(worker.id)}
-                  edit={edit}
-                />
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="bg-gray-50 font-bold">
-                <td colSpan={2} className="text-right">TOTAL</td>
-                <td className="text-right">{totalRegularHours.toFixed(1)}h</td>
-                <td className="text-right text-orange-600">{totalOvertimeHours.toFixed(1)}h</td>
-                <td className="text-right">${totalRegularPay.toFixed(2)}</td>
-                <td className="text-right text-orange-600">${totalOvertimePay.toFixed(2)}</td>
-                <td className="text-right text-green-600">${totalPay.toFixed(2)}</td>
-              </tr>
-            </tfoot>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Worker</th>
+                  <th className="text-right">Pay Rate</th>
+                  <th className="text-right">Regular Hours</th>
+                  <th className="text-right">Overtime Hours</th>
+                  <th className="text-right">Regular Pay</th>
+                  <th className="text-right">Overtime Pay</th>
+                  <th className="text-right">Total Pay</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payrollData.map((worker) => (
+                  <FragmentRow
+                    key={worker.id}
+                    worker={worker}
+                    open={expanded.has(worker.id)}
+                    onToggle={() => toggle(worker.id)}
+                    edit={edit}
+                  />
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-gray-50 font-bold">
+                  <td colSpan={2} className="text-right">TOTAL</td>
+                  <td className="text-right">{totalRegularHours.toFixed(1)}h</td>
+                  <td className="text-right text-orange-600">{totalOvertimeHours.toFixed(1)}h</td>
+                  <td className="text-right">${totalRegularPay.toFixed(2)}</td>
+                  <td className="text-right text-orange-600">${totalOvertimePay.toFixed(2)}</td>
+                  <td className="text-right text-green-600">${totalPay.toFixed(2)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         )}
       </div>
     </Layout>
@@ -438,77 +440,79 @@ function FragmentRow({
               {worker.shifts.length === 0 ? (
                 <p className="text-sm text-gray-500">No shifts in this range.</p>
               ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-500 border-b">
-                      <th className="py-2 pr-4">Day</th>
-                      <th className="py-2 pr-4">Clock in</th>
-                      <th className="py-2 pr-4">Clock out</th>
-                      <th className="py-2 pr-4 text-right">Hours</th>
-                      <th className="py-2 pr-4"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {worker.shifts.map((s) => (
-                      <tr key={`${s.entryId ?? s.clockInId}`} className={`border-b last:border-0 ${s.dup ? "bg-red-50" : ""}`}>
-                        <td className="py-2 pr-4 whitespace-nowrap">{s.dayLabel}</td>
-                        <td colSpan={4} className="py-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <edit.Form method="post" className="flex flex-wrap items-center gap-2">
-                              <input type="hidden" name="intent" value="edit-shift" />
-                              <input type="hidden" name="entryId" value={s.entryId ?? ""} />
-                              <input type="hidden" name="clockInId" value={s.clockInId} />
-                              <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
-                              <input type="hidden" name="workerId" value={worker.id} />
-                              <input type="datetime-local" name="clockIn" defaultValue={s.clockInInput} className="form-input" required />
-                              <span className="text-gray-400">→</span>
-                              <input
-                                type="datetime-local"
-                                name="clockOut"
-                                defaultValue={s.clockOutInput}
-                                className="form-input"
-                                placeholder="not clocked out"
-                              />
-                              <span className="w-16 text-right font-medium">
-                                {s.open ? <span className="text-red-600">open</span> : `${s.hours.toFixed(1)}h`}
-                              </span>
-                              {!s.dup && (
-                                <button type="submit" className="btn btn-secondary btn-sm" disabled={edit.state !== "idle"}>
-                                  {s.open ? "Add clock-out" : "Save"}
-                                </button>
-                              )}
-                            </edit.Form>
-                            {s.dup ? (
-                              <span className="text-xs text-red-600 font-medium">duplicate — delete it →</span>
-                            ) : s.linked && s.hasTasks ? (
-                              <span className="text-xs text-green-700">✓ QC entry</span>
-                            ) : !s.linked && !s.open ? (
-                              <span className="text-xs text-gray-500">not in QC</span>
-                            ) : null}
-                            <edit.Form
-                              method="post"
-                              onSubmit={(e) => {
-                                if (!confirm("Remove this shift? This deletes its clock in/out.")) e.preventDefault();
-                              }}
-                            >
-                              <input type="hidden" name="intent" value="delete-shift" />
-                              <input type="hidden" name="entryId" value={s.entryId ?? ""} />
-                              <input type="hidden" name="clockInId" value={s.clockInId} />
-                              <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
-                              <button
-                                type="submit"
-                                className="btn btn-secondary btn-sm text-red-600"
-                                disabled={edit.state !== "idle"}
-                              >
-                                Delete
-                              </button>
-                            </edit.Form>
-                          </div>
-                        </td>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-gray-500 border-b">
+                        <th className="py-2 pr-4">Day</th>
+                        <th className="py-2 pr-4">Clock in</th>
+                        <th className="py-2 pr-4">Clock out</th>
+                        <th className="py-2 pr-4 text-right">Hours</th>
+                        <th className="py-2 pr-4"></th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {worker.shifts.map((s) => (
+                        <tr key={`${s.entryId ?? s.clockInId}`} className={`border-b last:border-0 ${s.dup ? "bg-red-50" : ""}`}>
+                          <td className="py-2 pr-4 whitespace-nowrap">{s.dayLabel}</td>
+                          <td colSpan={4} className="py-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <edit.Form method="post" className="flex flex-wrap items-center gap-2">
+                                <input type="hidden" name="intent" value="edit-shift" />
+                                <input type="hidden" name="entryId" value={s.entryId ?? ""} />
+                                <input type="hidden" name="clockInId" value={s.clockInId} />
+                                <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
+                                <input type="hidden" name="workerId" value={worker.id} />
+                                <input type="datetime-local" name="clockIn" defaultValue={s.clockInInput} className="form-input" required />
+                                <span className="text-gray-400">→</span>
+                                <input
+                                  type="datetime-local"
+                                  name="clockOut"
+                                  defaultValue={s.clockOutInput}
+                                  className="form-input"
+                                  placeholder="not clocked out"
+                                />
+                                <span className="w-16 text-right font-medium">
+                                  {s.open ? <span className="text-red-600">open</span> : `${s.hours.toFixed(1)}h`}
+                                </span>
+                                {!s.dup && (
+                                  <button type="submit" className="btn btn-secondary btn-sm" disabled={edit.state !== "idle"}>
+                                    {s.open ? "Add clock-out" : "Save"}
+                                  </button>
+                                )}
+                              </edit.Form>
+                              {s.dup ? (
+                                <span className="text-xs text-red-600 font-medium">duplicate — delete it →</span>
+                              ) : s.linked && s.hasTasks ? (
+                                <span className="text-xs text-green-700">✓ QC entry</span>
+                              ) : !s.linked && !s.open ? (
+                                <span className="text-xs text-gray-500">not in QC</span>
+                              ) : null}
+                              <edit.Form
+                                method="post"
+                                onSubmit={(e) => {
+                                  if (!confirm("Remove this shift? This deletes its clock in/out.")) e.preventDefault();
+                                }}
+                              >
+                                <input type="hidden" name="intent" value="delete-shift" />
+                                <input type="hidden" name="entryId" value={s.entryId ?? ""} />
+                                <input type="hidden" name="clockInId" value={s.clockInId} />
+                                <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
+                                <button
+                                  type="submit"
+                                  className="btn btn-secondary btn-sm text-red-600"
+                                  disabled={edit.state !== "idle"}
+                                >
+                                  Delete
+                                </button>
+                              </edit.Form>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
               <p className="text-xs text-gray-500 mt-2">
                 Times are Mountain. Editing here adjusts the payroll clock; leave clock-out blank to keep a shift open.

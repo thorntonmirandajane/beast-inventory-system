@@ -440,89 +440,91 @@ export default function Capacity() {
           <p className="text-sm text-gray-500">Time per unit for each process</p>
         </div>
         <div className="card-body">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Order</th>
-                  <th>Process Name</th>
-                  <th>SKUs Assigned</th>
-                  <th>Description</th>
-                  <th>Time per Unit</th>
-                  {user.role === "ADMIN" && <th>Actions</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {processConfigs.map((config) => {
-                  const skusForProcess = allSkus.filter(s => matchesProcess(s.material, config.displayName));
-                  return (
-                    <tr key={config.id}>
-                      <td>
-                        <span className="text-gray-600 font-mono text-sm">
-                          {config.processOrder ?? "—"}
-                        </span>
-                      </td>
-                      <td>
-                        <div className="font-semibold">{config.displayName}</div>
-                      </td>
-                      <td>
-                        <span className="font-semibold text-blue-600">
-                          {skusForProcess.length}
-                        </span>
-                        <span className="text-sm text-gray-500 ml-1">SKU{skusForProcess.length !== 1 ? 's' : ''}</span>
-                      </td>
-                      <td>
-                        <div className="text-sm text-gray-600">{config.description || "—"}</div>
-                      </td>
-                      <td>
-                        {config.secondsPerUnit > 0 ? (
-                          <>
-                            <span className="font-mono font-semibold">{config.secondsPerUnit}</span>
-                            <span className="text-sm text-gray-500 ml-1">sec/unit</span>
-                          </>
-                        ) : (
-                          <span className="badge bg-yellow-100 text-yellow-800">Unassigned</span>
-                        )}
-                      </td>
-                      {user.role === "ADMIN" && (
-                        <td>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedSkuIds(new Set(skusForProcess.map(s => s.id)));
-                                setEditingProcess(config);
-                              }}
-                              className="btn btn-sm btn-secondary"
-                            >
-                              Edit
-                            </button>
-                          <Form method="post" className="inline" onSubmit={(e) => {
-                            if (!confirm(`Are you sure you want to delete "${config.displayName}"?`)) {
-                              e.preventDefault();
-                            }
-                          }}>
-                            <input type="hidden" name="intent" value="delete-process" />
-                            <input type="hidden" name="processId" value={config.id} />
-                            <button type="submit" className="btn btn-sm btn-error">
-                              Delete
-                            </button>
-                          </Form>
-                        </div>
-                      </td>
-                    )}
-                    </tr>
-                  );
-                })}
-
-                {processConfigs.length === 0 && (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead>
                   <tr>
-                    <td colSpan={user.role === "ADMIN" ? 6 : 5} className="text-center text-gray-500 py-4">
-                      No process configurations found
-                    </td>
+                    <th>Order</th>
+                    <th>Process Name</th>
+                    <th>SKUs Assigned</th>
+                    <th>Description</th>
+                    <th>Time per Unit</th>
+                    {user.role === "ADMIN" && <th>Actions</th>}
                   </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {processConfigs.map((config) => {
+                    const skusForProcess = allSkus.filter(s => matchesProcess(s.material, config.displayName));
+                    return (
+                      <tr key={config.id}>
+                        <td>
+                          <span className="text-gray-600 font-mono text-sm">
+                            {config.processOrder ?? "—"}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="font-semibold">{config.displayName}</div>
+                        </td>
+                        <td>
+                          <span className="font-semibold text-blue-600">
+                            {skusForProcess.length}
+                          </span>
+                          <span className="text-sm text-gray-500 ml-1">SKU{skusForProcess.length !== 1 ? 's' : ''}</span>
+                        </td>
+                        <td>
+                          <div className="text-sm text-gray-600">{config.description || "—"}</div>
+                        </td>
+                        <td>
+                          {config.secondsPerUnit > 0 ? (
+                            <>
+                              <span className="font-mono font-semibold">{config.secondsPerUnit}</span>
+                              <span className="text-sm text-gray-500 ml-1">sec/unit</span>
+                            </>
+                          ) : (
+                            <span className="badge bg-yellow-100 text-yellow-800">Unassigned</span>
+                          )}
+                        </td>
+                        {user.role === "ADMIN" && (
+                          <td>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedSkuIds(new Set(skusForProcess.map(s => s.id)));
+                                  setEditingProcess(config);
+                                }}
+                                className="btn btn-sm btn-secondary"
+                              >
+                                Edit
+                              </button>
+                            <Form method="post" className="inline" onSubmit={(e) => {
+                              if (!confirm(`Are you sure you want to delete "${config.displayName}"?`)) {
+                                e.preventDefault();
+                              }
+                            }}>
+                              <input type="hidden" name="intent" value="delete-process" />
+                              <input type="hidden" name="processId" value={config.id} />
+                              <button type="submit" className="btn btn-sm btn-error">
+                                Delete
+                              </button>
+                            </Form>
+                          </div>
+                        </td>
+                      )}
+                      </tr>
+                    );
+                  })}
+
+                  {processConfigs.length === 0 && (
+                    <tr>
+                      <td colSpan={user.role === "ADMIN" ? 6 : 5} className="text-center text-gray-500 py-4">
+                        No process configurations found
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
 
             {/* Create New Process */}
             {user.role === "ADMIN" && (
