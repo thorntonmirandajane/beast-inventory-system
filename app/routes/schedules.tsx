@@ -63,7 +63,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
   const url = new URL(request.url);
   const isWorkerView = user.role === "WORKER";
+  // An admin/manager who still works shifts (flagged showOnSchedule, e.g. Kyler)
+  // is on the grid like any worker, so they need a way to submit their own hours
+  // — they never see the worker-facing My Schedule page.
+  const meOnSchedule = isWorkerView
+    ? false
+    : !!(await prisma.user.findUnique({ where: { id: user.id }, select: { showOnSchedule: true } }))?.showOnSchedule;
   const view = url.searchParams.get("view") || (isWorkerView ? "month" : "week");
+  const ownView = isWorkerView || meOnSchedule;
+  // The admin tabs own `view`, so My Schedule's Month/Week lives on `sub`.
+  const subView = url.searchParams.get("sub") === "week" ? "week" : "month";
 
   // Selected week (Monday-start).
   const wsParam = url.searchParams.get("weekStart");
@@ -193,13 +202,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let scheduleRequests: any[] = [];
   let myRequest: any = null;
   let pendingRequestCount = 0;
-  if (isWorkerView) {
+  if (ownView) {
     myRequest = await prisma.scheduleRequest.findFirst({
       where: { userId: user.id },
       orderBy: { submittedAt: "desc" },
       select: { id: true, status: true, days: true, note: true, submittedAt: true, reviewedAt: true },
     });
-  } else {
+  }
+  if (!isWorkerView) {
     const reqs = await prisma.scheduleRequest.findMany({ where: { status: "PENDING" }, orderBy: { submittedAt: "asc" } });
     pendingRequestCount = reqs.length;
     const ids = [...new Set(reqs.map((r) => r.userId))];
@@ -211,7 +221,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Worker mobile Month/Week day-card data.
   let myMonth: any = null;
   let myWeek: any = null;
-  if (isWorkerView) {
+  if (ownView) {
     const now = new Date();
     const monthParam = url.searchParams.get("month");
     const [my, mm] = monthParam && /^\d{4}-\d{2}$/.test(monthParam) ? monthParam.split("-").map(Number) : [now.getFullYear(), now.getMonth() + 1];
@@ -285,7 +295,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     weekTabs, prevWeek: ymd(addDays(monday, -7)), nextWeek: ymd(addDays(monday, 7)),
     timeOffByCell, actualByWorker,
     scheduleRequests, myRequest, pendingRequestCount,
-    myMonth, myWeek,
+    myMonth, myWeek, meOnSchedule, subView,
     justApproved: url.searchParams.get("approved") === "1",
   };
 };
@@ -982,7 +992,7 @@ export default function Schedules() {
   const {
     user, isWorkerView, view, gridWorkers, days, weekStartYmd, weekTitle, weekTabs,
     prevWeek, nextWeek, workers, upcomingDateSchedules, timeOffByCell, actualByWorker,
-    scheduleRequests, myRequest, pendingRequestCount, myMonth, myWeek, justApproved,
+    scheduleRequests, myRequest, pendingRequestCount, myMonth, myWeek, justApproved, meOnSchedule, subView,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -1029,7 +1039,7 @@ export default function Schedules() {
       {view === "week" && (
         <>
           <WeekNav weekStartYmd={weekStartYmd} weekTitle={weekTitle} prevWeek={prevWeek} nextWeek={nextWeek} />
-          <WeeklyGrid gridWorkers={gridWorkers} days={days} timeOffByCell={timeOffByCell} actualByWorker={actualByWorker} weekStartYmd={weekStartYmd} />
+          <WeeklyGrid gridWorkers={gridWorkers} days={days} timeOffByCell={timeOffByCell} actualByWorker={actualByWorker} weekStartYmd={weekStartYmd} meOnSchedule={meOnSchedule} />
         </>
       )}
 
@@ -1040,12 +1050,39 @@ export default function Schedules() {
       {view === "requests" && (
         <RequestsList requests={scheduleRequests} isSubmitting={isSubmitting} />
       )}
+
+      {view === "mine" && meOnSchedule && (
+        <>
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+            <p className="text-sm text-gray-600">
+              Your own hours. Tap a day to set them — they go to the same approval queue as any worker's.
+            </p>
+            <Link to={`/schedules?view=week&weekStart=${weekStartYmd}`} className="btn btn-secondary btn-sm">
+              Back to the grid
+            </Link>
+          </div>
+          {myRequest?.status === "DENIED" && (
+            <div className="alert alert-error mb-4">
+              Your last request was denied{myRequest.note ? `: ${myRequest.note}` : "."}
+            </div>
+          )}
+          {myRequest?.status === "PENDING" && (
+            <div className="alert alert-info mb-4">Your hours are submitted and waiting for approval.</div>
+          )}
+          <WorkerSchedule view={subView} myMonth={myMonth} myWeek={myWeek} basePath="/schedules?view=mine" />
+        </>
+      )}
     </Layout>
   );
 }
 
 // ---- Worker mobile Month/Week view ----
-function WorkerSchedule({ view, myMonth, myWeek }: any) {
+function WorkerSchedule({ view, myMonth, myWeek, basePath = "/schedules?view" }: any) {
+  // Workers navigate with ?view=month|week; a shift-working admin is already on
+  // ?view=mine, so their Month/Week toggle rides on ?sub= instead.
+  const isOwnAdminView = basePath.includes("view=mine");
+  const tabHref = (v: "month" | "week") => (isOwnAdminView ? `/schedules?view=mine&sub=${v}` : `/schedules?view=${v}`);
+  const monthHref = (m: string) => (isOwnAdminView ? `/schedules?view=mine&sub=month&month=${m}` : `/schedules?view=month&month=${m}`);
   const fetcher = useFetcher();
   const [open, setOpen] = useState<{ date: string; shifts: any[]; label: string; off?: boolean } | null>(null);
 
@@ -1097,8 +1134,8 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
   return (
     <>
       <div className="flex gap-2 mb-4 border-b border-gray-200">
-        <Link to="/schedules?view=month" className={`px-4 py-2 font-medium border-b-2 ${view === "month" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}>Month</Link>
-        <Link to="/schedules?view=week" className={`px-4 py-2 font-medium border-b-2 ${view === "week" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}>Week</Link>
+        <Link to={tabHref("month")} className={`px-4 py-2 font-medium border-b-2 ${view === "month" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}>Month</Link>
+        <Link to={tabHref("week")} className={`px-4 py-2 font-medium border-b-2 ${view === "week" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}>Week</Link>
       </div>
 
       <div className="flex items-center gap-4 text-xs text-gray-600 mb-3">
@@ -1112,9 +1149,9 @@ function WorkerSchedule({ view, myMonth, myWeek }: any) {
           {view === "month" ? (
             <>
               <div className="flex items-center justify-between mb-3">
-                <Link to={`/schedules?view=month&month=${myMonth.prevMonth}`} className="btn btn-secondary btn-sm">←</Link>
+                <Link to={monthHref(myMonth.prevMonth)} className="btn btn-secondary btn-sm">←</Link>
                 <span className="font-semibold">{myMonth.label}</span>
-                <Link to={`/schedules?view=month&month=${myMonth.nextMonth}`} className="btn btn-secondary btn-sm">→</Link>
+                <Link to={monthHref(myMonth.nextMonth)} className="btn btn-secondary btn-sm">→</Link>
               </div>
               <div className="mb-1 text-center text-[11px] font-semibold text-gray-500" style={g7(4)}>
                 {DAY_ABBR.map((d) => <div key={d}>{d}</div>)}
@@ -1276,7 +1313,7 @@ function MiniWeekCalendar({ selectedWeekStart, onClose }: { selectedWeekStart: s
   );
 }
 
-function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStartYmd }: any) {
+function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStartYmd, meOnSchedule }: any) {
   const key = (w: string, d: string) => `${w}|${d}`;
   const [cells, setCells] = useState<Record<string, { shifts: any[]; value: string; hours: number; off: boolean }>>(() => {
     const o: Record<string, { shifts: any[]; value: string; hours: number; off: boolean }> = {};
@@ -1326,7 +1363,12 @@ function WeeklyGrid({ gridWorkers, days, timeOffByCell, actualByWorker, weekStar
             <input type="hidden" name="cells" value={JSON.stringify(commitCells)} />
             <button className="btn btn-secondary btn-sm" type="submit">Save week (commit pre-filled)</button>
           </Form>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-wrap">
+            {/* Shift-working admins (showOnSchedule) submit their own hours here —
+                they're routed into the admin UI and never see My Schedule. */}
+            {meOnSchedule && (
+              <Link to="/schedules?view=mine" className="btn btn-primary btn-sm">Submit My Schedule</Link>
+            )}
             <label className="text-sm flex items-center gap-1.5"><input type="checkbox" checked={showActual} onChange={(e) => setShowActual(e.target.checked)} /> Show actual</label>
             <a href={`/schedules/print?weekStart=${weekStartYmd}`} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">Print / Export</a>
           </div>
