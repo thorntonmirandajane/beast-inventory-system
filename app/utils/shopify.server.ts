@@ -307,6 +307,7 @@ async function fetchUnfulfilledForStore(
                     quantity
                     currentQuantity
                     unfulfilledQuantity
+                    fulfillableQuantity
                   }
                 }
               }
@@ -338,9 +339,12 @@ async function fetchUnfulfilledForStore(
         const current = li.currentQuantity ?? 0;
         if (current <= 0) continue;
 
-        // Of what's still on the order, count only what isn't fulfilled yet,
-        // capped at current so a stale unfulfilledQuantity can't exceed it.
-        const unfulfilled = li.unfulfilledQuantity ?? current;
+        // Count only what can still SHIP. fulfillableQuantity is Shopify's own
+        // figure for that: removals, refunds, restocks and already-shipped units
+        // are already out of it, and a partially fulfilled line reports just the
+        // remainder. unfulfilledQuantity only subtracts what shipped, so a line
+        // whose units were removed still counted as demand.
+        const unfulfilled = li.fulfillableQuantity ?? li.unfulfilledQuantity ?? current;
         const remaining = Math.min(unfulfilled, current);
         if (remaining <= 0) continue;
 
@@ -478,6 +482,7 @@ async function fetchUnfulfilledOrdersForStore(
                     title
                     currentQuantity
                     unfulfilledQuantity
+                    fulfillableQuantity
                   }
                 }
               }
@@ -503,7 +508,12 @@ async function fetchUnfulfilledOrdersForStore(
         if (!li.sku) continue;
         const current = li.currentQuantity ?? 0;
         if (current <= 0) continue;
-        const unfulfilled = li.unfulfilledQuantity ?? current;
+        // fulfillableQuantity is Shopify's own "still shippable" number: it has
+        // removals, refunds, restocks and already-shipped units taken out, and
+        // it handles a partially fulfilled line natively. unfulfilledQuantity
+        // only subtracts what shipped, so it still counts units that were
+        // removed from the order — which overstated demand.
+        const unfulfilled = li.fulfillableQuantity ?? li.unfulfilledQuantity ?? current;
         const remaining = Math.min(unfulfilled, current);
         if (remaining <= 0) continue;
         lines.push({ sku: li.sku, title: li.title, quantity: remaining });
