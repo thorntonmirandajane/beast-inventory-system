@@ -66,8 +66,10 @@ export interface StrategyResult {
   bySku: SkuSourceRow[];
   unitsFromGallatin: number;
   unitsFromUtah: number;
-  /** Every order in the scenario, with where its units would come from. */
+  /** Every order in the scenario, in the sequence this strategy would work them. */
   orders: {
+    /** 1-based position in the pick list; null for orders never reached. */
+    position: number | null;
     orderName: string;
     store: string;
     customer: string;
@@ -215,7 +217,11 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
   type Got = ReturnType<typeof allocate>;
   const shipped = new Map<string, Got>();
   const shippedBySku = new Map<string, { g: number; u: number }>();
+  // The sequence the strategy actually works the backlog in — this is the pick
+  // order, which for the two-pass strategies is not the sort order.
+  const walked: UnfulfilledViewOrder[] = [];
   const takeOrder = (o: UnfulfilledViewOrder) => {
+    walked.push(o);
     const got = allocate(o, shelves, shippedBySku);
     if (got.units > 0) shipped.set(`${o.store}:${o.orderId}`, got);
   };
@@ -242,7 +248,13 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
   let unitsShipped = 0, valueShipped = 0, unitsRemaining = 0, valueRemaining = 0;
   const detail: StrategyResult["orders"] = [];
 
-  for (const o of orders) {
+  // Walked orders first, in pick sequence; anything the strategy never reached
+  // (a FULL_ONLY order that didn't qualify, say) follows in its sort order.
+  const walkedKeys = new Set(walked.map((o) => `${o.store}:${o.orderId}`));
+  const sequence = [...walked, ...sorted.filter((o) => !walkedKeys.has(`${o.store}:${o.orderId}`))];
+
+  let position = 0;
+  for (const o of sequence) {
     const got = shipped.get(`${o.store}:${o.orderId}`) ?? {
       units: 0, value: 0, fromGallatin: 0, fromUtah: 0,
       lines: [] as Got["lines"],
@@ -271,7 +283,9 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
       : got.fromUtah > 0 ? "UTAH"
       : "NONE";
 
+    if (got.units > 0) position += 1;
     detail.push({
+      position: got.units > 0 ? position : null,
       orderName: o.orderName,
       store: o.store,
       customer: o.company || o.customerName || "",
@@ -380,11 +394,12 @@ const csvCell = (v: string | number | null | undefined) => {
 /** Every order in the scenario, with where its units come from. */
 export function ordersToCsv(result: StrategyResult, scenarioName: string): string {
   const header = [
-    "Scenario", "Strategy", "Order", "Store", "Customer", "Waiting (days)",
+    "Pick order", "Scenario", "Strategy", "Order", "Store", "Customer", "Waiting (days)",
     "Units needed", "Units shipped", "From Gallatin", "From Utah",
     "Ships from", "Outcome", "Value shipped", "Items",
   ];
   const rows = result.orders.map((o) => [
+    o.position ?? "",
     scenarioName,
     result.label,
     o.orderName,

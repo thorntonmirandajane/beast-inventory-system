@@ -429,6 +429,11 @@ export default function FulfillmentCompare() {
                     summary={`${num(shown.orders.length)} orders · ${num(shown.ordersFull)} complete, ${num(shown.ordersPartial)} part, ${num(shown.ordersUntouched)} none`}
                   >
                     <div>
+                      <p className="text-sm text-gray-600 mb-3">
+                        Listed in the order this strategy would work them — that's the pick sequence, so the
+                        warehouse can go straight down the list. Orders it never reaches sit at the bottom
+                        without a number.
+                      </p>
                       <div className="mb-3">
                         <a
                           className="btn btn-primary btn-sm"
@@ -441,7 +446,7 @@ export default function FulfillmentCompare() {
                         <table className="data-table">
                           <thead>
                             <tr>
-                              <th></th><th>Order</th><th>Store</th><th>Customer</th><th>Waiting</th>
+                              <th></th><th>#</th><th>Order</th><th>Store</th><th>Customer</th><th>Waiting</th>
                               <th>Needed</th><th>Shipping</th><th>Gallatin</th><th>Utah</th><th>Ships from</th><th>Outcome</th>
                             </tr>
                           </thead>
@@ -451,6 +456,7 @@ export default function FulfillmentCompare() {
                               return [
                                 <tr key={key} onClick={() => setOpenOrder(openOrder === key ? null : key)} className="cursor-pointer">
                                   <td className="text-gray-400">{o.lines.length ? (openOrder === key ? "▾" : "▸") : ""}</td>
+                                  <td className="text-gray-500 tabular-nums">{o.position ?? "—"}</td>
                                   <td className="font-medium">{o.orderName}</td>
                                   <td><span className={`badge ${o.store === "beast" ? "badge-purple" : "badge-blue"}`}>{o.store === "beast" ? "Beast" : "Archery"}</span></td>
                                   <td>{o.customer || "—"}</td>
@@ -469,7 +475,7 @@ export default function FulfillmentCompare() {
                                 openOrder === key && o.lines.length > 0 && (
                                   <tr key={`${key}-x`}>
                                     <td></td>
-                                    <td colSpan={10} className="bg-gray-50">
+                                    <td colSpan={11} className="bg-gray-50">
                                       <div className="overflow-x-auto py-2">
                                         <table className="data-table text-sm">
                                           <thead><tr><th>SKU</th><th>Product</th><th>Needed</th><th>From Gallatin</th><th>From Utah</th></tr></thead>
@@ -495,9 +501,11 @@ export default function FulfillmentCompare() {
                   </Accordion>
 
                   {/* Buy / build list */}
-                  <div className="card">
-                    <div className="card-header"><span className="card-title">What's still needed to clear the rest</span></div>
-                    <div className="card-body">
+                  <Accordion
+                    title="What's still needed to clear the rest"
+                    summary={`${num(shown.shortfallUnits)} units across ${num(shown.shortfall.length)} SKUs`}
+                  >
+                    <div>
                       <p className="text-sm text-gray-600 mb-3">
                         Once <strong>{shown.label.toLowerCase()}</strong> has taken its pass, this is what you'd have to buy
                         or build to finish every remaining order: <strong>{num(shown.shortfallUnits)}</strong> units across{" "}
@@ -520,7 +528,7 @@ export default function FulfillmentCompare() {
                         </table>
                       </div>
                     </div>
-                  </div>
+                  </Accordion>
                 </>
               )}
             </>
