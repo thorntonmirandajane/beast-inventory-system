@@ -12,6 +12,7 @@ import {
   toMatrixifyCsv,
   type PlanRule,
   type PlanLocation,
+  type RuleMatch,
 } from "../utils/fulfillment-plan.server";
 
 const DEFAULT_RULES: PlanRule[] = [];
@@ -166,6 +167,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   return { error: "Unknown action." };
 };
+
+// Defined here rather than imported: the rule editor runs in the browser, and
+// pulling a runtime value out of a .server module drags the server bundle with it.
+const usesSkuList = (m: RuleMatch) => m === "IN_LIST" || m === "NOT_IN_LIST";
 
 const num = (n: number) => n.toLocaleString();
 const money = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
@@ -390,37 +395,78 @@ export default function FulfillmentPlans() {
                       {rules.map((r, i) => (
                         <div key={r.id} className="rounded-lg border border-gray-200 p-3">
                           <div className="flex flex-wrap items-center gap-2">
+                            {/* How much */}
                             <select
-                              value={r.mode === "ALL" ? "ALL" : `QTY:${r.qty || 1}`}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                if (v === "ALL") setRule(i, { mode: "ALL", qty: 0 });
-                                else setRule(i, { mode: "QTY", qty: parseInt(v.split(":")[1], 10) || 1 });
-                              }}
+                              value={r.mode}
+                              onChange={(e) =>
+                                setRule(i, e.target.value === "ALL" ? { mode: "ALL" } : { mode: "QTY", qty: r.qty || 1 })
+                              }
                               className="form-select"
-                              style={{ maxWidth: 230 }}
+                              style={{ maxWidth: 170 }}
                             >
-                              <option value="QTY:1">Ship 1 per order</option>
-                              <option value="QTY:2">Ship 2 per order</option>
-                              <option value="QTY:3">Ship 3 per order</option>
-                              <option value="QTY:4">Ship 4 per order</option>
-                              <option value="QTY:5">Ship 5 per order</option>
-                              <option value="QTY:10">Ship 10 per order</option>
-                              <option value="ALL">Ship all the order needs</option>
+                              <option value="QTY">Ship up to</option>
+                              <option value="ALL">Ship all needed</option>
                             </select>
-                            <span className="text-sm text-gray-500">of</span>
-                            <div className="flex-1 min-w-[220px]">
-                              <SkuPicker
-                                options={skuOptions}
-                                selected={r.skus}
-                                onChange={(skus) => setRule(i, { skus })}
+                            {r.mode === "QTY" && (
+                              <>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  value={r.qty || ""}
+                                  onChange={(e) => setRule(i, { qty: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                                  className="form-input"
+                                  style={{ maxWidth: 90 }}
+                                />
+                                <span className="text-sm text-gray-500">per order</span>
+                              </>
+                            )}
+
+                            {/* Of what */}
+                            <select
+                              value={r.matchType}
+                              onChange={(e) => setRule(i, { matchType: e.target.value as RuleMatch })}
+                              className="form-select"
+                              style={{ maxWidth: 200 }}
+                            >
+                              <option value="IN_LIST">has SKUs</option>
+                              <option value="NOT_IN_LIST">does not have SKUs</option>
+                              <option value="CONTAINS">SKU contains</option>
+                              <option value="NOT_CONTAINS">SKU does not contain</option>
+                              <option value="PREFIX">SKU starts with</option>
+                              <option value="EXACT">SKU is exactly</option>
+                            </select>
+
+                            {usesSkuList(r.matchType) ? (
+                              <div className="flex-1 min-w-[220px]">
+                                <SkuPicker
+                                  options={skuOptions}
+                                  selected={r.skus}
+                                  onChange={(skus) => setRule(i, { skus })}
+                                />
+                              </div>
+                            ) : (
+                              <input
+                                value={r.match}
+                                onChange={(e) => setRule(i, { match: e.target.value })}
+                                placeholder="COC"
+                                className="form-input flex-1"
+                                style={{ minWidth: 140 }}
                               />
-                            </div>
+                            )}
+
                             <button type="button" onClick={() => setRules((rs) => rs.filter((_, j) => j !== i))} className="btn btn-secondary btn-sm text-red-600">Remove</button>
                           </div>
-                          {r.skus.length === 0 && r.match && (
-                            <p className="text-xs text-amber-700 mt-2">
-                              Saved as a text rule ({r.matchType?.toLowerCase()} "{r.match}"). Pick SKUs above to replace it.
+
+                          {usesSkuList(r.matchType) && r.skus.length === 0 && (
+                            <p className="text-xs text-amber-700 mt-2">Pick at least one SKU, or this rule is ignored.</p>
+                          )}
+                          {!usesSkuList(r.matchType) && !r.match.trim() && (
+                            <p className="text-xs text-amber-700 mt-2">Enter some text, or this rule is ignored.</p>
+                          )}
+                          {(r.matchType === "NOT_IN_LIST" || r.matchType === "NOT_CONTAINS") && (
+                            <p className="text-xs text-gray-500 mt-2">
+                              This covers everything else on the order, so put it below your more specific rules.
                             </p>
                           )}
                         </div>
@@ -428,7 +474,7 @@ export default function FulfillmentPlans() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setRules((rs) => [...rs, { id: `r${Date.now()}`, skus: [], mode: "QTY", qty: 1 }])}
+                      onClick={() => setRules((rs) => [...rs, { id: `r${Date.now()}`, matchType: "IN_LIST", match: "", skus: [], mode: "QTY", qty: 1 }])}
                       className="btn btn-secondary btn-sm mt-2"
                     >
                       + Add rule

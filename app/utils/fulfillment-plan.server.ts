@@ -18,20 +18,30 @@ import prisma from "../db.server";
 import { loadUnfulfilledView, type UnfulfilledViewOrder } from "./unfulfilled-view.server";
 
 export type PlanLocation = "GALLATIN" | "UTAH";
-export type RuleMatch = "CONTAINS" | "PREFIX" | "EXACT";
+export type RuleMatch =
+  | "CONTAINS"
+  | "NOT_CONTAINS"
+  | "PREFIX"
+  | "EXACT"
+  | "IN_LIST"      // has SKUs — one of the chosen SKUs
+  | "NOT_IN_LIST"; // does not have SKUs — anything except the chosen SKUs
 export type RuleMode = "QTY" | "ALL";
 
 export interface PlanRule {
   id: string;
-  /** The SKUs this rule covers, picked from the backlog. */
+  /** How this rule decides which lines it covers. */
+  matchType: RuleMatch;
+  /** The text to match, for the CONTAINS / PREFIX / EXACT forms. */
+  match: string;
+  /** The chosen SKUs, for the IN_LIST / NOT_IN_LIST forms. */
   skus: string[];
   /** QTY = up to `qty` units per order; ALL = everything the order still needs. */
   mode: RuleMode;
   qty: number;
-  /** Older text-match rules, still honoured so saved plans keep working. */
-  match?: string;
-  matchType?: RuleMatch;
 }
+
+export const LIST_MATCHES: RuleMatch[] = ["IN_LIST", "NOT_IN_LIST"];
+export const usesSkuList = (m: RuleMatch) => LIST_MATCHES.includes(m);
 
 export interface PlannedLine {
   sku: string;
@@ -77,31 +87,61 @@ export interface PlanPreview {
 
 const norm = (s: string) => s.trim().toUpperCase();
 
+const ALL_MATCHES: RuleMatch[] = ["CONTAINS", "NOT_CONTAINS", "PREFIX", "EXACT", "IN_LIST", "NOT_IN_LIST"];
+
 export function parseRules(raw: unknown): PlanRule[] {
   if (!Array.isArray(raw)) return [];
   return raw
-    .map((r: any, i: number) => ({
-      id: String(r?.id ?? `r${i}`),
-      skus: Array.isArray(r?.skus) ? r.skus.map((x: any) => String(x)).filter(Boolean) : [],
-      mode: (r?.mode === "ALL" ? "ALL" : "QTY") as RuleMode,
-      qty: Math.max(0, Math.floor(Number(r?.qty) || 0)),
-      match: typeof r?.match === "string" && r.match.trim() ? String(r.match).trim() : undefined,
-      matchType: (["CONTAINS", "PREFIX", "EXACT"].includes(r?.matchType) ? r.matchType : undefined) as RuleMatch | undefined,
-    }))
-    // A rule with nothing selected and no legacy text matches nothing.
-    .filter((r) => r.skus.length > 0 || !!r.match);
+    .map((r: any, i: number) => {
+      const skus = Array.isArray(r?.skus) ? r.skus.map((x: any) => String(x)).filter(Boolean) : [];
+      // A rule saved before the picker existed has text but no matchType of the
+      // list kind; default those to CONTAINS as they always behaved.
+      const matchType: RuleMatch = ALL_MATCHES.includes(r?.matchType)
+        ? r.matchType
+        : skus.length > 0
+        ? "IN_LIST"
+        : "CONTAINS";
+      return {
+        id: String(r?.id ?? `r${i}`),
+        matchType,
+        match: typeof r?.match === "string" ? String(r.match).trim() : "",
+        skus,
+        mode: (r?.mode === "ALL" ? "ALL" : "QTY") as RuleMode,
+        qty: Math.max(0, Math.floor(Number(r?.qty) || 0)),
+      };
+    })
+    // A rule with nothing to match on would either do nothing (list forms) or
+    // match everything (text forms) — neither is what anyone meant.
+    .filter((r) => (usesSkuList(r.matchType) ? r.skus.length > 0 : !!r.match));
 }
 
 function ruleMatches(rule: PlanRule, sku: string, title: string): boolean {
   const s = norm(sku);
-  // Explicitly chosen SKUs win; the text form is only for plans saved before
-  // the picker existed.
-  if (rule.skus.length > 0) return rule.skus.some((x) => norm(x) === s);
+
+  if (usesSkuList(rule.matchType)) {
+    const inList = rule.skus.some((x) => norm(x) === s);
+    return rule.matchType === "IN_LIST" ? inList : !inList;
+  }
+
   if (!rule.match) return false;
   const needle = norm(rule.match);
   if (rule.matchType === "EXACT") return s === needle;
   if (rule.matchType === "PREFIX") return s.startsWith(needle);
-  return s.includes(needle) || norm(title).includes(needle);
+  const contains = s.includes(needle) || norm(title).includes(needle);
+  return rule.matchType === "NOT_CONTAINS" ? !contains : contains;
+}
+
+/** How a rule reads back on the preview, so a picked line can be traced to it. */
+export function describeRule(rule: PlanRule): string {
+  const act = rule.mode === "ALL" ? "all" : `up to ${rule.qty}`;
+  switch (rule.matchType) {
+    case "IN_LIST": return `${act} · ${rule.skus.length} chosen SKU(s)`;
+    case "NOT_IN_LIST": return `${act} · anything except ${rule.skus.length} SKU(s)`;
+    case "NOT_CONTAINS": return `${act} · not containing "${rule.match}"`;
+    case "PREFIX": return `${act} · starting "${rule.match}"`;
+    case "EXACT": return `${act} · exactly "${rule.match}"`;
+    default: return `${act} · containing "${rule.match}"`;
+  }
 }
 
 /** Render the warehouse note from the plan's template. */
@@ -205,7 +245,7 @@ export async function previewPlan(input: {
         sku: l.sku,
         title: l.title,
         qty: take,
-        rule: `${rule.mode === "ALL" ? "all" : `up to ${rule.qty}`} · ${rule.skus.length ? `${rule.skus.length} SKU(s)` : rule.match}`,
+        rule: describeRule(rule),
       });
     }
 
