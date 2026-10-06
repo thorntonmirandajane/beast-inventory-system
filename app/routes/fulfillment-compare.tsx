@@ -455,7 +455,7 @@ export default function FulfillmentCompare() {
                               const key = `${o.store}:${o.orderName}`;
                               return [
                                 <tr key={key} onClick={() => setOpenOrder(openOrder === key ? null : key)} className="cursor-pointer">
-                                  <td className="text-gray-400">{o.lines.length ? (openOrder === key ? "▾" : "▸") : ""}</td>
+                                  <td className="text-gray-400">{openOrder === key ? "▾" : "▸"}</td>
                                   <td className="text-gray-500 tabular-nums">{o.position ?? "—"}</td>
                                   <td className="font-medium">{o.orderName}</td>
                                   <td><span className={`badge ${o.store === "beast" ? "badge-purple" : "badge-blue"}`}>{o.store === "beast" ? "Beast" : "Archery"}</span></td>
@@ -472,7 +472,7 @@ export default function FulfillmentCompare() {
                                     </span>
                                   </td>
                                 </tr>,
-                                openOrder === key && o.lines.length > 0 && (
+                                openOrder === key && (
                                   <tr key={`${key}-x`}>
                                     <td></td>
                                     <td colSpan={11} className="bg-gray-50">

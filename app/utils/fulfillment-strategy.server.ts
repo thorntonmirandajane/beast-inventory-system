@@ -222,8 +222,9 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
   const walked: UnfulfilledViewOrder[] = [];
   const takeOrder = (o: UnfulfilledViewOrder) => {
     walked.push(o);
-    const got = allocate(o, shelves, shippedBySku);
-    if (got.units > 0) shipped.set(`${o.store}:${o.orderId}`, got);
+    // Recorded even at zero units — the row still expands to show what the
+    // order wants and why none of it could be covered.
+    shipped.set(`${o.store}:${o.orderId}`, allocate(o, shelves, shippedBySku));
   };
 
   if (input.kind === "FULL_ONLY") {
@@ -253,11 +254,22 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
   const walkedKeys = new Set(walked.map((o) => `${o.store}:${o.orderId}`));
   const sequence = [...walked, ...sorted.filter((o) => !walkedKeys.has(`${o.store}:${o.orderId}`))];
 
+  // Two passes: number the orders that actually ship, in pick sequence, then
+  // append the ones that get nothing. Interleaving them left holes in the
+  // numbering and buried the real pick list.
+  const ships = (o: UnfulfilledViewOrder) => (shipped.get(`${o.store}:${o.orderId}`)?.units ?? 0) > 0;
+  const ordered = [...sequence.filter(ships), ...sequence.filter((o) => !ships(o))];
+
   let position = 0;
-  for (const o of sequence) {
+  for (const o of ordered) {
     const got = shipped.get(`${o.store}:${o.orderId}`) ?? {
-      units: 0, value: 0, fromGallatin: 0, fromUtah: 0,
-      lines: [] as Got["lines"],
+      units: 0,
+      value: 0,
+      fromGallatin: 0,
+      fromUtah: 0,
+      lines: o.lines.map((l) => ({
+        sku: l.sku, title: l.title, needed: l.needed, fromGallatin: 0, fromUtah: 0,
+      })),
     };
     const outcome: "FULL" | "PARTIAL" | "NONE" =
       got.units >= o.totalNeeded && o.totalNeeded > 0 ? "FULL" : got.units > 0 ? "PARTIAL" : "NONE";
@@ -297,7 +309,7 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
       source,
       value: got.value,
       outcome,
-      lines: got.lines.filter((l) => l.fromGallatin + l.fromUtah > 0),
+      lines: got.lines,
     });
   }
 
@@ -413,7 +425,7 @@ export function ordersToCsv(result: StrategyResult, scenarioName: string): strin
     o.source === "BOTH" ? "Both" : o.source === "NONE" ? "—" : o.source === "UTAH" ? "Utah" : "Gallatin",
     o.outcome === "FULL" ? "Ships complete" : o.outcome === "PARTIAL" ? "Part-fills" : "Nothing available",
     o.value,
-    o.lines.map((l) => `${l.fromGallatin + l.fromUtah}x ${l.sku}`).join("; "),
+    o.lines.filter((l) => l.fromGallatin + l.fromUtah > 0).map((l) => `${l.fromGallatin + l.fromUtah}x ${l.sku}`).join("; "),
   ]);
   return [header, ...rows].map((r) => r.map(csvCell).join(",")).join("\n");
 }
