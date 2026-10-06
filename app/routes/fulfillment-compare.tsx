@@ -108,6 +108,35 @@ const pct = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 100) : 0);
 const SOURCE_LABEL: Record<string, string> = { GALLATIN: "Gallatin", UTAH: "Utah", BOTH: "Both", NONE: "—" };
 const SOURCE_CLASS: Record<string, string> = { GALLATIN: "badge-blue", UTAH: "badge-purple", BOTH: "badge-yellow", NONE: "badge-gray" };
 
+/** A card whose body folds away. Closed by default — these tables run long. */
+function Accordion({
+  title,
+  summary,
+  children,
+}: {
+  title: string;
+  summary?: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="card mb-4">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="card-header w-full text-left cursor-pointer hover:bg-gray-50 transition-colors"
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <span className="text-gray-400 shrink-0">{open ? "▾" : "▸"}</span>
+          <span className="card-title truncate">{title}</span>
+        </span>
+        {summary && <span className="text-xs text-gray-500 shrink-0 ml-2">{summary}</span>}
+      </button>
+      {open && <div className="card-body">{children}</div>}
+    </div>
+  );
+}
+
 function StrategyCard({ r, totals, best }: {
   r: StrategyResult;
   totals: { orders: number; units: number; value: number };
@@ -362,9 +391,11 @@ export default function FulfillmentCompare() {
                   </div>
 
                   {/* Where each SKU's units come from */}
-                  <div className="card mb-4">
-                    <div className="card-header"><span className="card-title">Units by SKU and warehouse</span></div>
-                    <div className="card-body">
+                  <Accordion
+                    title="Units by SKU and warehouse"
+                    summary={`${num(shown.bySku.length)} SKUs · ${num(shown.unitsFromGallatin)} Gallatin / ${num(shown.unitsFromUtah)} Utah`}
+                  >
+                    <div>
                       <p className="text-sm text-gray-600 mb-3">
                         {num(shown.unitsFromGallatin)} units would come out of Gallatin and {num(shown.unitsFromUtah)} out
                         of Utah under <strong>{shown.label.toLowerCase()}</strong>.
@@ -390,20 +421,22 @@ export default function FulfillmentCompare() {
                         </table>
                       </div>
                     </div>
-                  </div>
+                  </Accordion>
 
                   {/* Every order in the scenario */}
-                  <div className="card mb-4">
-                    <div className="card-header flex-wrap gap-2">
-                      <span className="card-title">Every order in this scenario ({num(shown.orders.length)})</span>
-                      <a
-                        className="btn btn-primary btn-sm"
-                        href={`/fulfillment-compare/export?kind=${shown.kind}&location=${location}&store=${encodeURIComponent(storeFilter)}&customers=${encodeURIComponent(customers)}&name=${encodeURIComponent(scenario?.name ?? "Scenario")}`}
-                      >
-                        Export CSV
-                      </a>
-                    </div>
-                    <div className="card-body">
+                  <Accordion
+                    title="Every order in this scenario"
+                    summary={`${num(shown.orders.length)} orders · ${num(shown.ordersFull)} complete, ${num(shown.ordersPartial)} part, ${num(shown.ordersUntouched)} none`}
+                  >
+                    <div>
+                      <div className="mb-3">
+                        <a
+                          className="btn btn-primary btn-sm"
+                          href={`/fulfillment-compare/export?kind=${shown.kind}&location=${location}&store=${encodeURIComponent(storeFilter)}&customers=${encodeURIComponent(customers)}&name=${encodeURIComponent(scenario?.name ?? "Scenario")}`}
+                        >
+                          Export CSV
+                        </a>
+                      </div>
                       <div className="overflow-x-auto">
                         <table className="data-table">
                           <thead>
@@ -459,7 +492,7 @@ export default function FulfillmentCompare() {
                         </table>
                       </div>
                     </div>
-                  </div>
+                  </Accordion>
 
                   {/* Buy / build list */}
                   <div className="card">
