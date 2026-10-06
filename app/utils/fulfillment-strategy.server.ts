@@ -28,6 +28,18 @@ export interface StoreSplit {
   value: number;
 }
 
+export type ShipFrom = "GALLATIN" | "UTAH" | "EITHER";
+
+/** How much of one SKU each warehouse would contribute under a strategy. */
+export interface SkuSourceRow {
+  sku: string;
+  title: string;
+  fromGallatin: number;
+  fromUtah: number;
+  total: number;
+  stillShort: number;
+}
+
 export interface ShortfallRow {
   sku: string;
   title: string;
@@ -50,14 +62,25 @@ export interface StrategyResult {
   /** What it would take to clear everything this strategy leaves behind. */
   shortfall: ShortfallRow[];
   shortfallUnits: number;
-  /** Per-order outcome, newest-first truncation handled by the caller. */
+  /** Per SKU, where the shipped units would come from. */
+  bySku: SkuSourceRow[];
+  unitsFromGallatin: number;
+  unitsFromUtah: number;
+  /** Every order in the scenario, with where its units would come from. */
   orders: {
     orderName: string;
     store: string;
+    customer: string;
     ageDays: number;
     needed: number;
     shipped: number;
+    fromGallatin: number;
+    fromUtah: number;
+    /** Which shelf (or shelves) this order draws on. */
+    source: "GALLATIN" | "UTAH" | "BOTH" | "NONE";
+    value: number;
     outcome: "FULL" | "PARTIAL" | "NONE";
+    lines: { sku: string; title: string; needed: number; fromGallatin: number; fromUtah: number }[];
   }[];
 }
 
@@ -65,37 +88,74 @@ const norm = (s: string) => s.trim().toUpperCase();
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const emptySplit = (): StoreSplit => ({ ordersFull: 0, ordersPartial: 0, units: 0, value: 0 });
 
-/** Can this order be covered in full from what's left? */
-function coversFully(order: UnfulfilledViewOrder, pool: Map<string, number>): boolean {
+/** The two shelves a strategy can draw on, and which of them it may use. */
+interface Shelves {
+  gallatin: Map<string, number>;
+  utah: Map<string, number>;
+  from: ShipFrom;
+}
+
+const available = (sh: Shelves, sku: string) =>
+  (sh.from !== "UTAH" ? sh.gallatin.get(sku) ?? 0 : 0) +
+  (sh.from !== "GALLATIN" ? sh.utah.get(sku) ?? 0 : 0);
+
+/** Can this order be covered in full from what's left across the allowed shelves? */
+function coversFully(order: UnfulfilledViewOrder, sh: Shelves): boolean {
   const need = new Map<string, number>();
   for (const l of order.lines) need.set(norm(l.sku), (need.get(norm(l.sku)) ?? 0) + l.needed);
-  for (const [sku, qty] of need) if ((pool.get(sku) ?? 0) < qty) return false;
+  for (const [sku, qty] of need) if (available(sh, sku) < qty) return false;
   return true;
 }
 
 /**
- * Take what this order can get from the pool, drawing it down. `shippedBySku`
- * accumulates across the whole run so the shortfall can be worked out as
- * demand minus what actually went out.
+ * Take what this order can get, drawing the shelves down. Gallatin is used
+ * first when both are allowed — it's the fulfilment warehouse, so shipping from
+ * there is the normal path and Utah is the top-up.
+ *
+ * `shippedBySku` accumulates across the whole run, per warehouse, so the
+ * shortfall and the source breakdown both come from real allocations rather
+ * than from reading a drained pool back.
  */
 function allocate(
   order: UnfulfilledViewOrder,
-  pool: Map<string, number>,
-  shippedBySku: Map<string, number>
+  sh: Shelves,
+  shippedBySku: Map<string, { g: number; u: number }>
 ) {
   let units = 0;
   let value = 0;
+  let fromG = 0;
+  let fromU = 0;
+  const lineDetail: { sku: string; title: string; needed: number; fromGallatin: number; fromUtah: number }[] = [];
   for (const l of order.lines) {
     const key = norm(l.sku);
-    const left = pool.get(key) ?? 0;
-    const take = Math.min(l.needed, left);
+    let want = l.needed;
+    let g = 0;
+    let u = 0;
+
+    if (sh.from !== "UTAH" && want > 0) {
+      const left = sh.gallatin.get(key) ?? 0;
+      g = Math.min(want, left);
+      if (g > 0) { sh.gallatin.set(key, left - g); want -= g; }
+    }
+    if (sh.from !== "GALLATIN" && want > 0) {
+      const left = sh.utah.get(key) ?? 0;
+      u = Math.min(want, left);
+      if (u > 0) { sh.utah.set(key, left - u); want -= u; }
+    }
+
+    const take = g + u;
+    lineDetail.push({ sku: l.sku, title: l.title, needed: l.needed, fromGallatin: g, fromUtah: u });
     if (take <= 0) continue;
-    pool.set(key, left - take);
-    shippedBySku.set(key, (shippedBySku.get(key) ?? 0) + take);
+    const rec = shippedBySku.get(key) ?? { g: 0, u: 0 };
+    rec.g += g;
+    rec.u += u;
+    shippedBySku.set(key, rec);
     units += take;
     value += (l.unitPrice ?? 0) * take;
+    fromG += g;
+    fromU += u;
   }
-  return { units, value: round2(value) };
+  return { units, value: round2(value), fromGallatin: fromG, fromUtah: fromU, lines: lineDetail };
 }
 
 function orderOf(kind: StrategyKind, orders: UnfulfilledViewOrder[], priority: Set<string>) {
@@ -120,7 +180,7 @@ function orderOf(kind: StrategyKind, orders: UnfulfilledViewOrder[], priority: S
 
 export interface RunStrategyInput {
   kind: StrategyKind;
-  location: "GALLATIN" | "UTAH";
+  location: ShipFrom;
   storeFilter?: string;
   /** Names or companies to favour, for CUSTOMERS_FIRST. */
   priorityCustomers?: string[];
@@ -136,33 +196,37 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
     orders = orders.filter((o) => o.store === input.storeFilter);
   }
 
-  // One pool per run, so every strategy starts from the same shelf.
-  const pool = new Map<string, number>();
+  // Fresh shelves per run, so every strategy starts from the same stock.
+  const titleBySku = new Map<string, string>();
+  const shelves: Shelves = { gallatin: new Map(), utah: new Map(), from: input.location };
   for (const o of orders) {
     for (const l of o.lines) {
       const key = norm(l.sku);
-      if (pool.has(key)) continue;
-      pool.set(key, Math.max(0, (input.location === "UTAH" ? l.utahOnHand : l.gallatinOnHand) ?? 0));
+      if (!titleBySku.has(key)) titleBySku.set(key, l.title);
+      if (shelves.gallatin.has(key)) continue;
+      shelves.gallatin.set(key, Math.max(0, l.gallatinOnHand ?? 0));
+      shelves.utah.set(key, Math.max(0, l.utahOnHand ?? 0));
     }
   }
 
   const priority = new Set((input.priorityCustomers ?? []).map((c) => c.trim().toLowerCase()).filter(Boolean));
   const sorted = orderOf(input.kind, orders, priority);
 
-  const shipped = new Map<string, { units: number; value: number }>();
-  const shippedBySku = new Map<string, number>();
+  type Got = ReturnType<typeof allocate>;
+  const shipped = new Map<string, Got>();
+  const shippedBySku = new Map<string, { g: number; u: number }>();
   const takeOrder = (o: UnfulfilledViewOrder) => {
-    const got = allocate(o, pool, shippedBySku);
+    const got = allocate(o, shelves, shippedBySku);
     if (got.units > 0) shipped.set(`${o.store}:${o.orderId}`, got);
   };
 
   if (input.kind === "FULL_ONLY") {
-    for (const o of sorted) if (coversFully(o, pool)) takeOrder(o);
+    for (const o of sorted) if (coversFully(o, shelves)) takeOrder(o);
   } else if (input.kind === "FULL_FIRST_THEN_PARTIAL" || input.kind === "MOST_ORDERS_CLEARED") {
     // Pass 1 — everything that can go out whole.
     const leftovers: UnfulfilledViewOrder[] = [];
     for (const o of sorted) {
-      if (coversFully(o, pool)) takeOrder(o);
+      if (coversFully(o, shelves)) takeOrder(o);
       else leftovers.push(o);
     }
     // Pass 2 — part-fill the rest with whatever survived, oldest first.
@@ -179,7 +243,10 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
   const detail: StrategyResult["orders"] = [];
 
   for (const o of orders) {
-    const got = shipped.get(`${o.store}:${o.orderId}`) ?? { units: 0, value: 0 };
+    const got = shipped.get(`${o.store}:${o.orderId}`) ?? {
+      units: 0, value: 0, fromGallatin: 0, fromUtah: 0,
+      lines: [] as Got["lines"],
+    };
     const outcome: "FULL" | "PARTIAL" | "NONE" =
       got.units >= o.totalNeeded && o.totalNeeded > 0 ? "FULL" : got.units > 0 ? "PARTIAL" : "NONE";
 
@@ -198,9 +265,25 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
     side.units += got.units;
     side.value = round2(side.value + got.value);
 
+    const source: "GALLATIN" | "UTAH" | "BOTH" | "NONE" =
+      got.fromGallatin > 0 && got.fromUtah > 0 ? "BOTH"
+      : got.fromGallatin > 0 ? "GALLATIN"
+      : got.fromUtah > 0 ? "UTAH"
+      : "NONE";
+
     detail.push({
-      orderName: o.orderName, store: o.store, ageDays: o.ageDays,
-      needed: o.totalNeeded, shipped: got.units, outcome,
+      orderName: o.orderName,
+      store: o.store,
+      customer: o.company || o.customerName || "",
+      ageDays: o.ageDays,
+      needed: o.totalNeeded,
+      shipped: got.units,
+      fromGallatin: got.fromGallatin,
+      fromUtah: got.fromUtah,
+      source,
+      value: got.value,
+      outcome,
+      lines: got.lines.filter((l) => l.fromGallatin + l.fromUtah > 0),
     });
   }
 
@@ -220,12 +303,29 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
       demandBySku.set(key, entry);
     }
   }
+  const bySku: SkuSourceRow[] = [];
+  let unitsFromGallatin = 0;
+  let unitsFromUtah = 0;
   for (const [key, entry] of demandBySku) {
-    const out = shippedBySku.get(key) ?? 0;
+    const src = shippedBySku.get(key) ?? { g: 0, u: 0 };
+    const out = src.g + src.u;
     const missing = entry.row.stillNeeded - out;
+    unitsFromGallatin += src.g;
+    unitsFromUtah += src.u;
+    if (out > 0 || missing > 0) {
+      bySku.push({
+        sku: entry.row.sku,
+        title: titleBySku.get(key) ?? entry.row.title,
+        fromGallatin: src.g,
+        fromUtah: src.u,
+        total: out,
+        stillShort: Math.max(0, missing),
+      });
+    }
     if (missing <= 0) continue;
     shortBySku.set(key, { ...entry.row, stillNeeded: missing, ordersWaiting: entry.orders.size });
   }
+  bySku.sort((a, b) => b.total - a.total || b.stillShort - a.stillShort || a.sku.localeCompare(b.sku));
 
   const shortfall = [...shortBySku.values()].sort((a, b) => b.stillNeeded - a.stillNeeded);
 
@@ -240,13 +340,16 @@ export async function runStrategy(input: RunStrategyInput): Promise<StrategyResu
     byStore,
     shortfall,
     shortfallUnits: shortfall.reduce((t, r) => t + r.stillNeeded, 0),
+    bySku,
+    unitsFromGallatin,
+    unitsFromUtah,
     orders: detail,
   };
 }
 
 export async function compareStrategies(input: {
   kinds: StrategyKind[];
-  location: "GALLATIN" | "UTAH";
+  location: ShipFrom;
   storeFilter?: string;
   priorityCustomers?: string[];
 }): Promise<{ results: StrategyResult[]; totalOrders: number; totalUnits: number; totalValue: number }> {
@@ -267,4 +370,35 @@ export async function compareStrategies(input: {
     totalUnits: orders.reduce((t, o) => t + o.totalNeeded, 0),
     totalValue: round2(orders.reduce((t, o) => t + o.unfulfilledValue, 0)),
   };
+}
+
+const csvCell = (v: string | number | null | undefined) => {
+  const s = v == null ? "" : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+/** Every order in the scenario, with where its units come from. */
+export function ordersToCsv(result: StrategyResult, scenarioName: string): string {
+  const header = [
+    "Scenario", "Strategy", "Order", "Store", "Customer", "Waiting (days)",
+    "Units needed", "Units shipped", "From Gallatin", "From Utah",
+    "Ships from", "Outcome", "Value shipped", "Items",
+  ];
+  const rows = result.orders.map((o) => [
+    scenarioName,
+    result.label,
+    o.orderName,
+    o.store === "beast" ? "Beast" : "Archery",
+    o.customer,
+    o.ageDays,
+    o.needed,
+    o.shipped,
+    o.fromGallatin,
+    o.fromUtah,
+    o.source === "BOTH" ? "Both" : o.source === "NONE" ? "—" : o.source === "UTAH" ? "Utah" : "Gallatin",
+    o.outcome === "FULL" ? "Ships complete" : o.outcome === "PARTIAL" ? "Part-fills" : "Nothing available",
+    o.value,
+    o.lines.map((l) => `${l.fromGallatin + l.fromUtah}x ${l.sku}`).join("; "),
+  ]);
+  return [header, ...rows].map((r) => r.map(csvCell).join(",")).join("\n");
 }

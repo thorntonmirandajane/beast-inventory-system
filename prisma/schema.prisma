@@ -42,6 +42,7 @@ model User {
   aiConversations        AiConversation[]
   scheduleDaysOff        ScheduleDayOff[]
   fulfillmentPlans       FulfillmentPlan[]
+  fulfillmentScenarios   FulfillmentScenario[]
 
   @@map("users")
 }
@@ -904,4 +905,25 @@ model FulfillmentPlanAction {
   @@index([orderId])
   @@index([status])
   @@map("fulfillment_plan_actions")
+}
+
+// A saved strategy comparison: which approaches to weigh against each other,
+// from which warehouse, for which stores. Nothing about the result is stored —
+// it is recomputed from live stock each time, so an old scenario never shows
+// stale numbers.
+model FulfillmentScenario {
+  id                String   @id @default(cuid())
+  name              String
+  location          String   @default("GALLATIN") // GALLATIN | UTAH | EITHER
+  storeFilter       String   @default("all")
+  priorityCustomers String   @default("")
+  strategies        Json     // StrategyKind[]
+  notes             String?
+  createdById       String
+  createdBy         User     @relation(fields: [createdById], references: [id])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([updatedAt])
+  @@map("fulfillment_scenarios")
 }

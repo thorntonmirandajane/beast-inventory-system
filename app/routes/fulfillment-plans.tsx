@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useActionData, Form, useNavigation, Link, useSearchParams } from "react-router";
+import { useLoaderData, useActionData, Form, useNavigation, Link, useSearchParams, redirect } from "react-router";
 import { useState } from "react";
 import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
@@ -9,7 +9,6 @@ import {
   previewPlan,
   commitPlan,
   parseRules,
-  toMatrixifyCsv,
   type PlanRule,
   type PlanLocation,
   type RuleMatch,
@@ -145,14 +144,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       data: { status: "EXPORTED", exportedAt: new Date() },
     });
     await createAuditLog(user.id, "EXPORT_FULFILLMENT_PLAN", "FulfillmentPlan", plan.id, { orders: preview.orders.length });
-    const csv = toMatrixifyCsv(preview, plan.name);
-    const slug = plan.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "plan";
-    return new Response(csv, {
-      headers: {
-        "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": `attachment; filename="matrixify_${slug}_${new Date().toISOString().slice(0, 10)}.csv"`,
-      },
-    });
+    // The actions are recorded; hand the download itself to the GET route.
+    return redirect(
+      `/fulfillment-plans/export?plan=${plan.id}${String(form.get("skipActioned") || "") === "1" ? "&skipActioned=1" : ""}`
+    );
   }
 
   if (intent === "archive") {
@@ -285,8 +280,9 @@ export default function FulfillmentPlans() {
   const [rules, setRules] = useState<PlanRule[]>(plan?.rules ?? []);
   const [open, setOpen] = useState<string | null>(null);
 
-  if (actionData && "redirectTo" in actionData && actionData.redirectTo && typeof window !== "undefined") {
-    window.location.href = actionData.redirectTo;
+  const ad = actionData && typeof actionData === "object" ? (actionData as Record<string, any>) : null;
+  if (ad?.redirectTo && typeof window !== "undefined") {
+    window.location.href = ad.redirectTo;
   }
 
   const setRule = (i: number, patch: Partial<PlanRule>) =>
@@ -305,8 +301,8 @@ export default function FulfillmentPlans() {
         <Link to="/unfulfilled" className="btn btn-secondary btn-sm">Unfulfilled orders</Link>
       </div>
 
-      {actionData && "error" in actionData && actionData.error && <div className="alert alert-error mb-4">{actionData.error}</div>}
-      {actionData && "message" in actionData && actionData.message && <div className="alert alert-success mb-4">{actionData.message}</div>}
+      {ad?.error && <div className="alert alert-error mb-4">{ad.error}</div>}
+      {ad?.message && <div className="alert alert-success mb-4">{ad.message}</div>}
       {previewError && <div className="alert alert-error mb-4">Couldn't build the preview: {previewError}</div>}
 
       <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
@@ -539,7 +535,7 @@ export default function FulfillmentPlans() {
                           <input type="hidden" name="skipActioned" value={skipActioned ? "1" : ""} />
                           <button className="btn btn-secondary btn-sm" disabled={busy || preview.totals.orders === 0}>Mark as actioned</button>
                         </Form>
-                        <Form method="post">
+                        <Form method="post" reloadDocument>
                           <input type="hidden" name="intent" value="export" />
                           <input type="hidden" name="planId" value={plan.id} />
                           <input type="hidden" name="skipActioned" value={skipActioned ? "1" : ""} />
