@@ -12,6 +12,7 @@ export default [
   route("operations", "routes/operations.tsx"),
   route("unfulfilled", "routes/unfulfilled.tsx"),
   route("fulfillment-plans", "routes/fulfillment-plans.tsx"),
+  route("fulfillment-compare", "routes/fulfillment-compare.tsx"),
   route("backorder", "routes/backorder.tsx"),
   route("inventory", "routes/inventory.tsx"),
   route("inventory/import-counts", "routes/inventory.import-counts.tsx"),
