@@ -29,6 +29,8 @@ export interface UnfulfilledViewLine {
   sku: string;
   title: string;
   needed: number;
+  unitPrice: number;
+  lineValue: number;
   gallatinOnHand: number | null;
   gallatinFulfillable: number;
   utahOnHand: number | null;
@@ -46,6 +48,9 @@ export interface UnfulfilledViewOrder {
   customerName: string;
   company: string | null;
   totalNeeded: number;
+  /** Value of what's still unshipped on this order. */
+  unfulfilledValue: number;
+  currency: string | null;
   gallatinFulfillable: number;
   utahFulfillable: number;
   /** Best single warehouse — an order split across both isn't one shipment. */
@@ -62,6 +67,7 @@ export interface UnfulfilledSkuRow {
   beastUnits: number;
   archeryUnits: number;
   totalUnits: number;
+  totalValue: number;
   gallatinOnHand: number | null;
   gallatinFulfillable: number;
   utahOnHand: number | null;
@@ -78,6 +84,7 @@ export interface UnfulfilledView {
   totals: {
     orders: number;
     units: number;
+    value: number;
     canShipGallatin: number;
     canShipUtah: number;
     canShipEither: number;
@@ -237,6 +244,8 @@ export function assemble(input: {
         sku: li.sku,
         title: li.title,
         needed: li.quantity,
+        unitPrice: li.unitPrice ?? 0,
+        lineValue: li.lineValue ?? 0,
         gallatinOnHand: gallatinOnHand.has(key) ? gallatinOnHand.get(key)! : null,
         gallatinFulfillable: gTake,
         utahOnHand: known ? utahOnHand.get(key) ?? 0 : null,
@@ -246,7 +255,7 @@ export function assemble(input: {
 
       const agg = skuAgg.get(key) ?? {
         sku: li.sku, title: li.title,
-        beastUnits: 0, archeryUnits: 0, totalUnits: 0,
+        beastUnits: 0, archeryUnits: 0, totalUnits: 0, totalValue: 0,
         gallatinOnHand: gallatinOnHand.has(key) ? gallatinOnHand.get(key)! : null,
         gallatinFulfillable: 0,
         utahOnHand: known ? utahOnHand.get(key) ?? 0 : null,
@@ -255,6 +264,7 @@ export function assemble(input: {
         orders: new Set<string>(),
       };
       agg.totalUnits += li.quantity;
+      agg.totalValue = Math.round((agg.totalValue + (li.lineValue ?? 0)) * 100) / 100;
       if (o.source === "beast") agg.beastUnits += li.quantity;
       else agg.archeryUnits += li.quantity;
       agg.gallatinFulfillable += gTake;
@@ -283,6 +293,8 @@ export function assemble(input: {
       customerName: o.customerName,
       company: o.company,
       totalNeeded,
+      unfulfilledValue: o.unfulfilledValue ?? 0,
+      currency: o.currency ?? null,
       gallatinFulfillable: gTotal,
       utahFulfillable: uTotal,
       bestFulfillable: best,
@@ -304,6 +316,7 @@ export function assemble(input: {
     totals: {
       orders: orders.length,
       units: orders.reduce((t, o) => t + o.totalNeeded, 0),
+      value: Math.round(orders.reduce((t, o) => t + o.unfulfilledValue, 0) * 100) / 100,
       canShipGallatin: orders.filter((o) => o.gallatinStatus === "FULL").length,
       canShipUtah: orders.filter((o) => o.utahStatus === "FULL").length,
       canShipEither: orders.filter((o) => o.status === "FULL").length,

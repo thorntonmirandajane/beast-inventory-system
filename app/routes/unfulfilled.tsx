@@ -26,6 +26,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 const num = (n: number) => n.toLocaleString();
+const money = (n: number) =>
+  n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const STATUS_LABEL: Record<ShipStatus, string> = { FULL: "Can ship", PARTIAL: "Partial", NONE: "Blocked" };
 const STATUS_CLASS: Record<ShipStatus, string> = {
   FULL: "badge-green",
@@ -49,6 +51,8 @@ export default function Unfulfilled() {
 
   const [tab, setTab] = useState<"orders" | "skus">("orders");
   const [filter, setFilter] = useState<"all" | ShipStatus>("all");
+  // Which warehouse the can-ship / partial / blocked filter is asking about.
+  const [scope, setScope] = useState<"either" | "gallatin" | "utah">("either");
   const [sort, setSort] = useState<"waiting_desc" | "waiting_asc">("waiting_desc");
   const [store, setStore] = useState<"all" | "beast" | "archery">("all");
   const [open, setOpen] = useState<string | null>(null);
@@ -56,7 +60,11 @@ export default function Unfulfilled() {
 
   const orders = useMemo(() => {
     let rows = view.orders as UnfulfilledViewOrder[];
-    if (filter !== "all") rows = rows.filter((o) => o.status === filter);
+    if (filter !== "all") {
+      rows = rows.filter((o) =>
+        (scope === "gallatin" ? o.gallatinStatus : scope === "utah" ? o.utahStatus : o.status) === filter
+      );
+    }
     if (store !== "all") rows = rows.filter((o) => o.store === store);
     if (q.trim()) {
       const needle = q.trim().toLowerCase();
@@ -71,7 +79,7 @@ export default function Unfulfilled() {
     return [...rows].sort((a, b) =>
       sort === "waiting_asc" ? a.ageDays - b.ageDays : b.ageDays - a.ageDays
     );
-  }, [view.orders, filter, store, sort, q]);
+  }, [view.orders, filter, scope, store, sort, q]);
 
   const skus = useMemo(() => {
     if (!q.trim()) return view.bySku;
@@ -94,6 +102,7 @@ export default function Unfulfilled() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <Link to="/fulfillment-plans" className="btn btn-primary btn-sm">Game plans</Link>
           <Link to="/backorder" className="btn btn-secondary btn-sm">Backorder planning</Link>
           <Form method="post">
             <input type="hidden" name="intent" value="refresh" />
@@ -115,6 +124,7 @@ export default function Unfulfilled() {
 
       <div className="stats-grid">
         <Kpi label="Unfulfilled orders" value={t.orders} />
+        <Kpi label="Longest waiting" value={`${t.longestWaitDays}d`} tone={t.longestWaitDays > 14 ? "text-red-600" : ""} />
         <Kpi label="Can ship (either site)" value={t.canShipEither} tone="text-green-600" />
         <Kpi label="Partial" value={t.partial} tone="text-amber-600" />
         <Kpi label="Blocked" value={t.blocked} tone="text-red-600" />
@@ -122,9 +132,9 @@ export default function Unfulfilled() {
 
       <div className="stats-grid">
         <Kpi label="Units waiting" value={t.units} />
+        <Kpi label="Value waiting" value={money(t.value)} />
         <Kpi label="Fully coverable from Gallatin" value={t.canShipGallatin} />
         <Kpi label="Fully coverable from Utah" value={t.canShipUtah} />
-        <Kpi label="Longest waiting" value={`${t.longestWaitDays}d`} tone={t.longestWaitDays > 14 ? "text-red-600" : ""} />
       </div>
 
       <p className="text-xs text-gray-500 mb-4">
@@ -161,6 +171,24 @@ export default function Unfulfilled() {
                   {f === "all" ? "All" : STATUS_LABEL[f]}
                 </button>
               ))}
+              {filter !== "all" && (
+                <>
+                  <span className="text-xs text-gray-500">from</span>
+                  {([
+                    ["either", "Either site"],
+                    ["gallatin", "Gallatin"],
+                    ["utah", "Utah"],
+                  ] as const).map(([v, label]) => (
+                    <button
+                      key={v}
+                      onClick={() => setScope(v)}
+                      className={`btn btn-sm ${scope === v ? "btn-primary" : "btn-secondary"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </>
+              )}
               <span className="w-px h-6 bg-gray-200 mx-1" />
               {(["all", "beast", "archery"] as const).map((s) => (
                 <button
@@ -191,12 +219,12 @@ export default function Unfulfilled() {
                 <thead>
                   <tr>
                     <th></th><th>Order</th><th>Store</th><th>Customer</th><th>Waiting</th>
-                    <th>Needed</th><th>From Gallatin</th><th>From Utah</th><th>Short</th><th>Status</th>
+                    <th>Needed</th><th>Value</th><th>From Gallatin</th><th>From Utah</th><th>Short</th><th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {orders.length === 0 && (
-                    <tr><td colSpan={10} className="text-center text-gray-500 py-6">No matching orders.</td></tr>
+                    <tr><td colSpan={11} className="text-center text-gray-500 py-6">No matching orders.</td></tr>
                   )}
                   {orders.map((o) => {
                     const key = `${o.store}:${o.orderId}`;
@@ -217,6 +245,7 @@ export default function Unfulfilled() {
                         <td>{o.company || o.customerName || "—"}</td>
                         <td className={o.ageDays > 14 ? "text-red-600 font-medium" : ""}>{o.ageDays}d</td>
                         <td>{num(o.totalNeeded)}</td>
+                        <td className="tabular-nums">{money(o.unfulfilledValue)}</td>
                         <td className={o.gallatinStatus === "FULL" ? "text-green-700" : ""}>
                           {num(o.gallatinFulfillable)} / {num(o.totalNeeded)}
                         </td>
@@ -229,7 +258,7 @@ export default function Unfulfilled() {
                       open === key && (
                         <tr key={`${key}-exp`}>
                           <td></td>
-                          <td colSpan={9} className="bg-gray-50">
+                          <td colSpan={10} className="bg-gray-50">
                             <div className="overflow-x-auto py-2">
                               <table className="data-table text-sm">
                                 <thead>
@@ -270,14 +299,14 @@ export default function Unfulfilled() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>SKU</th><th>Product</th><th>Beast</th><th>Archery</th><th>Total</th>
+                    <th>SKU</th><th>Product</th><th>Beast</th><th>Archery</th><th>Total</th><th>Value</th>
                     <th>Gallatin on hand</th><th>Gallatin can ship</th><th>Utah on hand</th><th>Utah can ship</th>
                     <th>Orders</th><th>Oldest</th>
                   </tr>
                 </thead>
                 <tbody>
                   {skus.length === 0 && (
-                    <tr><td colSpan={11} className="text-center text-gray-500 py-6">No matching SKUs.</td></tr>
+                    <tr><td colSpan={12} className="text-center text-gray-500 py-6">No matching SKUs.</td></tr>
                   )}
                   {skus.map((r) => {
                     const short = r.totalUnits - Math.max(r.gallatinFulfillable, r.utahFulfillable);
@@ -291,6 +320,7 @@ export default function Unfulfilled() {
                         <td>{num(r.beastUnits)}</td>
                         <td>{num(r.archeryUnits)}</td>
                         <td className={short > 0 ? "font-medium text-red-600" : "font-medium"}>{num(r.totalUnits)}</td>
+                        <td className="tabular-nums">{money(r.totalValue)}</td>
                         <td>{r.gallatinOnHand ?? "—"}</td>
                         <td>{num(r.gallatinFulfillable)}</td>
                         <td>{r.utahOnHand ?? "—"}</td>

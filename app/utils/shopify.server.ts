@@ -308,6 +308,8 @@ async function fetchUnfulfilledForStore(
                     currentQuantity
                     unfulfilledQuantity
                     fulfillableQuantity
+                    discountedUnitPriceSet { shopMoney { amount currencyCode } }
+                    originalUnitPriceSet { shopMoney { amount } }
                   }
                 }
               }
@@ -418,6 +420,8 @@ export interface UnfulfilledOrderLine {
   sku: string;
   title: string;
   quantity: number; // remaining unfulfilled, refund/removal-adjusted
+  unitPrice: number; // price actually charged per unit (discounts applied)
+  lineValue: number; // unitPrice × quantity — the value still to ship
 }
 
 export interface UnfulfilledOrder {
@@ -431,6 +435,9 @@ export interface UnfulfilledOrder {
   shippingState: string | null; // province/state code
   tags: string[];
   lineItems: UnfulfilledOrderLine[];
+  /** Value of what's still unshipped on this order. */
+  unfulfilledValue: number;
+  currency: string | null;
 }
 
 export async function getUnfulfilledOrders(): Promise<UnfulfilledOrder[]> {
@@ -483,6 +490,8 @@ async function fetchUnfulfilledOrdersForStore(
                     currentQuantity
                     unfulfilledQuantity
                     fulfillableQuantity
+                    discountedUnitPriceSet { shopMoney { amount currencyCode } }
+                    originalUnitPriceSet { shopMoney { amount } }
                   }
                 }
               }
@@ -503,6 +512,7 @@ async function fetchUnfulfilledOrdersForStore(
       if (o.cancelledAt) continue;
 
       const lines: UnfulfilledOrderLine[] = [];
+      let currency: string | null = null;
       for (const liEdge of o.lineItems.edges) {
         const li = liEdge.node;
         if (!li.sku) continue;
@@ -516,7 +526,22 @@ async function fetchUnfulfilledOrdersForStore(
         const unfulfilled = li.fulfillableQuantity ?? li.unfulfilledQuantity ?? current;
         const remaining = Math.min(unfulfilled, current);
         if (remaining <= 0) continue;
-        lines.push({ sku: li.sku, title: li.title, quantity: remaining });
+        // Value what's left to ship at the price actually charged (discounts
+        // applied), falling back to the original unit price.
+        const unit = Number(
+          li.discountedUnitPriceSet?.shopMoney?.amount ??
+            li.originalUnitPriceSet?.shopMoney?.amount ??
+            0
+        );
+        const unitPrice = Number.isFinite(unit) ? unit : 0;
+        lines.push({
+          sku: li.sku,
+          title: li.title,
+          quantity: remaining,
+          unitPrice,
+          lineValue: Math.round(unitPrice * remaining * 100) / 100,
+        });
+        currency = li.discountedUnitPriceSet?.shopMoney?.currencyCode ?? currency;
       }
       if (lines.length === 0) continue;
 
@@ -536,6 +561,8 @@ async function fetchUnfulfilledOrdersForStore(
         shippingState: o.shippingAddress?.provinceCode || null,
         tags: Array.isArray(o.tags) ? o.tags : [],
         lineItems: lines,
+        unfulfilledValue: Math.round(lines.reduce((t, l) => t + l.lineValue, 0) * 100) / 100,
+        currency,
       });
     }
 

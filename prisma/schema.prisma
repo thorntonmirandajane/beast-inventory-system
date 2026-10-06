@@ -41,6 +41,7 @@ model User {
   forecastTemplates      ForecastTemplate[]
   aiConversations        AiConversation[]
   scheduleDaysOff        ScheduleDayOff[]
+  fulfillmentPlans       FulfillmentPlan[]
 
   @@map("users")
 }
@@ -851,4 +852,56 @@ model ScheduleDayOff {
   @@unique([userId, date])
   @@index([userId, date])
   @@map("schedule_days_off")
+}
+
+// ============================================================
+// Fulfillment "game plans".
+//
+// A plan is a set of rules for partially shipping a backlog — "one COC and all
+// the practice tips on every order", say. Applying it produces one ACTION per
+// order: the exact lines to pick and the note the warehouse reads.
+//
+// Actions are stored separately from the rules on purpose. Once an order has an
+// action it stays flagged even if the rules later change (1 COC becomes 2), so
+// the same order is never picked twice without someone deciding to.
+// ============================================================
+
+model FulfillmentPlan {
+  id          String   @id @default(cuid())
+  name        String
+  location    String   @default("GALLATIN") // GALLATIN | UTAH — which stock it draws on
+  storeFilter String   @default("all")      // all | beast | archery
+  noteTemplate String  @default("{plan}: ship {items} from {location}")
+  rules       Json     // [{ id, match, matchType, mode, qty }]
+  status      String   @default("DRAFT")    // DRAFT | ACTIVE | ARCHIVED
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  actions     FulfillmentPlanAction[]
+
+  @@index([status, updatedAt])
+  @@map("fulfillment_plans")
+}
+
+model FulfillmentPlanAction {
+  id         String   @id @default(cuid())
+  planId     String
+  plan       FulfillmentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  store      String   // beast | archery
+  orderId    String   // Shopify order gid
+  orderName  String
+  location   String   // GALLATIN | UTAH
+  lines      Json     // [{ sku, title, qty }]
+  units      Int      @default(0)
+  note       String
+  status     String   @default("PLANNED") // PLANNED | EXPORTED | DONE | CANCELLED
+  exportedAt DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([planId, store, orderId])
+  @@index([orderId])
+  @@index([status])
+  @@map("fulfillment_plan_actions")
 }
