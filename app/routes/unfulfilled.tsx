@@ -171,24 +171,25 @@ export default function Unfulfilled() {
                   {f === "all" ? "All" : STATUS_LABEL[f]}
                 </button>
               ))}
-              {filter !== "all" && (
-                <>
-                  <span className="text-xs text-gray-500">from</span>
-                  {([
-                    ["either", "Either site"],
-                    ["gallatin", "Gallatin"],
-                    ["utah", "Utah"],
-                  ] as const).map(([v, label]) => (
-                    <button
-                      key={v}
-                      onClick={() => setScope(v)}
-                      className={`btn btn-sm ${scope === v ? "btn-primary" : "btn-secondary"}`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </>
-              )}
+              {/* Which warehouse the status above is asking about. Always shown,
+                  so "what can Gallatin ship" is one click rather than a mode you
+                  have to discover. */}
+              <span className="text-xs text-gray-500">from</span>
+              {([
+                ["either", "Either site"],
+                ["gallatin", "Gallatin"],
+                ["utah", "Utah"],
+              ] as const).map(([v, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setScope(v)}
+                  disabled={filter === "all"}
+                  title={filter === "all" ? "Pick Can ship, Partial or Blocked first" : undefined}
+                  className={`btn btn-sm ${scope === v ? "btn-primary" : "btn-secondary"} ${filter === "all" ? "opacity-50" : ""}`}
+                >
+                  {label}
+                </button>
+              ))}
               <span className="w-px h-6 bg-gray-200 mx-1" />
               {(["all", "beast", "archery"] as const).map((s) => (
                 <button

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { requireRole, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
+import { loadUnfulfilledView } from "../utils/unfulfilled-view.server";
 import {
   previewPlan,
   commitPlan,
@@ -13,10 +14,7 @@ import {
   type PlanLocation,
 } from "../utils/fulfillment-plan.server";
 
-const DEFAULT_RULES: PlanRule[] = [
-  { id: "r1", match: "COC", matchType: "CONTAINS", mode: "QTY", qty: 1 },
-  { id: "r2", match: "PT-", matchType: "PREFIX", mode: "ALL", qty: 0 },
-];
+const DEFAULT_RULES: PlanRule[] = [];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireRole(request, ["ADMIN", "MANAGER"]);
@@ -30,6 +28,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 
   const plan = planId ? await prisma.fulfillmentPlan.findUnique({ where: { id: planId } }) : null;
+
+  // The SKU picker offers what's actually on the backlog right now — choosing a
+  // SKU nobody has ordered would only ever plan nothing.
+  let skuOptions: { sku: string; title: string; units: number }[] = [];
+  try {
+    const view = await loadUnfulfilledView();
+    skuOptions = view.bySku.map((r) => ({ sku: r.sku, title: r.title, units: r.totalUnits }));
+  } catch {
+    skuOptions = [];
+  }
 
   // Only build a preview when a plan is open — it hits Shopify and ShipHero.
   let preview = null;
@@ -64,6 +72,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     },
     preview,
     previewError,
+    skuOptions,
     skipActioned: url.searchParams.get("skipActioned") === "1",
   };
 };
@@ -161,8 +170,110 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 const num = (n: number) => n.toLocaleString();
 const money = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
+/**
+ * Searchable multi-select over the SKUs on the backlog. A plain
+ * <select multiple> is unusable with a hundred-odd SKUs and a mouse, so this is
+ * a summary button that opens a filterable checkbox list.
+ */
+function SkuPicker({
+  options,
+  selected,
+  onChange,
+}: {
+  options: { sku: string; title: string; units: number }[];
+  selected: string[];
+  onChange: (skus: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const chosen = new Set(selected.map((s) => s.toUpperCase()));
+  const shown = q.trim()
+    ? options.filter(
+        (o) =>
+          o.sku.toLowerCase().includes(q.trim().toLowerCase()) ||
+          (o.title || "").toLowerCase().includes(q.trim().toLowerCase())
+      )
+    : options;
+
+  const toggle = (sku: string) => {
+    const up = sku.toUpperCase();
+    onChange(chosen.has(up) ? selected.filter((s) => s.toUpperCase() !== up) : [...selected, sku]);
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="form-input text-left w-full"
+        style={{ cursor: "pointer" }}
+      >
+        {selected.length === 0 ? (
+          <span className="text-gray-400">Choose SKUs…</span>
+        ) : selected.length <= 2 ? (
+          selected.join(", ")
+        ) : (
+          `${selected.length} SKUs selected`
+        )}
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div
+            className="card"
+            style={{ position: "absolute", zIndex: 50, top: "calc(100% + 4px)", left: 0, right: 0, maxHeight: 320, overflow: "hidden", display: "flex", flexDirection: "column" }}
+          >
+            <div className="p-2 border-b border-gray-100 flex gap-2">
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Filter SKUs…"
+                className="form-input flex-1"
+              />
+              {shown.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    const all = shown.map((o) => o.sku);
+                    const everyChosen = all.every((s) => chosen.has(s.toUpperCase()));
+                    onChange(
+                      everyChosen
+                        ? selected.filter((s) => !all.some((a) => a.toUpperCase() === s.toUpperCase()))
+                        : [...selected, ...all.filter((s) => !chosen.has(s.toUpperCase()))]
+                    );
+                  }}
+                >
+                  {shown.every((o) => chosen.has(o.sku.toUpperCase())) ? "None" : "All shown"}
+                </button>
+              )}
+            </div>
+            <div style={{ overflowY: "auto" }}>
+              {options.length === 0 && (
+                <p className="text-sm text-gray-500 p-3">
+                  No unfulfilled SKUs to choose from — either the backlog is clear or Shopify isn't reachable.
+                </p>
+              )}
+              {shown.map((o) => (
+                <label key={o.sku} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer">
+                  <input type="checkbox" checked={chosen.has(o.sku.toUpperCase())} onChange={() => toggle(o.sku)} />
+                  <span className="font-mono text-xs">{o.sku}</span>
+                  <span className="text-xs text-gray-500 flex-1 truncate">{o.title}</span>
+                  <span className="text-xs text-gray-400">{o.units} waiting</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function FulfillmentPlans() {
-  const { user, plans, plan, preview, previewError, skipActioned } = useLoaderData<typeof loader>();
+  const { user, plans, plan, preview, previewError, skipActioned, skuOptions } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
   const [searchParams, setSearchParams] = useSearchParams();
@@ -277,34 +388,55 @@ export default function FulfillmentPlans() {
                     <label className="form-label">Rules — what to pull from each order</label>
                     <div className="space-y-2">
                       {rules.map((r, i) => (
-                        <div key={r.id} className="flex flex-wrap items-center gap-2">
-                          <select value={r.mode} onChange={(e) => setRule(i, { mode: e.target.value as any })} className="form-select" style={{ maxWidth: 130 }}>
-                            <option value="QTY">Ship up to</option>
-                            <option value="ALL">Ship all</option>
-                          </select>
-                          {r.mode === "QTY" && (
-                            <input type="number" min={1} value={r.qty} onChange={(e) => setRule(i, { qty: parseInt(e.target.value, 10) || 0 })} className="form-input" style={{ maxWidth: 80 }} />
+                        <div key={r.id} className="rounded-lg border border-gray-200 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <select
+                              value={r.mode === "ALL" ? "ALL" : `QTY:${r.qty || 1}`}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (v === "ALL") setRule(i, { mode: "ALL", qty: 0 });
+                                else setRule(i, { mode: "QTY", qty: parseInt(v.split(":")[1], 10) || 1 });
+                              }}
+                              className="form-select"
+                              style={{ maxWidth: 230 }}
+                            >
+                              <option value="QTY:1">Ship 1 per order</option>
+                              <option value="QTY:2">Ship 2 per order</option>
+                              <option value="QTY:3">Ship 3 per order</option>
+                              <option value="QTY:4">Ship 4 per order</option>
+                              <option value="QTY:5">Ship 5 per order</option>
+                              <option value="QTY:10">Ship 10 per order</option>
+                              <option value="ALL">Ship all the order needs</option>
+                            </select>
+                            <span className="text-sm text-gray-500">of</span>
+                            <div className="flex-1 min-w-[220px]">
+                              <SkuPicker
+                                options={skuOptions}
+                                selected={r.skus}
+                                onChange={(skus) => setRule(i, { skus })}
+                              />
+                            </div>
+                            <button type="button" onClick={() => setRules((rs) => rs.filter((_, j) => j !== i))} className="btn btn-secondary btn-sm text-red-600">Remove</button>
+                          </div>
+                          {r.skus.length === 0 && r.match && (
+                            <p className="text-xs text-amber-700 mt-2">
+                              Saved as a text rule ({r.matchType?.toLowerCase()} "{r.match}"). Pick SKUs above to replace it.
+                            </p>
                           )}
-                          <select value={r.matchType} onChange={(e) => setRule(i, { matchType: e.target.value as any })} className="form-select" style={{ maxWidth: 140 }}>
-                            <option value="CONTAINS">SKU contains</option>
-                            <option value="PREFIX">SKU starts with</option>
-                            <option value="EXACT">SKU is exactly</option>
-                          </select>
-                          <input value={r.match} onChange={(e) => setRule(i, { match: e.target.value })} placeholder="COC" className="form-input flex-1" style={{ minWidth: 120 }} />
-                          <button type="button" onClick={() => setRules((rs) => rs.filter((_, j) => j !== i))} className="btn btn-secondary btn-sm text-red-600">Remove</button>
                         </div>
                       ))}
                     </div>
                     <button
                       type="button"
-                      onClick={() => setRules((rs) => [...rs, { id: `r${Date.now()}`, match: "", matchType: "CONTAINS", mode: "QTY", qty: 1 }])}
+                      onClick={() => setRules((rs) => [...rs, { id: `r${Date.now()}`, skus: [], mode: "QTY", qty: 1 }])}
                       className="btn btn-secondary btn-sm mt-2"
                     >
                       + Add rule
                     </button>
                     <p className="text-xs text-gray-500 mt-2">
-                      Rules are tried in order; the first one that matches a line decides it. Nothing is ever planned
-                      beyond what the order needs or what the warehouse holds.
+                      Rules are tried in order; the first one covering a SKU decides it. Nothing is ever planned
+                      beyond what the order needs or what the warehouse holds. The picker lists the SKUs currently
+                      sitting on unfulfilled orders.
                     </p>
                   </div>
 

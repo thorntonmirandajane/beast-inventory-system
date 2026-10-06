@@ -23,12 +23,14 @@ export type RuleMode = "QTY" | "ALL";
 
 export interface PlanRule {
   id: string;
-  /** Text matched against the SKU (and the product title for CONTAINS). */
-  match: string;
-  matchType: RuleMatch;
+  /** The SKUs this rule covers, picked from the backlog. */
+  skus: string[];
   /** QTY = up to `qty` units per order; ALL = everything the order still needs. */
   mode: RuleMode;
   qty: number;
+  /** Older text-match rules, still honoured so saved plans keep working. */
+  match?: string;
+  matchType?: RuleMatch;
 }
 
 export interface PlannedLine {
@@ -78,19 +80,25 @@ const norm = (s: string) => s.trim().toUpperCase();
 export function parseRules(raw: unknown): PlanRule[] {
   if (!Array.isArray(raw)) return [];
   return raw
-    .filter((r: any) => r && typeof r.match === "string" && r.match.trim())
     .map((r: any, i: number) => ({
-      id: String(r.id ?? `r${i}`),
-      match: String(r.match).trim(),
-      matchType: (["CONTAINS", "PREFIX", "EXACT"].includes(r.matchType) ? r.matchType : "CONTAINS") as RuleMatch,
-      mode: (r.mode === "ALL" ? "ALL" : "QTY") as RuleMode,
-      qty: Math.max(0, Math.floor(Number(r.qty) || 0)),
-    }));
+      id: String(r?.id ?? `r${i}`),
+      skus: Array.isArray(r?.skus) ? r.skus.map((x: any) => String(x)).filter(Boolean) : [],
+      mode: (r?.mode === "ALL" ? "ALL" : "QTY") as RuleMode,
+      qty: Math.max(0, Math.floor(Number(r?.qty) || 0)),
+      match: typeof r?.match === "string" && r.match.trim() ? String(r.match).trim() : undefined,
+      matchType: (["CONTAINS", "PREFIX", "EXACT"].includes(r?.matchType) ? r.matchType : undefined) as RuleMatch | undefined,
+    }))
+    // A rule with nothing selected and no legacy text matches nothing.
+    .filter((r) => r.skus.length > 0 || !!r.match);
 }
 
 function ruleMatches(rule: PlanRule, sku: string, title: string): boolean {
-  const needle = norm(rule.match);
   const s = norm(sku);
+  // Explicitly chosen SKUs win; the text form is only for plans saved before
+  // the picker existed.
+  if (rule.skus.length > 0) return rule.skus.some((x) => norm(x) === s);
+  if (!rule.match) return false;
+  const needle = norm(rule.match);
   if (rule.matchType === "EXACT") return s === needle;
   if (rule.matchType === "PREFIX") return s.startsWith(needle);
   return s.includes(needle) || norm(title).includes(needle);
@@ -197,7 +205,7 @@ export async function previewPlan(input: {
         sku: l.sku,
         title: l.title,
         qty: take,
-        rule: `${rule.match} ${rule.mode === "ALL" ? "(all)" : `(up to ${rule.qty})`}`,
+        rule: `${rule.mode === "ALL" ? "all" : `up to ${rule.qty}`} · ${rule.skus.length ? `${rule.skus.length} SKU(s)` : rule.match}`,
       });
     }
 
