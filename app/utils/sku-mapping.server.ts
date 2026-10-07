@@ -1,62 +1,46 @@
 // ============================================================================
-// Shopify SKU → inventory SKU mapping, shared by every Operations view.
+// Shopify SKU handling for the fulfillment views — Unfulfilled, Game plans and
+// Compare plans. These three only.
 //
-// Store SKUs and inventory SKUs don't always agree: practice tips carry a
-// slightly different code in Shopify, Trump variants use a different prefix,
-// and some things sold on the store — Order Defense, for one — aren't physical
-// stock at all and should never show up as demand.
+// Backorder and Build Plan have their own SkuAlias / BackorderExclusion rules
+// and are untouched by anything here. The two sets are deliberately separate,
+// so a mapping entered for fulfillment can't quietly move the Backorder
+// numbers, and vice versa.
 //
-// The Backorder tab already had this logic and its own admin screen for
-// managing it. It lives here now so Unfulfilled, Game Plans and Compare Plans
-// resolve SKUs exactly the same way, instead of each reading raw Shopify codes
-// and quietly disagreeing with the others.
+// Nothing is inferred. A Shopify SKU with no row is still counted as demand —
+// Beast Inventory only tracks what's manufactured here, while Gallatin stocks
+// plenty more that sells and ships perfectly well. All a missing row means is
+// that there's no Utah stock to check it against.
 //
-// Resolution order, same as it always was:
-//   1. an exact alias someone entered
-//   2. a direct hit on a real inventory SKU
-//   3. a wildcard rewrite rule ("MG-*-BEAST" → "MG-3PACK-*")
-// Nothing matches → unmapped, and the caller decides whether to surface it.
+// Two things a row can do:
+//   · map a Shopify SKU to the inventory SKU it means (so Utah stock matches)
+//   · ignore it entirely (digital goods, services, anything that isn't picked)
 // ============================================================================
 
 import prisma from "../db.server";
 
 export const normSku = (s: string) => s.trim().toUpperCase();
 
-/** Digital add-on sold on the store; never a physical line to pick. */
+/** Order Defense is a digital add-on; it is never a line anyone picks. */
 export const isOrderDefenseSku = (sku: string) => /^OD\d*$/i.test(sku.trim());
 
 export interface SkuResolution {
-  /** The inventory SKU code this maps to, or null when nothing matches. */
-  sku: string | null;
-  skuId: string | null;
-  name: string | null;
-  /** Why this line isn't being counted, when it isn't. */
-  skip: "ORDER_DEFENSE" | "EXCLUDED" | null;
-  excludedReason?: string | null;
-  /** True when the Shopify code differs from the inventory code. */
+  /** The inventory SKU this maps to, or null when it isn't something we make. */
+  inventorySku: string | null;
+  inventoryName: string | null;
+  /** Set only when the line should be left out of the numbers. */
+  skip: "ORDER_DEFENSE" | "IGNORED" | null;
+  ignoreNote?: string | null;
+  /** True when a hand-entered mapping changed the SKU. */
   remapped: boolean;
 }
 
 export interface SkuMap {
   resolve(rawSku: string): SkuResolution;
-  /** Every alias and exclusion in play, for showing on screen. */
-  summary: { aliases: number; patterns: number; exclusions: number };
+  summary: { mapped: number; ignored: number };
 }
 
-function patternToRegex(pattern: string): RegExp {
-  const escaped = pattern
-    .split("*")
-    .map((seg) => seg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("(.*)");
-  return new RegExp(`^${escaped}$`, "i");
-}
-
-function applyReplacement(replacement: string, groups: string[]): string {
-  let i = 0;
-  return replacement.replace(/\*/g, () => groups[i++] ?? "");
-}
-
-const TTL_MS = 60 * 1000;
+const TTL_MS = 30 * 1000;
 let cache: { at: number; value: SkuMap } | null = null;
 
 export function clearSkuMapCache() {
@@ -66,67 +50,52 @@ export function clearSkuMapCache() {
 export async function loadSkuMap(opts: { force?: boolean } = {}): Promise<SkuMap> {
   if (!opts.force && cache && Date.now() - cache.at < TTL_MS) return cache.value;
 
-  const [aliases, exclusions, skus] = await Promise.all([
-    prisma.skuAlias.findMany({ select: { alias: true, skuId: true, isPattern: true, replacement: true } }),
-    prisma.backorderExclusion.findMany({ select: { sku: true, reason: true } }),
-    prisma.sku.findMany({ select: { id: true, sku: true, name: true } }),
+  const [rows, skus] = await Promise.all([
+    prisma.fulfillmentSkuMap.findMany({
+      select: { shopifySku: true, inventorySku: true, ignore: true, note: true },
+    }),
+    prisma.sku.findMany({ select: { sku: true, name: true } }),
   ]);
 
-  const byId = new Map(skus.map((s) => [s.id, s]));
-  const idBySku = new Map(skus.map((s) => [normSku(s.sku), s.id]));
-  const exact = new Map<string, string>();
-  const patterns: { regex: RegExp; replacement: string }[] = [];
-  for (const a of aliases) {
-    if (a.isPattern && a.replacement) patterns.push({ regex: patternToRegex(a.alias), replacement: a.replacement });
-    else if (!a.isPattern && a.skuId) exact.set(normSku(a.alias), a.skuId);
-  }
-  const excluded = new Map(exclusions.map((e) => [normSku(e.sku), e.reason ?? null]));
-
-  const miss: SkuResolution = { sku: null, skuId: null, name: null, skip: null, remapped: false };
+  const nameBySku = new Map(skus.map((s) => [normSku(s.sku), s]));
+  const byShopify = new Map(rows.map((r) => [normSku(r.shopifySku), r]));
 
   const value: SkuMap = {
-    summary: { aliases: exact.size, patterns: patterns.length, exclusions: excluded.size },
+    summary: {
+      mapped: rows.filter((r) => !r.ignore && r.inventorySku).length,
+      ignored: rows.filter((r) => r.ignore).length,
+    },
     resolve(rawSku: string): SkuResolution {
       const raw = (rawSku || "").trim();
+      const miss: SkuResolution = { inventorySku: null, inventoryName: null, skip: null, remapped: false };
       if (!raw) return miss;
       const key = normSku(raw);
 
-      if (isOrderDefenseSku(raw)) {
+      const row = byShopify.get(key);
+      if (row?.ignore) {
+        return { ...miss, skip: "IGNORED", ignoreNote: row.note ?? null };
+      }
+      // Order Defense is the one standing rule, because it's a digital product
+      // rather than a judgement call. Add a row for it to override.
+      if (!row && isOrderDefenseSku(raw)) {
         return { ...miss, skip: "ORDER_DEFENSE" };
       }
 
-      const hit = (id: string): SkuResolution => {
-        const rec = byId.get(id);
-        if (!rec) return miss;
-        // An exclusion can be written against either spelling.
-        if (excluded.has(key) || excluded.has(normSku(rec.sku))) {
-          return {
-            sku: rec.sku, skuId: rec.id, name: rec.name, skip: "EXCLUDED",
-            excludedReason: excluded.get(key) ?? excluded.get(normSku(rec.sku)) ?? null,
-            remapped: normSku(rec.sku) !== key,
-          };
-        }
-        return { sku: rec.sku, skuId: rec.id, name: rec.name, skip: null, remapped: normSku(rec.sku) !== key };
-      };
-
-      const aliased = exact.get(key);
-      if (aliased) return hit(aliased);
-
-      const direct = idBySku.get(key);
-      if (direct) return hit(direct);
-
-      for (const p of patterns) {
-        const m = p.regex.exec(raw);
-        if (m) {
-          const candidate = applyReplacement(p.replacement, m.slice(1));
-          const id = idBySku.get(normSku(candidate));
-          if (id) return hit(id);
-        }
+      if (row?.inventorySku) {
+        const rec = nameBySku.get(normSku(row.inventorySku));
+        return {
+          inventorySku: rec?.sku ?? row.inventorySku,
+          inventoryName: rec?.name ?? null,
+          skip: null,
+          remapped: normSku(row.inventorySku) !== key,
+        };
       }
 
-      // Unknown to inventory, but an exclusion may still name it directly.
-      if (excluded.has(key)) {
-        return { ...miss, skip: "EXCLUDED", excludedReason: excluded.get(key) ?? null };
+      // No row — if the code happens to BE one of ours, use it; otherwise it's
+      // a Gallatin-stocked item and we simply have no Utah stock for it.
+      const direct = nameBySku.get(key);
+      if (direct) {
+        return { inventorySku: direct.sku, inventoryName: direct.name, skip: null, remapped: false };
       }
       return miss;
     },

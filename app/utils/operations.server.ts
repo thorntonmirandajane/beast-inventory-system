@@ -9,7 +9,6 @@
 
 import prisma from "../db.server";
 import { getUnfulfilledLineItems, getGallatinInventory } from "./shopify.server";
-import { loadSkuMap } from "./sku-mapping.server";
 import { getOnHandForSkus } from "./shiphero.server";
 import { fetchProgrammedOrders } from "./queued-orders-client.server";
 
@@ -153,18 +152,13 @@ export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildP
   for (const s of skus) pool.set(s.id, s.type === "COMPLETED" ? 0 : Math.max(0, onHand.get(s.id) ?? 0));
   for (const e of extra) pool.set(e.skuId, (pool.get(e.skuId) ?? 0) + Math.max(0, e.qty));
 
-  // Completed-SKU lookup. This used to read exact aliases only, so wildcard
-  // rewrites, exclusions and Order Defense were all honoured on Backorder but
-  // ignored here — the two screens disagreed about the same demand. Both go
-  // through the shared mapping now.
+  // Completed-SKU lookup (by normalized SKU + learned aliases).
   const completed = skus.filter((s) => s.type === "COMPLETED");
-  const skuMap = await loadSkuMap();
-  const resolveCompleted = (raw: string): { skuId: string | null; skip: boolean } => {
-    const r = skuMap.resolve(raw);
-    if (r.skip) return { skuId: null, skip: true };
-    if (r.skuId && nodes.get(r.skuId)?.type === "COMPLETED") return { skuId: r.skuId, skip: false };
-    return { skuId: null, skip: false };
-  };
+  const skuIdByKey = new Map<string, string>();
+  for (const s of completed) skuIdByKey.set(norm(s.sku), s.id);
+  for (const a of await prisma.skuAlias.findMany({ where: { isPattern: false }, select: { alias: true, skuId: true } })) {
+    if (a.skuId && nodes.get(a.skuId)?.type === "COMPLETED") skuIdByKey.set(norm(a.alias), a.skuId);
+  }
 
   // Finished stock available to cover demand: local completed + Gallatin.
   const ymd = (d: Date) => d.toISOString().split("T")[0];
@@ -220,8 +214,7 @@ export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildP
     (a, b) => new Date(a.orderCreatedAt).getTime() - new Date(b.orderCreatedAt).getTime()
   );
   for (const it of sortedUnfulfilled) {
-    const { skuId, skip } = resolveCompleted(it.sku);
-    if (skip) continue; // Order Defense or an explicit exclusion — not real demand.
+    const skuId = skuIdByKey.get(norm(it.sku));
     if (!skuId) {
       unmatched.set(it.sku, (unmatched.get(it.sku) ?? 0) + it.quantity);
       continue;
@@ -230,8 +223,7 @@ export async function computeBuildPlan(opts: BuildPlanOpts = {}): Promise<BuildP
     queue.push({ skuId, qty: it.quantity, kind: "unfulfilled" });
   }
   for (const p of programmed) {
-    const { skuId, skip } = resolveCompleted(p.sku);
-    if (skip) continue;
+    const skuId = skuIdByKey.get(norm(p.sku));
     if (!skuId) {
       unmatched.set(p.sku, (unmatched.get(p.sku) ?? 0) + p.quantity);
       continue;

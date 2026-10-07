@@ -2,6 +2,8 @@ import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useActionData, Form, useNavigation, Link } from "react-router";
 import { useMemo, useState } from "react";
 import { requireUser, requireRole } from "../utils/auth.server";
+import prisma from "../db.server";
+import { clearSkuMapCache } from "../utils/sku-mapping.server";
 import { Layout } from "../components/Layout";
 import {
   loadUnfulfilledView,
@@ -11,17 +13,63 @@ import {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireUser(request);
-  const view = await loadUnfulfilledView();
-  return { user, view };
+  const [view, skuOptions, rules] = await Promise.all([
+    loadUnfulfilledView(),
+    prisma.sku.findMany({ where: { isActive: true }, select: { sku: true, name: true }, orderBy: { sku: "asc" } }),
+    prisma.fulfillmentSkuMap.findMany({ orderBy: { shopifySku: "asc" } }),
+  ]);
+  return { user, view, skuOptions, rules };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  await requireRole(request, ["ADMIN", "MANAGER"]);
+  const user = await requireRole(request, ["ADMIN", "MANAGER"]);
   const form = await request.formData();
-  if (form.get("intent") === "refresh") {
+  const intent = String(form.get("intent") || "");
+
+  if (intent === "refresh") {
     await loadUnfulfilledView({ force: true });
     return { success: true, message: "Refreshed from Shopify and ShipHero." };
   }
+
+  // Mappings are only ever created here, by hand. Nothing is inferred.
+  if (intent === "map" || intent === "ignore") {
+    const shopifySku = String(form.get("shopifySku") || "").trim();
+    if (!shopifySku) return { error: "No SKU given." };
+    const inventorySku = String(form.get("inventorySku") || "").trim();
+    if (intent === "map" && !inventorySku) {
+      return { error: `Pick the inventory SKU that "${shopifySku}" means.` };
+    }
+    await prisma.fulfillmentSkuMap.upsert({
+      where: { shopifySku },
+      create: {
+        shopifySku,
+        inventorySku: intent === "map" ? inventorySku : null,
+        ignore: intent === "ignore",
+        note: String(form.get("note") || "").trim() || null,
+        createdById: user.id,
+      },
+      update: {
+        inventorySku: intent === "map" ? inventorySku : null,
+        ignore: intent === "ignore",
+        note: String(form.get("note") || "").trim() || null,
+      },
+    });
+    clearSkuMapCache();
+    await loadUnfulfilledView({ force: true });
+    return {
+      success: true,
+      message: intent === "map" ? `${shopifySku} now counts as ${inventorySku}.` : `${shopifySku} will be left out.`,
+    };
+  }
+
+  if (intent === "unmap") {
+    const shopifySku = String(form.get("shopifySku") || "").trim();
+    if (shopifySku) await prisma.fulfillmentSkuMap.delete({ where: { shopifySku } }).catch(() => {});
+    clearSkuMapCache();
+    await loadUnfulfilledView({ force: true });
+    return { success: true, message: `Rule for ${shopifySku} removed.` };
+  }
+
   return { error: "Unknown action." };
 };
 
@@ -45,7 +93,7 @@ function Kpi({ label, value, tone }: { label: string; value: string | number; to
 }
 
 export default function Unfulfilled() {
-  const { user, view } = useLoaderData<typeof loader>();
+  const { user, view, skuOptions, rules } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const busy = useNavigation().state !== "idle";
 
@@ -137,50 +185,144 @@ export default function Unfulfilled() {
         <Kpi label="Fully coverable from Utah" value={t.canShipUtah} />
       </div>
 
-      {/* What the mapping left out. Silently dropping these is how the plans
-          drifted away from reality in the first place. */}
+      {/* Shopify SKUs with no inventory match. These still COUNT — Gallatin
+          stocks plenty we don't manufacture — they just have no Utah stock. */}
+      {view.unmapped.length > 0 && (
+        <details className="card mb-4">
+          <summary className="card-header cursor-pointer select-none">
+            <span className="card-title text-base">
+              {view.unmapped.length} Shopify SKU{view.unmapped.length === 1 ? "" : "s"} with no inventory match
+            </span>
+            <span className="text-xs text-gray-500">
+              counted as demand · {num(view.unmapped.reduce((t, r) => t + r.units, 0))} units
+            </span>
+          </summary>
+          <div className="card-body">
+            <div className="alert alert-info mb-3 text-sm">
+              These are still counted. Beast Inventory only tracks what's made here, and Gallatin stocks a lot more
+              that ships perfectly well — all a missing mapping means is there's no Utah stock to check against.
+              Map one only if it's something you make under a different code, or ignore it if it should never be picked.
+            </div>
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead><tr><th>Shopify SKU</th><th>Units</th><th>Orders</th><th>What should happen</th></tr></thead>
+                <tbody>
+                  {view.unmapped.map((r) => (
+                    <tr key={r.shopifySku}>
+                      <td className="font-mono text-xs">{r.shopifySku}</td>
+                      <td>{num(r.units)}</td>
+                      <td>{num(r.orders)}</td>
+                      <td>
+                        <Form method="post" className="flex flex-wrap items-center gap-2">
+                          <input type="hidden" name="shopifySku" value={r.shopifySku} />
+                          <select name="inventorySku" className="form-select" style={{ maxWidth: 260 }} defaultValue="">
+                            <option value="">— choose an inventory SKU —</option>
+                            {skuOptions.map((o) => (
+                              <option key={o.sku} value={o.sku}>{o.sku} — {o.name}</option>
+                            ))}
+                          </select>
+                          <button name="intent" value="map" className="btn btn-secondary btn-sm" disabled={busy}>Map</button>
+                          <button name="intent" value="ignore" className="btn btn-secondary btn-sm text-red-600" disabled={busy}>Ignore</button>
+                        </Form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      )}
+
+      {/* Lines deliberately left out. */}
       {view.skipped.length > 0 && (
         <details className="card mb-4">
           <summary className="card-header cursor-pointer select-none">
             <span className="card-title text-base">
               {view.skipped.length} SKU{view.skipped.length === 1 ? "" : "s"} left out of these numbers
             </span>
-            <span className="text-xs text-gray-500">
-              {num(view.skipped.reduce((t, r) => t + r.units, 0))} units · {view.mapping.remappedLines} line(s) remapped
-            </span>
+            <span className="text-xs text-gray-500">{num(view.skipped.reduce((t, r) => t + r.units, 0))} units</span>
           </summary>
           <div className="card-body">
             <div className="overflow-x-auto">
               <table className="data-table">
-                <thead><tr><th>Shopify SKU</th><th>Why</th><th>Units</th><th>Orders</th></tr></thead>
+                <thead><tr><th>Shopify SKU</th><th>Why</th><th>Units</th><th>Orders</th><th></th></tr></thead>
                 <tbody>
                   {view.skipped.map((r) => (
                     <tr key={`${r.reason}-${r.shopifySku}`}>
                       <td className="font-mono text-xs">{r.shopifySku}</td>
                       <td>
                         {r.reason === "ORDER_DEFENSE" ? (
-                          <span className="badge badge-gray">Order Defense — not physical stock</span>
-                        ) : r.reason === "EXCLUDED" ? (
-                          <span className="badge badge-blue">Excluded{r.note ? ` — ${r.note}` : ""}</span>
+                          <span className="badge badge-gray">Order Defense — digital, never picked</span>
                         ) : (
-                          <span className="badge badge-red">No inventory SKU — needs a mapping</span>
+                          <span className="badge badge-blue">Ignored{r.note ? ` — ${r.note}` : ""}</span>
                         )}
                       </td>
                       <td>{num(r.units)}</td>
                       <td>{num(r.orders)}</td>
+                      <td>
+                        {r.reason === "IGNORED" && (
+                          <Form method="post">
+                            <input type="hidden" name="intent" value="unmap" />
+                            <input type="hidden" name="shopifySku" value={r.shopifySku} />
+                            <button className="btn btn-secondary btn-sm" disabled={busy}>Start counting it</button>
+                          </Form>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <p className="text-sm text-gray-600 mt-3">
-              Anything marked <strong>needs a mapping</strong> is demand nobody is planning for. Add an alias or an
-              exclusion on <Link to="/backorder" className="underline">Backorder planning</Link> and it will be picked
-              up here, on Game plans and on Compare plans.
-            </p>
           </div>
         </details>
       )}
+
+      {/* Rules someone has entered, and where they apply. */}
+      <details className="card mb-4">
+        <summary className="card-header cursor-pointer select-none">
+          <span className="card-title text-base">SKU rules for the fulfillment views</span>
+          <span className="text-xs text-gray-500">
+            {num(view.mapping.mapped)} mapped · {num(view.mapping.ignored)} ignored · {num(view.mapping.remappedLines)} line(s) remapped
+          </span>
+        </summary>
+        <div className="card-body">
+          <div className="alert alert-warning mb-3 text-sm">
+            <strong>These rules apply to Unfulfilled, Game plans and Compare plans only.</strong> Backorder and Build
+            Plan keep their own SKU mappings and exclusions, managed on the Backorder page — nothing entered here
+            changes those numbers.
+          </div>
+          {rules.length === 0 ? (
+            <p className="text-sm text-gray-500">No rules yet. Everything is counted exactly as Shopify sends it.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead><tr><th>Shopify SKU</th><th>Treated as</th><th>Note</th><th></th></tr></thead>
+                <tbody>
+                  {rules.map((r) => (
+                    <tr key={r.shopifySku}>
+                      <td className="font-mono text-xs">{r.shopifySku}</td>
+                      <td>
+                        {r.ignore
+                          ? <span className="badge badge-red">Left out</span>
+                          : <span className="font-mono text-xs">{r.inventorySku}</span>}
+                      </td>
+                      <td className="text-xs text-gray-500">{r.note || "—"}</td>
+                      <td>
+                        <Form method="post">
+                          <input type="hidden" name="intent" value="unmap" />
+                          <input type="hidden" name="shopifySku" value={r.shopifySku} />
+                          <button className="btn btn-secondary btn-sm" disabled={busy}>Remove</button>
+                        </Form>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </details>
 
       <p className="text-xs text-gray-500 mb-4">
         Beast Broadhead {num(t.beastOrders)} order(s) · Bowmar Archery {num(t.archeryOrders)} order(s) ·

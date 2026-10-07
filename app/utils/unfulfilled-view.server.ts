@@ -84,7 +84,7 @@ export interface UnfulfilledSkuRow {
 /** A Shopify SKU that was left out, and why. */
 export interface SkippedSku {
   shopifySku: string;
-  reason: "ORDER_DEFENSE" | "EXCLUDED" | "UNMAPPED";
+  reason: "ORDER_DEFENSE" | "IGNORED" | "UNMAPPED";
   note: string | null;
   units: number;
   orders: number;
@@ -111,7 +111,9 @@ export interface UnfulfilledView {
   problems: string[];
   /** Lines deliberately left out of the numbers above. */
   skipped: SkippedSku[];
-  mapping: { aliases: number; patterns: number; exclusions: number; remappedLines: number };
+  /** Shopify SKUs with no inventory match — still counted, Gallatin only. */
+  unmapped: SkippedSku[];
+  mapping: { mapped: number; ignored: number; remappedLines: number };
 }
 
 export interface StoreState {
@@ -192,31 +194,59 @@ async function build(): Promise<UnfulfilledView> {
     skippedMap.set(k, row);
   };
 
+  // A SKU that isn't in this system is NOT excluded demand. Beast Inventory
+  // only tracks what's manufactured here; Gallatin stocks plenty more — cases,
+  // nocks, gear — that sells and ships perfectly well. Those lines stay, and
+  // their Gallatin stock is looked up under whichever code ShipHero knows.
+  // Only two things are ever dropped: Order Defense, which isn't physical, and
+  // SKUs someone has explicitly excluded.
+  const unmappedMap = new Map<string, SkippedSku>();
+  const noteUnmapped = (shopifySku: string, units: number) => {
+    const k = normSku(shopifySku);
+    const row = unmappedMap.get(k) ?? { shopifySku, reason: "UNMAPPED" as const, note: null, units: 0, orders: 0 };
+    row.units += units;
+    row.orders += 1;
+    unmappedMap.set(k, row);
+  };
+
   raw = raw.map((o) => {
     const lineItems = [];
     for (const li of o.lineItems) {
       const res = skuMap.resolve(li.sku);
       if (res.skip) {
-        noteSkip(li.sku, res.skip, res.excludedReason ?? null, li.quantity, o.orderId);
+        noteSkip(li.sku, res.skip, res.ignoreNote ?? null, li.quantity, o.orderId);
         continue;
       }
-      if (!res.sku) {
-        noteSkip(li.sku, "UNMAPPED", null, li.quantity, o.orderId);
+      if (!res.inventorySku) {
+        // Keep it: Gallatin stocks plenty we don't manufacture. No inventory
+        // SKU only means there's no Utah stock to check it against.
+        noteUnmapped(li.sku, li.quantity);
+        lineItems.push({ ...li, inventorySku: null });
         continue;
       }
       if (res.remapped) remappedLines += 1;
       lineItems.push({
         ...li,
-        sku: res.sku,
+        inventorySku: res.inventorySku,
+        sku: res.inventorySku,
         shopifySku: res.remapped ? li.sku : undefined,
-        title: li.title || res.name || res.sku,
+        title: li.title || res.inventoryName || res.inventorySku,
       });
     }
     const unfulfilledValue = Math.round(lineItems.reduce((t, l) => t + (l.lineValue ?? 0), 0) * 100) / 100;
     return { ...o, lineItems, unfulfilledValue };
   }).filter((o) => o.lineItems.length > 0);
 
-  const wantedSkus = [...new Set(raw.flatMap((o) => o.lineItems.map((l) => norm(l.sku))).filter(Boolean))];
+  // Ask ShipHero about every spelling in play: the inventory code for things we
+  // make, and the store code for everything else.
+  const wantedSkus = [
+    ...new Set(
+      raw
+        .flatMap((o) => o.lineItems.flatMap((l) => [l.sku, (l as { shopifySku?: string }).shopifySku]))
+        .filter((v): v is string => !!v)
+        .map(norm)
+    ),
+  ];
 
   // Utah floor: this system's own count of finished goods ready to pack.
   const utahOnHand = new Map<string, number>();
@@ -249,6 +279,7 @@ async function build(): Promise<UnfulfilledView> {
   return assemble({
     raw, gallatinOnHand, utahOnHand, knownSkus, stores, problems,
     skipped: [...skippedMap.values()].sort((a, b) => b.units - a.units),
+    unmapped: [...unmappedMap.values()].sort((a, b) => b.units - a.units),
     mapping: { ...skuMap.summary, remappedLines },
   });
 }
@@ -267,12 +298,27 @@ export function assemble(input: {
   stores: { archery: StoreState; beast: StoreState };
   problems: string[];
   skipped?: SkippedSku[];
+  unmapped?: SkippedSku[];
   mapping?: UnfulfilledView["mapping"];
 }): UnfulfilledView {
   const { raw, gallatinOnHand, utahOnHand, knownSkus, stores, problems } = input;
 
+  // ShipHero may hold a remapped item under either spelling, so fold the
+  // Shopify code's stock onto the inventory key before allocating.
+  const gallatinByKey = new Map(gallatinOnHand);
+  for (const o of raw) {
+    for (const li of o.lineItems) {
+      const shopify = (li as { shopifySku?: string }).shopifySku;
+      if (!shopify) continue;
+      const key = norm(li.sku);
+      if ((gallatinByKey.get(key) ?? 0) > 0) continue;
+      const alt = gallatinOnHand.get(norm(shopify));
+      if (alt != null) gallatinByKey.set(key, alt);
+    }
+  }
+
   // Separate pools per warehouse — a unit in Gallatin isn't a unit in Utah.
-  const gallatinLeft = new Map(gallatinOnHand);
+  const gallatinLeft = new Map(gallatinByKey);
   const utahLeft = new Map(utahOnHand);
 
   const now = Date.now();
@@ -309,7 +355,7 @@ export function assemble(input: {
         shopifySku: (li as { shopifySku?: string }).shopifySku,
         unitPrice: li.unitPrice ?? 0,
         lineValue: li.lineValue ?? 0,
-        gallatinOnHand: gallatinOnHand.has(key) ? gallatinOnHand.get(key)! : null,
+        gallatinOnHand: gallatinByKey.has(key) ? gallatinByKey.get(key)! : null,
         gallatinFulfillable: gTake,
         utahOnHand: known ? utahOnHand.get(key) ?? 0 : null,
         utahFulfillable: uTake,
@@ -319,7 +365,7 @@ export function assemble(input: {
       const agg = skuAgg.get(key) ?? {
         sku: li.sku, title: li.title,
         beastUnits: 0, archeryUnits: 0, totalUnits: 0, totalValue: 0,
-        gallatinOnHand: gallatinOnHand.has(key) ? gallatinOnHand.get(key)! : null,
+        gallatinOnHand: gallatinByKey.has(key) ? gallatinByKey.get(key)! : null,
         gallatinFulfillable: 0,
         utahOnHand: known ? utahOnHand.get(key) ?? 0 : null,
         utahFulfillable: 0,
@@ -392,6 +438,7 @@ export function assemble(input: {
     stores,
     problems,
     skipped: input.skipped ?? [],
-    mapping: input.mapping ?? { aliases: 0, patterns: 0, exclusions: 0, remappedLines: 0 },
+    unmapped: input.unmapped ?? [],
+    mapping: input.mapping ?? { mapped: 0, ignored: 0, remappedLines: 0 },
   };
 }

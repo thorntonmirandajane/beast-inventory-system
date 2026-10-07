@@ -43,6 +43,7 @@ model User {
   scheduleDaysOff        ScheduleDayOff[]
   fulfillmentPlans       FulfillmentPlan[]
   fulfillmentScenarios   FulfillmentScenario[]
+  fulfillmentSkuMaps     FulfillmentSkuMap[]
 
   @@map("users")
 }
@@ -926,4 +927,29 @@ model FulfillmentScenario {
 
   @@index([updatedAt])
   @@map("fulfillment_scenarios")
+}
+
+// Shopify SKU handling for the fulfillment views — Unfulfilled, Game plans and
+// Compare plans — and ONLY those. Backorder and Build Plan keep their own
+// SkuAlias/BackorderExclusion rules; the two sets are deliberately separate so
+// a change here can't move those numbers.
+//
+// Every row is entered by hand. Nothing is inferred: a Shopify SKU with no row
+// is still counted as demand, it just has no Utah stock to check against.
+model FulfillmentSkuMap {
+  id           String   @id @default(cuid())
+  /** The SKU exactly as Shopify sends it. */
+  shopifySku   String   @unique
+  /** The inventory SKU it means, when it maps to something we make. */
+  inventorySku String?
+  /** True to drop it from the numbers entirely (digital goods, services). */
+  ignore       Boolean  @default(false)
+  note         String?
+  createdById  String?
+  createdBy    User?    @relation(fields: [createdById], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([ignore])
+  @@map("fulfillment_sku_map")
 }
