@@ -289,7 +289,7 @@ async function fetchUnfulfilledForStore(
         orders(
           first: 100,
           after: $cursor,
-          query: "fulfillment_status:unfulfilled OR fulfillment_status:partial"
+          query: "status:open AND (fulfillment_status:unfulfilled OR fulfillment_status:partial)"
         ) {
           pageInfo { hasNextPage endCursor }
           edges {
@@ -298,6 +298,7 @@ async function fetchUnfulfilledForStore(
               name
               createdAt
               cancelledAt
+              closedAt
               displayFulfillmentStatus
               lineItems(first: 100) {
                 edges {
@@ -327,8 +328,11 @@ async function fetchUnfulfilledForStore(
 
     for (const orderEdge of orders.edges) {
       const order = orderEdge.node;
-      // Skip canceled orders entirely — their line items are not fulfillable.
-      if (order.cancelledAt) continue;
+      // Cancelled or archived (closed) orders aren't open demand — their line
+      // items are not fulfillable. The query already asks for status:open;
+      // this catches anything archived between the search index updating and
+      // this read.
+      if (order.cancelledAt || order.closedAt) continue;
 
       for (const liEdge of order.lineItems.edges) {
         const li = liEdge.node;
@@ -469,7 +473,7 @@ async function fetchUnfulfilledOrdersForStore(
         orders(
           first: 100,
           after: $cursor,
-          query: "fulfillment_status:unfulfilled OR fulfillment_status:partial"
+          query: "status:open AND (fulfillment_status:unfulfilled OR fulfillment_status:partial)"
         ) {
           pageInfo { hasNextPage endCursor }
           edges {
@@ -478,6 +482,7 @@ async function fetchUnfulfilledOrdersForStore(
               name
               createdAt
               cancelledAt
+              closedAt
               email
               tags
               customer { firstName lastName }
@@ -509,7 +514,8 @@ async function fetchUnfulfilledOrdersForStore(
 
     for (const edge of page.edges) {
       const o = edge.node;
-      if (o.cancelledAt) continue;
+      // Cancelled or archived (closed) orders aren't open demand.
+      if (o.cancelledAt || o.closedAt) continue;
 
       const lines: UnfulfilledOrderLine[] = [];
       let currency: string | null = null;
