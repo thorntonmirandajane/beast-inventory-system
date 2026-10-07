@@ -22,11 +22,15 @@
 import prisma from "../db.server";
 import { getUnfulfilledOrders, type StoreSource } from "./shopify.server";
 import { getOnHandForSkus } from "./shiphero.server";
+import { loadSkuMap } from "./sku-mapping.server";
 
 export type ShipStatus = "FULL" | "PARTIAL" | "NONE";
 
 export interface UnfulfilledViewLine {
+  /** The inventory SKU this line resolves to (or the raw Shopify code if none). */
   sku: string;
+  /** What Shopify actually had on the line, when the two differ. */
+  shopifySku?: string;
   title: string;
   needed: number;
   unitPrice: number;
@@ -77,6 +81,15 @@ export interface UnfulfilledSkuRow {
   known: boolean;
 }
 
+/** A Shopify SKU that was left out, and why. */
+export interface SkippedSku {
+  shopifySku: string;
+  reason: "ORDER_DEFENSE" | "EXCLUDED" | "UNMAPPED";
+  note: string | null;
+  units: number;
+  orders: number;
+}
+
 export interface UnfulfilledView {
   generatedAt: string;
   orders: UnfulfilledViewOrder[];
@@ -96,6 +109,9 @@ export interface UnfulfilledView {
   };
   stores: { archery: StoreState; beast: StoreState };
   problems: string[];
+  /** Lines deliberately left out of the numbers above. */
+  skipped: SkippedSku[];
+  mapping: { aliases: number; patterns: number; exclusions: number; remappedLines: number };
 }
 
 export interface StoreState {
@@ -106,6 +122,7 @@ export interface StoreState {
 }
 
 const norm = (s: string) => s.trim().toUpperCase();
+const normSku = norm;
 const statusOf = (needed: number, got: number): ShipStatus =>
   needed > 0 && got >= needed ? "FULL" : got > 0 ? "PARTIAL" : "NONE";
 
@@ -160,6 +177,45 @@ async function build(): Promise<UnfulfilledView> {
   // Oldest first — the allocation below depends on this order.
   raw = [...raw].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
+  // Resolve Shopify codes to inventory SKUs up front, and drop the lines that
+  // shouldn't count at all (Order Defense, anything explicitly excluded).
+  // Without this the store's spelling of a practice tip never matches stock and
+  // every plan built on these numbers is wrong.
+  const skuMap = await loadSkuMap();
+  const skippedMap = new Map<string, SkippedSku>();
+  let remappedLines = 0;
+  const noteSkip = (shopifySku: string, reason: SkippedSku["reason"], note: string | null, units: number, orderKey: string) => {
+    const k = `${reason}|${normSku(shopifySku)}`;
+    const row = skippedMap.get(k) ?? { shopifySku, reason, note, units: 0, orders: 0 };
+    row.units += units;
+    row.orders += 1;
+    skippedMap.set(k, row);
+  };
+
+  raw = raw.map((o) => {
+    const lineItems = [];
+    for (const li of o.lineItems) {
+      const res = skuMap.resolve(li.sku);
+      if (res.skip) {
+        noteSkip(li.sku, res.skip, res.excludedReason ?? null, li.quantity, o.orderId);
+        continue;
+      }
+      if (!res.sku) {
+        noteSkip(li.sku, "UNMAPPED", null, li.quantity, o.orderId);
+        continue;
+      }
+      if (res.remapped) remappedLines += 1;
+      lineItems.push({
+        ...li,
+        sku: res.sku,
+        shopifySku: res.remapped ? li.sku : undefined,
+        title: li.title || res.name || res.sku,
+      });
+    }
+    const unfulfilledValue = Math.round(lineItems.reduce((t, l) => t + (l.lineValue ?? 0), 0) * 100) / 100;
+    return { ...o, lineItems, unfulfilledValue };
+  }).filter((o) => o.lineItems.length > 0);
+
   const wantedSkus = [...new Set(raw.flatMap((o) => o.lineItems.map((l) => norm(l.sku))).filter(Boolean))];
 
   // Utah floor: this system's own count of finished goods ready to pack.
@@ -190,7 +246,11 @@ async function build(): Promise<UnfulfilledView> {
     }
   }
 
-  return assemble({ raw, gallatinOnHand, utahOnHand, knownSkus, stores, problems });
+  return assemble({
+    raw, gallatinOnHand, utahOnHand, knownSkus, stores, problems,
+    skipped: [...skippedMap.values()].sort((a, b) => b.units - a.units),
+    mapping: { ...skuMap.summary, remappedLines },
+  });
 }
 
 /**
@@ -206,6 +266,8 @@ export function assemble(input: {
   knownSkus: Set<string>;
   stores: { archery: StoreState; beast: StoreState };
   problems: string[];
+  skipped?: SkippedSku[];
+  mapping?: UnfulfilledView["mapping"];
 }): UnfulfilledView {
   const { raw, gallatinOnHand, utahOnHand, knownSkus, stores, problems } = input;
 
@@ -244,6 +306,7 @@ export function assemble(input: {
         sku: li.sku,
         title: li.title,
         needed: li.quantity,
+        shopifySku: (li as { shopifySku?: string }).shopifySku,
         unitPrice: li.unitPrice ?? 0,
         lineValue: li.lineValue ?? 0,
         gallatinOnHand: gallatinOnHand.has(key) ? gallatinOnHand.get(key)! : null,
@@ -328,5 +391,7 @@ export function assemble(input: {
     },
     stores,
     problems,
+    skipped: input.skipped ?? [],
+    mapping: input.mapping ?? { aliases: 0, patterns: 0, exclusions: 0, remappedLines: 0 },
   };
 }

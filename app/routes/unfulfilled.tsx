@@ -137,6 +137,51 @@ export default function Unfulfilled() {
         <Kpi label="Fully coverable from Utah" value={t.canShipUtah} />
       </div>
 
+      {/* What the mapping left out. Silently dropping these is how the plans
+          drifted away from reality in the first place. */}
+      {view.skipped.length > 0 && (
+        <details className="card mb-4">
+          <summary className="card-header cursor-pointer select-none">
+            <span className="card-title text-base">
+              {view.skipped.length} SKU{view.skipped.length === 1 ? "" : "s"} left out of these numbers
+            </span>
+            <span className="text-xs text-gray-500">
+              {num(view.skipped.reduce((t, r) => t + r.units, 0))} units · {view.mapping.remappedLines} line(s) remapped
+            </span>
+          </summary>
+          <div className="card-body">
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead><tr><th>Shopify SKU</th><th>Why</th><th>Units</th><th>Orders</th></tr></thead>
+                <tbody>
+                  {view.skipped.map((r) => (
+                    <tr key={`${r.reason}-${r.shopifySku}`}>
+                      <td className="font-mono text-xs">{r.shopifySku}</td>
+                      <td>
+                        {r.reason === "ORDER_DEFENSE" ? (
+                          <span className="badge badge-gray">Order Defense — not physical stock</span>
+                        ) : r.reason === "EXCLUDED" ? (
+                          <span className="badge badge-blue">Excluded{r.note ? ` — ${r.note}` : ""}</span>
+                        ) : (
+                          <span className="badge badge-red">No inventory SKU — needs a mapping</span>
+                        )}
+                      </td>
+                      <td>{num(r.units)}</td>
+                      <td>{num(r.orders)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-sm text-gray-600 mt-3">
+              Anything marked <strong>needs a mapping</strong> is demand nobody is planning for. Add an alias or an
+              exclusion on <Link to="/backorder" className="underline">Backorder planning</Link> and it will be picked
+              up here, on Game plans and on Compare plans.
+            </p>
+          </div>
+        </details>
+      )}
+
       <p className="text-xs text-gray-500 mb-4">
         Beast Broadhead {num(t.beastOrders)} order(s) · Bowmar Archery {num(t.archeryOrders)} order(s) ·
         counted from Shopify's fulfillable quantity, so removed and already-shipped units are excluded ·
@@ -270,6 +315,9 @@ export default function Unfulfilled() {
                                     <tr key={i}>
                                       <td className="font-mono text-xs">
                                         {l.sku}
+                                        {l.shopifySku && (
+                                          <span className="block text-[11px] text-gray-400">Shopify: {l.shopifySku}</span>
+                                        )}
                                         {!l.known && <span className="badge badge-red ml-2">not in inventory</span>}
                                       </td>
                                       <td>{l.title}</td>
