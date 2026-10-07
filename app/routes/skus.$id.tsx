@@ -7,7 +7,7 @@ import prisma from "../db.server";
 import { calculateBuildEligibility } from "../utils/inventory.server";
 import { getUsedInProducts } from "../utils/bom.server";
 import { resolveProcessConfig } from "../utils/process";
-import { useState, Fragment } from "react";
+import { useState, useEffect, Fragment } from "react";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   try {
@@ -306,10 +306,35 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     };
   });
 
+  // Inline change notes: this SKU's edit/rename history from the audit log.
+  const changeLogsRaw = await prisma.auditLog.findMany({
+    where: { resourceType: "Sku", resourceId: sku.id },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+  const changeUserIds = Array.from(
+    new Set(changeLogsRaw.map((l) => l.userId).filter((x): x is string => !!x))
+  );
+  const changeUsers = changeUserIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: changeUserIds } },
+        select: { id: true, firstName: true, lastName: true },
+      })
+    : [];
+  const changeUserMap = new Map(changeUsers.map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
+  const changeHistory = changeLogsRaw.map((l) => ({
+    id: l.id,
+    action: l.action,
+    details: l.details as Record<string, unknown> | null,
+    createdAt: l.createdAt,
+    by: l.userId ? changeUserMap.get(l.userId) ?? null : null,
+  }));
+
   console.log("[SKU Detail] Loader completed successfully");
     return {
       user,
       sku,
+      changeHistory,
       buildEligibility,
       inventoryByState,
       usedInProducts,
@@ -383,6 +408,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       return { error: "Name is required" };
     }
 
+    const note = ((formData.get("note") as string) || "").trim();
+
     // The process is stored on the SKU as a plain string (`material`), not a
     // foreign key, and two writers used two conventions for it: this form saved
     // the internal name ("COMPLETE_PACKS") while the Process Times import saved
@@ -411,31 +438,88 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     // The old code silently deleted the entire BOM every time the user
     // clicked "Save Changes" on the Edit SKU form. Removed.
 
-    // Update SKU
-    await prisma.sku.update({
+    // Snapshot before-values so we can record what actually changed.
+    const before = await prisma.sku.findUnique({
       where: { id },
-      data: {
-        name,
-        description: description || null,
-        isActive,
-        // Category is free text with a datalist of existing values — there is no
-        // Category table, so nothing can be duplicated as a record. Trimming is
-        // what keeps " Aluminum" from becoming a second entry in that list.
-        category: category?.trim() || null,
-        material: materialValue,
-        upc: upc || null,
-        processOrder: processOrder,
-        grain,
-        diameter,
+      select: {
+        name: true, description: true, isActive: true, category: true,
+        material: true, upc: true, processOrder: true, grain: true, diameter: true,
       },
     });
 
-    await createAuditLog(user.id, "UPDATE_SKU", "Sku", id!, {
+    const after = {
       name,
+      description: description || null,
       isActive,
+      // Category is free text with a datalist of existing values — there is no
+      // Category table, so trimming is what keeps " Aluminum" from becoming a
+      // second entry in that list.
+      category: category?.trim() || null,
+      // Canonical processName resolved above (both conventions collapse to one).
+      material: materialValue,
+      upc: upc || null,
+      processOrder,
+      grain,
+      diameter,
+    };
+
+    await prisma.sku.update({ where: { id }, data: after });
+
+    // Build a field-level diff for the inline change notes.
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    if (before) {
+      for (const key of Object.keys(after) as (keyof typeof after)[]) {
+        if ((before as Record<string, unknown>)[key] !== after[key]) {
+          changes[key] = { from: (before as Record<string, unknown>)[key], to: after[key] };
+        }
+      }
+    }
+
+    await createAuditLog(user.id, "UPDATE_SKU", "Sku", id!, {
+      changes,
+      note: note || null,
     });
 
     return { success: true, message: "SKU updated successfully" };
+  }
+
+  if (intent === "rename-sku") {
+    if (user.role !== "ADMIN") {
+      return { error: "Only admins can change a SKU code." };
+    }
+    const newCode = ((formData.get("newSku") as string) || "").trim();
+    const confirmCode = ((formData.get("confirmSku") as string) || "").trim();
+    const note = ((formData.get("note") as string) || "").trim();
+
+    const current = await prisma.sku.findUnique({
+      where: { id },
+      select: { sku: true, type: true },
+    });
+    if (!current) return { error: "SKU not found" };
+    // Guardrail: completed (sold / Gallatin-stocked) SKUs are matched by code
+    // in Shopify/ShipHero, so renaming them is out of scope. Only RAW/ASSEMBLY.
+    if (current.type === "COMPLETED") {
+      return { error: "Completed SKUs can't be renamed (they're matched by code in Shopify/ShipHero)." };
+    }
+    if (!newCode) return { error: "Enter the new SKU code." };
+    if (!note) return { error: "A change note is required to change the SKU code." };
+    if (newCode === current.sku) return { error: "The new code is the same as the current one." };
+    if (confirmCode !== newCode) return { error: "The confirmation code doesn't match the new code." };
+
+    const clash = await prisma.sku.findUnique({ where: { sku: newCode } });
+    if (clash) return { error: `SKU code "${newCode}" is already in use.` };
+
+    await prisma.sku.update({ where: { id }, data: { sku: newCode } });
+
+    await createAuditLog(user.id, "RENAME_SKU", "Sku", id!, {
+      changes: { sku: { from: current.sku, to: newCode } },
+      note,
+    });
+
+    return {
+      success: true,
+      message: `SKU code changed from ${current.sku} to ${newCode}. Every bill of material now references the new code.`,
+    };
   }
 
   if (intent === "add-manufacturer") {
@@ -692,6 +776,7 @@ export default function SkuDetail() {
     allSkus,
     processConfigs,
     uniqueCategories,
+    changeHistory,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -707,6 +792,28 @@ export default function SkuDetail() {
   const [componentSearch, setComponentSearch] = useState("");
   const [selectedComponentId, setSelectedComponentId] = useState("");
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
+
+  // SKU-code rename flow (RAW/ASSEMBLY only): closed → editing → verifying.
+  const [renameStep, setRenameStep] = useState<"closed" | "edit" | "verify">("closed");
+  const [newSku, setNewSku] = useState("");
+  const [renameNote, setRenameNote] = useState("");
+  const [confirmSku, setConfirmSku] = useState("");
+  const canRenameSku = user.role === "ADMIN" && sku.type !== "COMPLETED";
+  const resetRename = () => {
+    setRenameStep("closed");
+    setNewSku("");
+    setRenameNote("");
+    setConfirmSku("");
+  };
+  // Close the rename panel once a save succeeds (the loader has the new code).
+  useEffect(() => {
+    if (actionData && "success" in actionData && actionData.success) {
+      setRenameStep("closed");
+      setNewSku("");
+      setRenameNote("");
+      setConfirmSku("");
+    }
+  }, [actionData]);
 
   // Build current BOM map for form defaults
   const currentBom = new Map(sku.bomComponents.map((b) => [b.componentSku.id, b.quantity]));
@@ -1457,6 +1564,146 @@ export default function SkuDetail() {
       </div>
 
       {/* Edit SKU Form */}
+      {/* Change SKU Code (RAW/ASSEMBLY only) — gated, requires a note + verify */}
+      {canRenameSku && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">SKU Code</h2>
+          </div>
+          <div className="card-body">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="font-mono text-lg">{sku.sku}</span>
+              {renameStep === "closed" && (
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setRenameStep("edit")}>
+                  Change SKU Code
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Changing the code updates it everywhere it's used — every bill of material references this SKU, so they all follow automatically.
+            </p>
+
+            {renameStep === "edit" && (
+              <div className="mt-4 space-y-3 border-t pt-4">
+                <div className="form-group mb-0">
+                  <label className="form-label">New SKU code *</label>
+                  <input
+                    type="text"
+                    className="form-input font-mono"
+                    value={newSku}
+                    onChange={(e) => setNewSku(e.target.value)}
+                    placeholder="Enter new code"
+                  />
+                </div>
+                <div className="form-group mb-0">
+                  <label className="form-label">Change note * (saved to the change history)</label>
+                  <textarea
+                    className="form-textarea"
+                    rows={2}
+                    value={renameNote}
+                    onChange={(e) => setRenameNote(e.target.value)}
+                    placeholder="Why is this code changing?"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={!newSku.trim() || !renameNote.trim() || newSku.trim() === sku.sku}
+                    onClick={() => { setConfirmSku(""); setRenameStep("verify"); }}
+                  >
+                    Review change
+                  </button>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={resetRename}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {renameStep === "verify" && (
+              <div className="mt-4 space-y-3 border-t pt-4">
+                <div className="alert alert-warning">
+                  Change <span className="font-mono font-semibold">{sku.sku}</span> →{" "}
+                  <span className="font-mono font-semibold">{newSku.trim()}</span>? This updates the code in every bill of material that uses it.
+                </div>
+                <div className="text-sm"><span className="text-gray-500">Note:</span> {renameNote.trim()}</div>
+                <div className="form-group mb-0">
+                  <label className="form-label">Re-type the new code to confirm *</label>
+                  <input
+                    type="text"
+                    className="form-input font-mono"
+                    value={confirmSku}
+                    onChange={(e) => setConfirmSku(e.target.value)}
+                    placeholder={newSku.trim()}
+                  />
+                </div>
+                <Form method="post">
+                  <input type="hidden" name="intent" value="rename-sku" />
+                  <input type="hidden" name="newSku" value={newSku.trim()} />
+                  <input type="hidden" name="confirmSku" value={confirmSku.trim()} />
+                  <input type="hidden" name="note" value={renameNote.trim()} />
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="btn btn-primary btn-sm"
+                      disabled={isSubmitting || confirmSku.trim() !== newSku.trim()}
+                    >
+                      {isSubmitting ? "Applying…" : "Confirm & change code"}
+                    </button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRenameStep("edit")}>Back</button>
+                  </div>
+                </Form>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Inline change notes */}
+      {changeHistory.length > 0 && (
+        <div className="card mt-6">
+          <div className="card-header">
+            <h2 className="card-title">Change Notes</h2>
+          </div>
+          <div className="card-body">
+            <div className="space-y-3">
+              {changeHistory.map((h) => {
+                const details = (h.details || {}) as { changes?: Record<string, { from: unknown; to: unknown }>; note?: string | null };
+                const changes = details.changes;
+                const note = details.note;
+                const label =
+                  h.action === "RENAME_SKU" ? "Code changed"
+                  : h.action === "UPDATE_SKU" ? "Edited"
+                  : h.action === "CREATE_SKU" ? "Created"
+                  : h.action === "DELETE_SKU" ? "Deleted"
+                  : h.action;
+                const fmt = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
+                return (
+                  <div key={h.id} className="border-b last:border-0 pb-3 last:pb-0">
+                    <div className="flex justify-between gap-2 text-sm flex-wrap">
+                      <span className="font-semibold">{label}</span>
+                      <span className="text-gray-500">
+                        {new Date(h.createdAt).toLocaleString()}{h.by ? ` · ${h.by}` : ""}
+                      </span>
+                    </div>
+                    {changes && Object.keys(changes).length > 0 && (
+                      <div className="mt-1 space-y-0.5">
+                        {Object.entries(changes).map(([field, ch]) => (
+                          <div key={field} className="text-xs text-gray-600">
+                            <span className="font-medium">{field}</span>:{" "}
+                            <span className="font-mono">{fmt(ch.from)}</span> → <span className="font-mono">{fmt(ch.to)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {note && <div className="text-sm mt-1"><span className="text-gray-500">Note:</span> {note}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {user.role === "ADMIN" && (
         <div className="card mt-6">
           <div className="card-header">
@@ -1475,7 +1722,9 @@ export default function SkuDetail() {
                     value={sku.sku}
                     disabled
                   />
-                  <p className="text-sm text-gray-500 mt-1">SKU code cannot be changed</p>
+                  <p className="text-sm text-gray-500 mt-1">
+                    {canRenameSku ? "Use “Change SKU Code” above to rename it." : "SKU code cannot be changed"}
+                  </p>
                 </div>
                 {sku.type === "COMPLETED" ? (
                   <div className="form-group">
@@ -1596,6 +1845,16 @@ export default function SkuDetail() {
                     defaultValue={sku.description || ""}
                   />
                 </div>
+              </div>
+
+              <div className="form-group mb-4">
+                <label className="form-label">Change note (optional)</label>
+                <input
+                  type="text"
+                  name="note"
+                  className="form-input"
+                  placeholder="Describe what changed and why — saved to the change history"
+                />
               </div>
 
               <div className="flex gap-3">
