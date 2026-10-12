@@ -3,10 +3,10 @@ import { useLoaderData, useActionData, Form, useNavigation, Link, redirect, useN
 import { requireUser, createAuditLog } from "../utils/auth.server";
 import { Layout } from "../components/Layout";
 import prisma from "../db.server";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { parseShorthand, toShorthand, format12 } from "../utils/schedule-hours";
 import { buildShifts } from "../utils/overtime.server";
-import { useFetcher } from "react-router";
+import { useFetcher, useRevalidator } from "react-router";
 import { TimeRangePicker, TimeWheels } from "../components/TimePicker";
 
 const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -345,6 +345,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (req) await prisma.scheduleRequest.update({ where: { id: req.id }, data: { days, status: "PENDING", submittedAt: new Date() } });
     else await prisma.scheduleRequest.create({ data: { userId: user.id, days, status: "PENDING" } });
     return { success: true, message: valid.length ? "Requested — pending approval." : off ? "Day off requested — pending approval." : "Cleared." };
+  }
+
+  // Worker submits several staged (copy/pasted) days at once. MERGE semantics:
+  // only the given dates are added/changed in the pending request — every other
+  // existing cell is left exactly as it was (never cleared).
+  if (intent === "set-my-days") {
+    let incoming: { date: string; shifts: { start: string; end: string }[]; off?: boolean }[] = [];
+    try { incoming = JSON.parse(String(formData.get("cells") || "[]")); } catch { incoming = []; }
+    const norm = incoming
+      .filter((c) => /^\d{4}-\d{2}-\d{2}$/.test(c?.date || ""))
+      .map((c) => {
+        const valid = (Array.isArray(c.shifts) ? c.shifts : []).filter((s) => s.start && s.end && s.end > s.start);
+        return { date: c.date, shifts: valid, off: c.off === true && valid.length === 0 };
+      })
+      .filter((c) => c.shifts.length > 0 || c.off); // skip empties — never clear a day
+    if (norm.length === 0) return { error: "Nothing to submit." };
+
+    const req = await prisma.scheduleRequest.findFirst({ where: { userId: user.id, status: "PENDING" } });
+    let cells: any[] = [];
+    if (req) { try { cells = JSON.parse(req.days).cells ?? []; } catch { cells = []; } }
+    const incomingDates = new Set(norm.map((c) => c.date));
+    cells = cells.filter((c: any) => !incomingDates.has(c.date)); // replace only these dates
+    for (const c of norm) {
+      if (c.shifts.length) cells.push({ date: c.date, shifts: c.shifts, value: c.shifts.map((s) => toShorthand(s.start, s.end)).join(", ") });
+      else cells.push({ date: c.date, shifts: [], off: true, value: "Off" });
+    }
+    cells.sort((a: any, b: any) => a.date.localeCompare(b.date));
+    const days = JSON.stringify({ cells });
+    if (req) await prisma.scheduleRequest.update({ where: { id: req.id }, data: { days, status: "PENDING", submittedAt: new Date() } });
+    else await prisma.scheduleRequest.create({ data: { userId: user.id, days, status: "PENDING" } });
+    return { success: true, message: `${norm.length} day${norm.length === 1 ? "" : "s"} submitted — pending approval.` };
   }
 
   // Everything below is admin-only.
@@ -1197,7 +1228,16 @@ function WorkerSchedule({ view, myMonth, myWeek, basePath = "/schedules?view" }:
   const tabHref = (v: "month" | "week") => (isOwnAdminView ? `/schedules?view=mine&sub=${v}` : `/schedules?view=${v}`);
   const monthHref = (m: string) => (isOwnAdminView ? `/schedules?view=mine&sub=month&month=${m}` : `/schedules?view=month&month=${m}`);
   const fetcher = useFetcher();
-  const [open, setOpen] = useState<{ date: string; shifts: any[]; label: string; off?: boolean } | null>(null);
+  const revalidator = useRevalidator();
+  const [open, setOpen] = useState<{ date: string; shifts: any[]; label: string; off?: boolean; local?: boolean } | null>(null);
+
+  // Copy-this-day-to-other-days (Month tab only). Pasted days are staged locally
+  // as "pre-filled, not submitted" until the worker taps Submit month for approval.
+  const [copySource, setCopySource] = useState<{ date: string; label: string; shifts: any[]; off: boolean; hoursLabel: string } | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [prefilled, setPrefilled] = useState<Record<string, { shifts: { start: string; end: string }[]; off: boolean }>>({});
+  const [pastePending, setPastePending] = useState<string[] | null>(null);
+  const [monthSubmitPending, setMonthSubmitPending] = useState(false);
 
   const submit = (date: string, shifts: any[], off = false) => {
     fetcher.submit(
@@ -1205,11 +1245,88 @@ function WorkerSchedule({ view, myMonth, myWeek, basePath = "/schedules?view" }:
       { method: "post" }
     );
   };
+
+  // Only a genuinely empty, in-month day can receive a paste — never one that
+  // already has hours, is a day off, is approved/pending, or is already staged.
+  const isEligibleTarget = (c: any) =>
+    !!c?.inMonth && c.status === "none" && !c.hours && !c.off && !prefilled[c.date] && c.date !== copySource?.date;
+
   const onTap = (c: any) => {
+    if (copySource) {
+      if (!isEligibleTarget(c)) return;
+      setSelected((s) => { const n = new Set(s); if (n.has(c.date)) n.delete(c.date); else n.add(c.date); return n; });
+      return;
+    }
     const d = dateAtNoon(c.date);
     const label = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-    setOpen({ date: c.date, shifts: (c.shifts || []).map((s: any) => ({ ...s })), label, off: !!c.off });
+    const pf = prefilled[c.date];
+    if (pf) setOpen({ date: c.date, shifts: pf.shifts.map((s) => ({ ...s })), label, off: pf.off, local: true });
+    else setOpen({ date: c.date, shifts: (c.shifts || []).map((s: any) => ({ ...s })), label, off: !!c.off, local: false });
   };
+
+  const onSheetSave = (shifts: any[], off?: boolean) => {
+    if (!open) return;
+    if (open.local) {
+      // Editing a staged day — update it locally, do NOT submit yet.
+      setPrefilled((p) => {
+        const n = { ...p };
+        if (off) n[open.date] = { shifts: [], off: true };
+        else if (shifts.length) n[open.date] = { shifts, off: false };
+        else delete n[open.date];
+        return n;
+      });
+    } else {
+      submit(open.date, shifts, !!off);
+    }
+  };
+
+  const startCopy = () => {
+    if (!open) return;
+    const hoursLabel = open.off ? "Off" : (shiftsLabel(sortShifts(open.shifts)) || "—");
+    setCopySource({ date: open.date, label: open.label, shifts: open.shifts.map((s: any) => ({ ...s })), off: !!open.off, hoursLabel });
+    setSelected(new Set());
+    setOpen(null);
+  };
+  const cancelCopy = () => { setCopySource(null); setSelected(new Set()); setPastePending(null); };
+
+  // Paste: re-fetch fresh data first (stale-grid safety), then stage the copied
+  // hours onto the still-eligible selected days.
+  const doPaste = () => {
+    if (!copySource || selected.size === 0) return;
+    setPastePending([...selected]);
+    revalidator.revalidate();
+  };
+  useEffect(() => {
+    if (!pastePending || revalidator.state !== "idle" || !copySource) return;
+    const fresh = new Map<string, any>();
+    for (const wk of myMonth?.weeks ?? []) for (const c of wk) fresh.set(c.date, c);
+    const add: Record<string, { shifts: any[]; off: boolean }> = {};
+    for (const date of pastePending) {
+      const c = fresh.get(date);
+      // Re-confirm eligibility against the freshly loaded data before staging.
+      if (c && c.inMonth && c.status === "none" && !c.hours && !c.off && !prefilled[date]) {
+        add[date] = { shifts: copySource.shifts.map((s: any) => ({ start: s.start, end: s.end })), off: copySource.off };
+      }
+    }
+    setPrefilled((p) => ({ ...p, ...add }));
+    setCopySource(null);
+    setSelected(new Set());
+    setPastePending(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pastePending, revalidator.state]);
+
+  const prefilledDates = Object.keys(prefilled);
+  const submitMonth = () => {
+    const cells = prefilledDates.map((date) => ({ date, shifts: prefilled[date].off ? [] : prefilled[date].shifts, off: prefilled[date].off }));
+    if (cells.length === 0) return;
+    setMonthSubmitPending(true);
+    fetcher.submit({ intent: "set-my-days", cells: JSON.stringify(cells) }, { method: "post" });
+  };
+  useEffect(() => {
+    if (!monthSubmitPending || fetcher.state !== "idle") return;
+    if ((fetcher.data as any)?.success) { setPrefilled({}); setMonthSubmitPending(false); }
+    else if ((fetcher.data as any)?.error) { setMonthSubmitPending(false); }
+  }, [monthSubmitPending, fetcher.state, fetcher.data]);
 
   // Inline grid so the global "@media(max-width:768px){.grid{grid-cols-1}}" hack
   // (used to stack QC cards) can't collapse the 7-column calendar on phones.
@@ -1224,20 +1341,43 @@ function WorkerSchedule({ view, myMonth, myWeek, basePath = "/schedules?view" }:
     />
   );
   const Card = ({ c, muted, interactive }: { c: any; muted?: boolean; interactive?: boolean }) => {
-    const cls = `rounded-xl border flex flex-col items-center justify-center p-1 transition-colors ${muted ? "opacity-40" : ""} ${c.status === "approved" ? "border-green-300 bg-green-50" : c.status === "pending" ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"} ${interactive ? "hover:border-blue-400" : ""}`;
+    const pf = prefilled[c.date];
+    const inCopy = !!copySource;
+    const isSource = inCopy && c.date === copySource?.date;
+    const isSelected = selected.has(c.date);
+    const eligible = isEligibleTarget(c);
+    const isPrefilled = !!pf && !c.hours && !c.off;
+    const showOff = c.off || (isPrefilled && !!pf?.off);
+    const showHours = c.hours || (isPrefilled && !pf?.off ? shiftsLabel(sortShifts(pf!.shifts)) : "");
+
+    let tone = "border-gray-200 bg-white";
+    if (c.status === "approved") tone = "border-green-300 bg-green-50";
+    else if (c.status === "pending") tone = "border-amber-300 bg-amber-50";
+    if (isPrefilled || isSelected) tone = "border-amber-400 bg-amber-50 border-dashed";
+    const ring = isSource ? "ring-2 ring-blue-400" : "";
+    const dim = inCopy && !isSource && !eligible && !isSelected ? "opacity-40" : "";
+    const clickable = interactive && (!inCopy || eligible);
+    const hover = clickable ? "hover:border-blue-400" : "";
+    const cls = `rounded-xl border flex flex-col items-center justify-center p-1 transition-colors ${muted ? "opacity-40" : ""} ${tone} ${ring} ${dim} ${hover}`;
     const style: React.CSSProperties = { position: "relative", aspectRatio: "1 / 1", minWidth: 0 };
     const inner = (
       <>
-        <Dot status={c.status} />
+        {isSelected ? (
+          <span style={{ position: "absolute", top: 3, right: 3, width: 14, height: 14, borderRadius: 9999, background: "#f59e0b", color: "#fff", fontSize: 10, lineHeight: "14px", textAlign: "center", fontWeight: 700 }}>✓</span>
+        ) : isPrefilled ? (
+          <span style={{ position: "absolute", top: 4, right: 4, width: 9, height: 9, borderRadius: 9999, background: "#f59e0b" }} />
+        ) : (
+          <Dot status={c.status} />
+        )}
         <span className="text-sm font-semibold text-gray-800 leading-none">{c.dom}</span>
-        {c.hours ? (
-          <span className="text-[8px] sm:text-[9px] text-gray-600 mt-1 leading-tight text-center px-0.5" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{c.hours}</span>
-        ) : c.off ? (
+        {showHours ? (
+          <span className="text-[8px] sm:text-[9px] text-gray-600 mt-1 leading-tight text-center px-0.5" style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{showHours}</span>
+        ) : showOff ? (
           <span className="text-[9px] sm:text-[10px] font-semibold text-red-600 mt-1 leading-none">Off</span>
         ) : null}
       </>
     );
-    return interactive ? (
+    return clickable ? (
       <button type="button" onClick={() => onTap(c)} style={style} className={cls}>{inner}</button>
     ) : (
       <div style={style} className={cls}>{inner}</div>
@@ -1256,6 +1396,15 @@ function WorkerSchedule({ view, myMonth, myWeek, basePath = "/schedules?view" }:
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ background: "#f59e0b" }} /> Pending</span>
         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style={{ border: "1.5px solid #d1d5db" }} /> Not set</span>
       </div>
+
+      {view === "month" && copySource && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 flex items-center justify-between gap-2">
+          <span className="text-sm text-amber-900">
+            Copying <strong>{copySource.label}</strong> · {copySource.hoursLabel}. Tap the days you want the same hours on.
+          </span>
+          <button type="button" onClick={cancelCopy} className="btn btn-secondary btn-sm shrink-0">Cancel</button>
+        </div>
+      )}
 
       <div className="card">
         <div className="card-body p-3 sm:p-4">
@@ -1277,6 +1426,16 @@ function WorkerSchedule({ view, myMonth, myWeek, basePath = "/schedules?view" }:
                 ))}
               </div>
               <p className="text-[11px] text-gray-400 mt-3 text-center">Tap a day to set your hours. Add a second block for a split shift.</p>
+              {!copySource && prefilledDates.length > 0 && (
+                <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 flex items-center justify-between gap-2">
+                  <span className="text-sm text-amber-900">
+                    {prefilledDates.length} pre-filled day{prefilledDates.length === 1 ? "" : "s"} not yet submitted. Tap a day to edit.
+                  </span>
+                  <button type="button" onClick={submitMonth} disabled={monthSubmitPending} className="btn btn-primary btn-sm shrink-0">
+                    {monthSubmitPending ? "Submitting…" : "Submit month for approval"}
+                  </button>
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -1295,11 +1454,26 @@ function WorkerSchedule({ view, myMonth, myWeek, basePath = "/schedules?view" }:
         </div>
       </div>
 
+      {view === "month" && copySource && (
+        <>
+          {/* Spacer so the fixed bar never hides the last calendar row. */}
+          <div style={{ height: 72 }} />
+          <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 60, background: "#fff", borderTop: "1px solid #e5e7eb", padding: 12, display: "flex", gap: 8, boxShadow: "0 -2px 8px rgba(0,0,0,.06)" }}>
+            <button type="button" onClick={cancelCopy} className="btn btn-secondary" style={{ flex: 1 }}>Cancel</button>
+            <button type="button" onClick={doPaste} disabled={selected.size === 0 || !!pastePending} className="btn btn-primary" style={{ flex: 2 }}>
+              {pastePending ? "Pasting…" : `Paste to ${selected.size} day${selected.size === 1 ? "" : "s"}`}
+            </button>
+          </div>
+        </>
+      )}
+
       {open && (
         <MultiShiftSheet
           dateLabel={open.label}
           initial={open.shifts}
-          onSave={(shifts: any[], off?: boolean) => submit(open.date, shifts, !!off)}
+          canCopy={view === "month" && ((open.shifts && open.shifts.length > 0) || !!open.off)}
+          onCopy={startCopy}
+          onSave={onSheetSave}
           onClose={() => setOpen(null)}
         />
       )}
@@ -1308,7 +1482,7 @@ function WorkerSchedule({ view, myMonth, myWeek, basePath = "/schedules?view" }:
 }
 
 // Bottom sheet with one or more Start/End shift blocks (split-shift support).
-function MultiShiftSheet({ dateLabel, initial, onSave, onClose }: any) {
+function MultiShiftSheet({ dateLabel, initial, onSave, onClose, canCopy, onCopy }: any) {
   const [shifts, setShifts] = useState<{ start: string; end: string }[]>(() => (initial?.length ? initial.map((s: any) => ({ start: s.start || "", end: s.end || "" })) : [{ start: "", end: "" }]));
   const [edit, setEdit] = useState<{ i: number; f: "start" | "end" } | null>(null);
   const total = shifts.reduce((t, s) => t + hoursOf(s.start, s.end), 0);
@@ -1347,6 +1521,12 @@ function MultiShiftSheet({ dateLabel, initial, onSave, onClose }: any) {
         ))}
 
         <button type="button" onClick={() => setShifts((s) => [...s, { start: "", end: "" }])} className="btn btn-secondary btn-sm w-full mb-3">+ Add another shift</button>
+
+        {canCopy && (
+          <button type="button" onClick={() => { onCopy?.(); }} className="btn btn-secondary btn-sm w-full mb-3">
+            Copy this day to other days
+          </button>
+        )}
 
         <div className="text-center text-sm font-medium mb-1">Total: {fmtHrs(Math.round(total * 100) / 100)} h</div>
         <div className="text-center mb-3">
