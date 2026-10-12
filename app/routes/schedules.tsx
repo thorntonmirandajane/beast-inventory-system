@@ -1638,7 +1638,10 @@ function RequestReviewCard({ req, isSubmitting }: any) {
   const initCells: any[] = Array.isArray(meta.cells) ? meta.cells : [];
   const [cells, setCells] = useState(() => initCells.map((c) => {
     const shifts = Array.isArray(c.shifts) ? c.shifts.filter((s: any) => s.start && s.end) : (c.start && c.end ? [{ start: c.start, end: c.end }] : []);
-    return { date: c.date, shifts, value: c.value || shifts.map((s: any) => toShorthand(s.start, s.end)).join(", "), edited: false };
+    // An explicit "day off" must be tracked here too — otherwise approval can't
+    // tell it apart from an empty day and drops it (the day shows a blank dash).
+    const off = c.off === true && shifts.length === 0;
+    return { date: c.date, shifts, off, value: c.value || (off ? "Off" : shifts.map((s: any) => toShorthand(s.start, s.end)).join(", ")), edited: false };
   }));
   const [denying, setDenying] = useState(false);
   const cellHrs = (c: any) => c.edited ? (() => { const p = parseShorthand(c.value); return p.error ? 0 : p.hours; })() : c.shifts.reduce((u: number, s: any) => u + hoursOf(s.start, s.end), 0);
@@ -1647,11 +1650,16 @@ function RequestReviewCard({ req, isSubmitting }: any) {
   // Untouched cells keep the worker's exact shifts (incl. splits); an edited cell
   // re-parses the shorthand (a single shift), or keeps the original if unparseable.
   const postCells = cells.map((c) => {
-    if (!c.edited) return { date: c.date, shifts: c.shifts };
-    const p = parseShorthand(c.value);
-    if (p.off) return { date: c.date, shifts: [] };
-    if (p.error) return { date: c.date, shifts: c.shifts };
-    return { date: c.date, shifts: [{ start: p.start, end: p.end }] };
+    if (c.edited) {
+      const p = parseShorthand(c.value);
+      if (p.off) return { date: c.date, shifts: [], off: true };
+      if (!p.error) return { date: c.date, shifts: [{ start: p.start, end: p.end }] };
+      // Unparseable edit — fall through and keep what the worker submitted.
+    }
+    // Carry the off marker through so approval writes a real ScheduleDayOff,
+    // making a worker-set day off identical to an admin-set one.
+    if (c.off) return { date: c.date, shifts: [], off: true };
+    return { date: c.date, shifts: c.shifts };
   });
 
   return (
