@@ -25,6 +25,41 @@ function ymdLocal(d: Date): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: MT, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
 }
 
+// Total break minutes, break count, and whether a break is still open, from the
+// Start Break / End Break events that fall inside one shift. `events` must be
+// sorted ascending. For an open shift (no clock-out) we look up to `now`.
+function breakInfo(
+  events: { type: string; timestamp: Date }[],
+  start: Date,
+  end: Date | null
+): { minutes: number; count: number; onBreak: boolean } {
+  const hi = (end ?? new Date()).getTime();
+  const lo = start.getTime();
+  let totalMs = 0;
+  let count = 0;
+  let bs: number | null = null;
+  for (const e of events) {
+    const t = e.timestamp.getTime();
+    if (t < lo || t > hi) continue;
+    if (e.type === "BREAK_START") bs = t;
+    else if (e.type === "BREAK_END" && bs != null) { totalMs += t - bs; count++; bs = null; }
+  }
+  return { minutes: Math.round(totalMs / 60000), count, onBreak: bs != null };
+}
+
+// "32 min", "1h 05m", with "(2 breaks)" when more than one, "—" when none.
+function fmtBreak(minutes: number, count: number): string {
+  if (minutes <= 0) return count > 0 ? `0 min (${count} breaks)` : "—";
+  const base = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m` : `${minutes} min`;
+  return count > 1 ? `${base} (${count} breaks)` : base;
+}
+
+// Decimal hours → "8h 51m" for the "on the clock" subtext.
+function fmtHm(hours: number): string {
+  const m = Math.round(hours * 60);
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const user = await requireRole(request, ["ADMIN"]);
 
@@ -75,7 +110,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     clockOutId: string | null;
     clockIn: Date;
     clockOut: Date | null;
-    hours: number;
+    hours: number; // PAID hours — net of breaks (0 while open)
+    grossHours: number; // time on the clock (clock out − clock in)
+    breakMinutes: number;
+    breakCount: number;
+    onBreak: boolean;
     open: boolean;
     hasTasks: boolean;
     linked: boolean;
@@ -84,6 +123,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const payrollData = workers.map((worker) => {
     const workerEvents = clockEvents.filter((e) => e.userId === worker.id);
     const workerEntries = entries.filter((e) => e.userId === worker.id);
+    // Start/End Break events only, in time order — the source for break totals.
+    const breakEvents = workerEvents.filter((e) => e.type === "BREAK_START" || e.type === "BREAK_END");
 
     // Entry shifts (authoritative). Consume their clock events so they aren't
     // double-counted as loose activity.
@@ -92,23 +133,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       if (en.clockInEventId) consumed.add(en.clockInEventId);
       if (en.clockOutEventId) consumed.add(en.clockOutEventId);
       const clockOut = en.clockOutTime;
-      const hours = clockOut ? Math.max(0, (clockOut.getTime() - en.clockInTime.getTime()) / 3_600_000) : 0;
+      const grossHours = clockOut ? Math.max(0, (clockOut.getTime() - en.clockInTime.getTime()) / 3_600_000) : 0;
+      const bi = breakInfo(breakEvents, en.clockInTime, clockOut);
+      const hours = clockOut ? Math.max(0, grossHours - bi.minutes / 60) : 0;
       return {
         kind: "entry", entryId: en.id,
         clockInId: en.clockInEventId, clockOutId: en.clockOutEventId,
         clockIn: en.clockInTime, clockOut,
-        hours, open: !clockOut, hasTasks: en._count.lines > 0, linked: true,
+        hours, grossHours, breakMinutes: bi.minutes, breakCount: bi.count, onBreak: bi.onBreak,
+        open: !clockOut, hasTasks: en._count.lines > 0, linked: true,
       };
     });
 
     // Loose clock-event pairs not covered by any entry (e.g. still-clocked-in, a
     // stray duplicate clock-in, or an admin who clocks in/out without an entry).
-    const looseShifts: PShift[] = buildShifts(workerEvents.filter((e) => !consumed.has(e.id))).map((s) => ({
-      kind: "loose", entryId: null,
-      clockInId: s.clockInId, clockOutId: s.clockOutId,
-      clockIn: s.clockIn, clockOut: s.clockOut,
-      hours: s.hours, open: s.open, hasTasks: false, linked: false,
-    }));
+    const looseShifts: PShift[] = buildShifts(workerEvents.filter((e) => !consumed.has(e.id))).map((s) => {
+      const bi = breakInfo(breakEvents, s.clockIn, s.clockOut);
+      const hours = s.open ? 0 : Math.max(0, s.hours - bi.minutes / 60);
+      return {
+        kind: "loose" as const, entryId: null,
+        clockInId: s.clockInId, clockOutId: s.clockOutId,
+        clockIn: s.clockIn, clockOut: s.clockOut,
+        hours, grossHours: s.hours, breakMinutes: bi.minutes, breakCount: bi.count, onBreak: bi.onBreak,
+        open: s.open, hasTasks: false, linked: false,
+      };
+    });
 
     const allShifts = [...entryShifts, ...looseShifts].sort((a, b) => a.clockIn.getTime() - b.clockIn.getTime());
 
@@ -129,6 +178,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       regularPay: parseFloat(overtimeCalc.regularPay.toFixed(2)),
       overtimePay: parseFloat(overtimeCalc.overtimePay.toFixed(2)),
       totalPay: parseFloat(overtimeCalc.totalPay.toFixed(2)),
+      // Total break time over the period (for the collapsed summary row).
+      breakMinutes: allShifts.reduce((t, s) => t + s.breakMinutes, 0),
       hasOpen: allShifts.some((s) => s.open),
       shifts: allShifts.map((s) => {
         const dayKey = ymdLocal(s.clockIn);
@@ -141,6 +192,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           clockInInput: toMtInput(s.clockIn),
           clockOutInput: s.clockOut ? toMtInput(s.clockOut) : "",
           hours: parseFloat(s.hours.toFixed(2)),
+          grossHours: parseFloat(s.grossHours.toFixed(2)),
+          breakMinutes: s.breakMinutes,
+          breakCount: s.breakCount,
+          onBreak: s.onBreak,
           open: s.open,
           hasTasks: s.hasTasks,
           linked: s.linked,
@@ -160,6 +215,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     startDate: startDate.toISOString().split("T")[0],
     endDate: endDate.toISOString().split("T")[0],
     totalRegularHours: parseFloat(sum((w) => w.regularHours).toFixed(2)),
+    totalBreakMinutes: sum((w) => w.breakMinutes),
     totalOvertimeHours: parseFloat(sum((w) => w.overtimeHours).toFixed(2)),
     totalHours: parseFloat(sum((w) => w.totalHours).toFixed(2)),
     totalRegularPay: parseFloat(sum((w) => w.regularPay).toFixed(2)),
@@ -279,6 +335,7 @@ export default function Payroll() {
   const {
     user, payrollData, startDate, endDate,
     totalRegularHours, totalOvertimeHours, totalRegularPay, totalOvertimePay, totalPay, workerCount,
+    totalBreakMinutes,
   } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
@@ -363,6 +420,7 @@ export default function Payroll() {
                   <th>Worker</th>
                   <th className="text-right">Pay Rate</th>
                   <th className="text-right">Regular Hours</th>
+                  <th className="text-right">Breaks</th>
                   <th className="text-right">Overtime Hours</th>
                   <th className="text-right">Regular Pay</th>
                   <th className="text-right">Overtime Pay</th>
@@ -384,6 +442,7 @@ export default function Payroll() {
                 <tr className="bg-gray-50 font-bold">
                   <td colSpan={2} className="text-right">TOTAL</td>
                   <td className="text-right">{totalRegularHours.toFixed(1)}h</td>
+                  <td className="text-right font-normal text-gray-600">{fmtBreak(totalBreakMinutes, 0).replace(/ \(.*\)$/, "")}</td>
                   <td className="text-right text-orange-600">{totalOvertimeHours.toFixed(1)}h</td>
                   <td className="text-right">${totalRegularPay.toFixed(2)}</td>
                   <td className="text-right text-orange-600">${totalOvertimePay.toFixed(2)}</td>
@@ -424,6 +483,7 @@ function FragmentRow({
           {worker.payRate > 0 ? <span>${worker.payRate.toFixed(2)}/hr</span> : <span className="text-yellow-600">Not Set</span>}
         </td>
         <td className="text-right">{worker.regularHours.toFixed(1)}h</td>
+        <td className="text-right text-gray-600">{fmtBreak(worker.breakMinutes, 0)}</td>
         <td className={`text-right ${worker.overtimeHours > 0 ? "text-orange-600 font-bold" : ""}`}>
           {worker.overtimeHours > 0 ? `${worker.overtimeHours.toFixed(1)}h` : "—"}
         </td>
@@ -435,7 +495,7 @@ function FragmentRow({
       </tr>
       {open && (
         <tr>
-          <td colSpan={7} className="bg-gray-50 p-0">
+          <td colSpan={8} className="bg-gray-50 p-0">
             <div className="p-4">
               {worker.shifts.length === 0 ? (
                 <p className="text-sm text-gray-500">No shifts in this range.</p>
@@ -444,72 +504,94 @@ function FragmentRow({
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="text-left text-gray-500 border-b">
-                        <th className="py-2 pr-4">Day</th>
-                        <th className="py-2 pr-4">Clock in</th>
-                        <th className="py-2 pr-4">Clock out</th>
-                        <th className="py-2 pr-4 text-right">Hours</th>
-                        <th className="py-2 pr-4"></th>
+                        <th className="py-2 pr-3">Day</th>
+                        <th className="py-2 pr-3">Clock in</th>
+                        <th className="py-2 pr-3">Clock out</th>
+                        <th className="py-2 pr-3">Break</th>
+                        <th className="py-2 pr-3 text-right">Paid hours</th>
+                        <th className="py-2 text-right"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {worker.shifts.map((s) => (
-                        <tr key={`${s.entryId ?? s.clockInId}`} className={`border-b last:border-0 ${s.dup ? "bg-red-50" : ""}`}>
-                          <td className="py-2 pr-4 whitespace-nowrap">{s.dayLabel}</td>
-                          <td colSpan={4} className="py-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <edit.Form method="post" className="flex flex-wrap items-center gap-2">
-                                <input type="hidden" name="intent" value="edit-shift" />
-                                <input type="hidden" name="entryId" value={s.entryId ?? ""} />
-                                <input type="hidden" name="clockInId" value={s.clockInId} />
-                                <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
-                                <input type="hidden" name="workerId" value={worker.id} />
-                                <input type="datetime-local" name="clockIn" defaultValue={s.clockInInput} className="form-input" required />
-                                <span className="text-gray-400">→</span>
-                                <input
-                                  type="datetime-local"
-                                  name="clockOut"
-                                  defaultValue={s.clockOutInput}
-                                  className="form-input"
-                                  placeholder="not clocked out"
-                                />
-                                <span className="w-16 text-right font-medium">
-                                  {s.open ? <span className="text-red-600">open</span> : `${s.hours.toFixed(1)}h`}
-                                </span>
-                                {!s.dup && (
-                                  <button type="submit" className="btn btn-secondary btn-sm" disabled={edit.state !== "idle"}>
-                                    {s.open ? "Add clock-out" : "Save"}
-                                  </button>
+                      {worker.shifts.map((s) => {
+                        const fid = `edit-${s.entryId ?? s.clockInId}`;
+                        return (
+                          <tr key={`${s.entryId ?? s.clockInId}`} className={`border-b last:border-0 ${s.dup ? "bg-red-50" : ""}`}>
+                            {/* Day */}
+                            <td className="py-2 pr-3 align-top whitespace-nowrap">
+                              <div className="flex items-center gap-2">
+                                <span>{s.dayLabel}</span>
+                                {s.onBreak && (
+                                  <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">On break</span>
                                 )}
-                              </edit.Form>
-                              {s.dup ? (
-                                <span className="text-xs text-red-600 font-medium">duplicate — delete it →</span>
-                              ) : s.linked && s.hasTasks ? (
-                                <span className="text-xs text-green-700">✓ QC entry</span>
-                              ) : !s.linked && !s.open ? (
-                                <span className="text-xs text-gray-500">not in QC</span>
-                              ) : null}
-                              <edit.Form
-                                method="post"
-                                onSubmit={(e) => {
-                                  if (!confirm("Remove this shift? This deletes its clock in/out.")) e.preventDefault();
-                                }}
-                              >
-                                <input type="hidden" name="intent" value="delete-shift" />
-                                <input type="hidden" name="entryId" value={s.entryId ?? ""} />
-                                <input type="hidden" name="clockInId" value={s.clockInId} />
-                                <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
-                                <button
-                                  type="submit"
-                                  className="btn btn-secondary btn-sm text-red-600"
-                                  disabled={edit.state !== "idle"}
+                              </div>
+                            </td>
+                            {/* Clock in (posts into the hidden form via form={fid}) */}
+                            <td className="py-2 pr-3 align-top">
+                              <input form={fid} type="datetime-local" name="clockIn" defaultValue={s.clockInInput} className="form-input" required />
+                            </td>
+                            {/* Clock out */}
+                            <td className="py-2 pr-3 align-top">
+                              <input form={fid} type="datetime-local" name="clockOut" defaultValue={s.clockOutInput} className="form-input" placeholder="not clocked out" />
+                            </td>
+                            {/* Break */}
+                            <td className="py-2 pr-3 align-top whitespace-nowrap text-gray-600">
+                              {fmtBreak(s.breakMinutes, s.breakCount)}
+                            </td>
+                            {/* Paid hours (bold) + full time on the clock */}
+                            <td className="py-2 pr-3 align-top text-right whitespace-nowrap">
+                              {s.open ? (
+                                <span className="text-red-600 font-semibold">open</span>
+                              ) : (
+                                <>
+                                  <div className="font-bold">{s.hours.toFixed(1)}h</div>
+                                  <div className="text-xs text-gray-500">{fmtHm(s.grossHours)} on the clock</div>
+                                </>
+                              )}
+                            </td>
+                            {/* Actions + QC tag */}
+                            <td className="py-2 align-top text-right">
+                              <div className="flex items-center justify-end gap-2 flex-wrap">
+                                {s.dup ? (
+                                  <span className="text-xs text-red-600 font-medium">duplicate</span>
+                                ) : s.linked && s.hasTasks ? (
+                                  <span className="text-xs text-green-700">✓ QC entry</span>
+                                ) : !s.linked && !s.open ? (
+                                  <span className="text-xs text-gray-500">not in QC</span>
+                                ) : null}
+                                {/* Edit form (id={fid}); the Clock in/out inputs in the other
+                                    columns belong to it via their form={fid} attribute. */}
+                                <edit.Form method="post" id={fid} style={{ display: "contents" }}>
+                                  <input type="hidden" name="intent" value="edit-shift" />
+                                  <input type="hidden" name="entryId" value={s.entryId ?? ""} />
+                                  <input type="hidden" name="clockInId" value={s.clockInId} />
+                                  <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
+                                  <input type="hidden" name="workerId" value={worker.id} />
+                                  {!s.dup && (
+                                    <button type="submit" className="btn btn-secondary btn-sm" disabled={edit.state !== "idle"}>
+                                      {s.open ? "Add clock-out" : "Save"}
+                                    </button>
+                                  )}
+                                </edit.Form>
+                                <edit.Form
+                                  method="post"
+                                  onSubmit={(e) => {
+                                    if (!confirm("Remove this shift? This deletes its clock in/out.")) e.preventDefault();
+                                  }}
                                 >
-                                  Delete
-                                </button>
-                              </edit.Form>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                                  <input type="hidden" name="intent" value="delete-shift" />
+                                  <input type="hidden" name="entryId" value={s.entryId ?? ""} />
+                                  <input type="hidden" name="clockInId" value={s.clockInId} />
+                                  <input type="hidden" name="clockOutId" value={s.clockOutId ?? ""} />
+                                  <button type="submit" className="btn btn-secondary btn-sm text-red-600" disabled={edit.state !== "idle"}>
+                                    Delete
+                                  </button>
+                                </edit.Form>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
