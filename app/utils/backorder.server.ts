@@ -25,7 +25,7 @@ const isOrderDefenseSku = (sku: string) => /^OD\d*$/i.test(sku.trim());
 // SKU mapping (exact + wildcard patterns), reusing SkuAlias
 // ============================================================
 
-interface Mapping {
+export interface Mapping {
   exact: Map<string, string>; // normalized alias -> inventory skuId
   // Rewrite rules: match `regex`, substitute captured wildcard(s) into
   // `replacement`, then resolve the resulting SKU string to an inventory SKU.
@@ -48,7 +48,7 @@ function applyReplacement(replacement: string, groups: string[]): string {
   return replacement.replace(/\*/g, () => groups[i++] ?? "");
 }
 
-async function loadMapping(): Promise<Mapping> {
+export async function loadMapping(): Promise<Mapping> {
   const aliases = await prisma.skuAlias.findMany({
     select: { alias: true, skuId: true, isPattern: true, replacement: true },
   });
@@ -67,7 +67,7 @@ async function loadMapping(): Promise<Mapping> {
 // Resolve any Shopify/ShipHero SKU to an inventory skuId. Order: exact alias ->
 // direct match to a known inventory SKU -> wildcard rewrite rule. Returns null
 // if nothing matches (caller decides: unmapped exception).
-function resolveSku(
+export function resolveSku(
   raw: string,
   mapping: Mapping,
   skuIdBySku: Map<string, string>

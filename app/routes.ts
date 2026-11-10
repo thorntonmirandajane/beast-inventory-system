@@ -69,4 +69,5 @@ export default [
   route("api/ai-chat", "routes/api.ai-chat.tsx"),
   route("api/upload-image", "routes/api.upload-image.tsx"),
   route("api/test-cloudinary", "routes/api.test-cloudinary.tsx"),
+  route("api/dealer/stg-stock", "routes/api.dealer.stg-stock.tsx"),
 ] satisfies RouteConfig;
