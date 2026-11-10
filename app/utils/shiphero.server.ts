@@ -7,9 +7,12 @@
 // understates what is physically on the shelf. ShipHero's `on_hand` is the
 // real count.
 //
-// Auth is username/password against ShipHero's auth endpoint, which returns a
-// 28-day bearer access token (https://developer.shiphero.com/getting-started/).
-// We cache the token in memory and re-auth on expiry or cold start.
+// Auth returns a 28-day bearer access token
+// (https://developer.shiphero.com/getting-started/), which we cache in memory
+// and renew on expiry or cold start. Prefer SHIPHERO_REFRESH_TOKEN: a refresh
+// token comes from My Account > Developer Users in the ShipHero dashboard and
+// is not subject to MFA. Username/password is the fallback, and it stops
+// working the moment two-factor is enabled on the account.
 
 const AUTH_URL = "https://public-api.shiphero.com/auth/token";
 const REFRESH_URL = "https://public-api.shiphero.com/auth/refresh";
@@ -60,7 +63,17 @@ async function authenticate(): Promise<TokenState> {
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`ShipHero auth ${res.status}: ${body.slice(0, 300)}`);
+    if (/mfa_required|multi-factor/i.test(body)) {
+      throw new Error(
+        "ShipHero auth: two-factor is enabled on this account, so a username " +
+          "and password cannot mint a token from the server. Add a developer " +
+          "user under My Account > Developer Users in ShipHero and set its " +
+          "refresh token as SHIPHERO_REFRESH_TOKEN."
+      );
+    }
+    throw new Error(
+      `ShipHero auth ${res.status}${refreshToken ? " (refresh)" : ""}: ${body.slice(0, 300)}`
+    );
   }
 
   const json = (await res.json()) as {
